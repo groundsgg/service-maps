@@ -23,7 +23,7 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
 @QuarkusTestResource(MinioResource::class)
-@TestSecurity(user = "builder-sub")
+@TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class VersionLifecycleIT {
 
     private val json = ObjectMapper()

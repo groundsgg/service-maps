@@ -1,5 +1,6 @@
 package gg.grounds.api
 
+import gg.grounds.authz.Authorizer
 import gg.grounds.blob.BlobStore
 import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
@@ -46,6 +47,7 @@ constructor(
     private val pins: MapPinRepository,
     private val blobs: BlobStore,
     private val pinFiles: PinFilePublisher,
+    private val authz: Authorizer,
     private val identity: SecurityIdentity,
 ) {
 
@@ -61,6 +63,7 @@ constructor(
         val kind =
             parseKind(request.kind)
                 ?: return problem(Response.Status.BAD_REQUEST, "unknown kind: ${request.kind}")
+        if (!authz.mayAuthor(address)) return denied("create a map in ${address.namespace}")
 
         return try {
             val created =
@@ -86,9 +89,16 @@ constructor(
         }
     }
 
+    /**
+     * Other creators' work is not everyone's business: without a review group a caller sees
+     * first-party maps and their own, and nothing else.
+     */
     @GET
     fun list(@QueryParam("namespace") namespace: String?): List<MapDto> =
-        maps.list(namespace).map(MapRecord::toDto)
+        maps
+            .list(namespace)
+            .filter { authz.maySee(it.ownerSub, it.address.namespace) }
+            .map(MapRecord::toDto)
 
     /**
      * The address is one catch-all parameter rather than two segments, because a creator namespace
@@ -102,6 +112,10 @@ constructor(
                 ?: return problem(Response.Status.BAD_REQUEST, "not a valid map address: $address")
         val found =
             maps.find(parsed) ?: return problem(Response.Status.NOT_FOUND, "no such map: $parsed")
+        // 404, not 403: whether a creator's map exists is itself not public.
+        if (!authz.maySee(found.ownerSub, found.address.namespace)) {
+            return problem(Response.Status.NOT_FOUND, "no such map: $parsed")
+        }
         return Response.ok(found.toDto()).build()
     }
 
@@ -114,7 +128,8 @@ constructor(
     @POST
     @Path("/{address:.+}/uploads")
     fun createUpload(@PathParam("address") address: String): Response =
-        withMap(address) { _ ->
+        withMap(address) { map ->
+            if (!authz.mayAuthor(map.address)) return@withMap denied("upload to $address")
             val uploadId = UUID.randomUUID().toString()
             val key = BlobStore.uploadKey(uploadId)
             Response.ok(UploadDto(uploadId = uploadId, key = key, url = blobs.presignPut(key)))
@@ -132,6 +147,7 @@ constructor(
         withMap(address) { map ->
             if (request == null)
                 return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
+            if (!authz.mayAuthor(map.address)) return@withMap denied("commit a version of $address")
             // The upload id becomes part of an object key, so it is validated as the UUID it
             // is supposed to be rather than interpolated. `../../bundle/sha256/ab/cd` would
             // otherwise escape the uploads prefix and be handed to the derive Job as a
@@ -193,6 +209,8 @@ constructor(
         withMap(address) { map ->
             if (request == null)
                 return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
+            if (!authz.mayPublish(map.address))
+                return@withMap denied("publish a version of $address")
             // The digest becomes a path in the pin file that game servers append to the CDN
             // base, and a published version is immutable — so an unchecked or empty value
             // here is permanent and points every server somewhere nobody chose.
@@ -241,6 +259,8 @@ constructor(
         withMap(address) { source ->
             if (request == null)
                 return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
+            if (!authz.maySee(source.ownerSub, source.address.namespace))
+                return@withMap denied("read $address")
             val target =
                 MapAddress.parse(request.target)
                     ?: return@withMap problem(
@@ -271,6 +291,8 @@ constructor(
                     "version ${from.version} is ${from.state} and has no usable bundle",
                 )
             }
+            if (!authz.mayAuthor(target))
+                return@withMap denied("create a map in ${target.namespace}")
             try {
                 val created =
                     maps.create(
@@ -322,6 +344,8 @@ constructor(
                 return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
             // The environment names an object in the public bucket; it is an allowlist, not
             // a free string a caller can steer with separators.
+            if (!authz.mayGoLive())
+                return@withMap denied("change what players load in $environment")
             if (!EnvironmentName.isValid(environment)) {
                 return@withMap problem(
                     Response.Status.BAD_REQUEST,
@@ -358,6 +382,9 @@ constructor(
             maps.find(parsed) ?: return problem(Response.Status.NOT_FOUND, "no such map: $parsed")
         return block(found)
     }
+
+    private fun denied(what: String): Response =
+        problem(Response.Status.FORBIDDEN, "not allowed to $what")
 
     private fun problem(status: Response.Status, detail: String): Response =
         Response.status(status).entity(ProblemDto(status.statusCode, detail)).build()

@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test
 
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
-@TestSecurity(user = "builder-sub")
+@TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class MapsResourceIT {
 
     @Test
