@@ -47,7 +47,7 @@ config:
     # never touches the lobby every player loads.
     ugcBucket: grounds-maps-ugc
   cdn:
-    contentBase: https://content.grounds.gg
+    contentBase: https://maps.grounds.gg
     ugcBase: https://ugc-content.grounds.gg
   # Which Keycloak group grants which action. Ownership of `u/<sub>` needs no group.
   # Going live is deliberately narrower than publishing.
