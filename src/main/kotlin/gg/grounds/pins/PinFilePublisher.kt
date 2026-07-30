@@ -59,8 +59,13 @@ constructor(
                                                 PinnedEntry(
                                                     version = pin.version,
                                                     bundleSha256 = pin.bundleSha256,
-                                                    bundleKey =
-                                                        BlobStore.bundleKey(pin.bundleSha256),
+                                                    // Absolute, because two hosts serve
+                                                    // content now and a key alone no longer
+                                                    // says which.
+                                                    bundleUrl =
+                                                        blobs.publicBaseFor(pin.trust) +
+                                                            "/" +
+                                                            BlobStore.bundleKey(pin.bundleSha256),
                                                     sizeBytes = pin.sizeBytes,
                                                     estLoadedMib = pin.estLoadedMib,
                                                 )
@@ -95,8 +100,8 @@ data class PinFile(val environment: String, val maps: Map<String, PinnedEntry>)
 data class PinnedEntry(
     val version: Int,
     val bundleSha256: String,
-    /** Ready to append to the CDN base, so a server needs no key-layout knowledge. */
-    val bundleKey: String,
+    /** Absolute: first-party and creator content are served from different hosts. */
+    val bundleUrl: String,
     val sizeBytes: Long?,
     val estLoadedMib: Int?,
 )

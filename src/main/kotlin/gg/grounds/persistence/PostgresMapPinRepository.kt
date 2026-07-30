@@ -2,6 +2,7 @@ package gg.grounds.persistence
 
 import gg.grounds.domain.MapAddress
 import gg.grounds.domain.MapPinRepository
+import gg.grounds.domain.MapTrust
 import gg.grounds.domain.NotPublishedException
 import gg.grounds.domain.PinRecord
 import gg.grounds.domain.PinnedMap
@@ -131,7 +132,7 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { c ->
             c.prepareStatement(
                     """
-                    SELECT m.namespace, m.name, p.version, v.bundle_sha256, v.size_bytes, v.est_loaded_mib
+                    SELECT m.namespace, m.name, m.trust, p.version, v.bundle_sha256, v.size_bytes, v.est_loaded_mib
                       FROM map_pin p
                       JOIN map m ON m.id = p.map
                       JOIN map_version v ON v.map = p.map AND v.version = p.version
@@ -156,6 +157,7 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
                                         bundleSha256 = rs.getString("bundle_sha256"),
                                         sizeBytes = rs.getObject("size_bytes") as Long?,
                                         estLoadedMib = rs.getObject("est_loaded_mib") as Int?,
+                                        trust = MapTrust.valueOf(rs.getString("trust")),
                                     )
                                 )
                             }

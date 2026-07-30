@@ -113,9 +113,9 @@ class VersionLifecycleIT {
         assertEquals(1, entry["version"].asInt())
         assertEquals(BUNDLE, entry["bundleSha256"].asText())
         assertEquals(
-            "bundle/sha256/${BUNDLE.take(2)}/$BUNDLE.tar.zst",
-            entry["bundleKey"].asText(),
-            "a booting server must be able to append this to the CDN base and be done",
+            "https://content.test/bundle/sha256/${BUNDLE.take(2)}/$BUNDLE.tar.zst",
+            entry["bundleUrl"].asText(),
+            "absolute, because creator content is served from a different host entirely",
         )
 
         // 7. The upload stayed private. Nothing put it in the public bucket, and nothing

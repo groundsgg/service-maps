@@ -69,6 +69,12 @@ spec:
               value: {{ .Values.config.r2.privateBucket | quote }}
             - name: MAPS_R2_PUBLIC_BUCKET
               value: {{ .Values.config.r2.publicBucket | quote }}
+            - name: MAPS_R2_UGC_BUCKET
+              value: {{ .Values.config.r2.ugcBucket | quote }}
+            - name: MAPS_CDN_CONTENT_BASE
+              value: {{ .Values.config.cdn.contentBase | quote }}
+            - name: MAPS_CDN_UGC_BASE
+              value: {{ .Values.config.cdn.ugcBase | quote }}
             - name: MAPS_R2_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef: { name: {{ .Values.existingSecret }}, key: MAPS_R2_ACCESS_KEY_ID }

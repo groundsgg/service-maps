@@ -1,5 +1,6 @@
 package gg.grounds.blob
 
+import gg.grounds.domain.MapTrust
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.net.URI
@@ -20,10 +21,16 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 /**
  * R2, reached with the plain AWS SDK exactly as grounds-lod's generator does.
  *
- * Two buckets, and the split is load-bearing rather than tidiness: uploads and unpublished blobs
- * land in the private one, and **promoting an object into the public one is a server-side copy that
- * only the approval path performs**. The copy is the moderation gate as a physical property, not as
- * a conditional somebody can forget.
+ * Three buckets, and the splits are load-bearing rather than tidiness.
+ *
+ * Uploads and unpublished blobs land in the **private** bucket, and **promoting an object into a
+ * public one is a server-side copy that only the approval path performs**. The copy is the
+ * moderation gate as a physical property, not as a conditional somebody can forget.
+ *
+ * First-party and creator content then go to **different public buckets on different hosts**. An
+ * abuse report against one creator's world is handled by blocking or purging on the creator host,
+ * and the lobby every player loads is not in the blast radius; a browser also treats the two as
+ * different origins.
  *
  * No object this service writes is ever large. Bundles travel between the client and R2 directly,
  * via a presigned PUT, so a 256 MB world never passes through this process — which also keeps it
@@ -39,6 +46,11 @@ constructor(
     @ConfigProperty(name = "grounds.maps.r2.secret-key") private val secretKey: String,
     @ConfigProperty(name = "grounds.maps.r2.private-bucket") val privateBucket: String,
     @ConfigProperty(name = "grounds.maps.r2.public-bucket") val publicBucket: String,
+    @ConfigProperty(name = "grounds.maps.r2.ugc-bucket") val ugcBucket: String,
+    /** Where first-party content is read from, e.g. `https://content.grounds.gg`. */
+    @ConfigProperty(name = "grounds.maps.cdn.content-base") val contentBaseUrl: String,
+    /** Where creator content is read from. A different origin on purpose. */
+    @ConfigProperty(name = "grounds.maps.cdn.ugc-base") val ugcBaseUrl: String,
 ) {
 
     private val credentials =
@@ -97,13 +109,26 @@ constructor(
         )
     }
 
+    /** The bucket a map's content is served from, decided by where it came from. */
+    fun publicBucketFor(trust: MapTrust): String =
+        if (trust == MapTrust.UNTRUSTED) ugcBucket else publicBucket
+
+    /** The host it is read from. Different origins, deliberately. */
+    fun publicBaseFor(trust: MapTrust): String =
+        (if (trust == MapTrust.UNTRUSTED) ugcBaseUrl else contentBaseUrl).trimEnd('/')
+
     /** Promotes an object out of the private bucket. This is the moderation gate. */
-    fun copyToPublic(sourceKey: String, destinationKey: String, contentType: String) {
+    fun copyToPublic(
+        sourceKey: String,
+        destinationKey: String,
+        contentType: String,
+        trust: MapTrust,
+    ) {
         client.copyObject(
             CopyObjectRequest.builder()
                 .sourceBucket(privateBucket)
                 .sourceKey(sourceKey)
-                .destinationBucket(publicBucket)
+                .destinationBucket(publicBucketFor(trust))
                 .destinationKey(destinationKey)
                 .contentType(contentType)
                 .metadataDirective("REPLACE")
