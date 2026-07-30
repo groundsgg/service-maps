@@ -223,6 +223,115 @@ class VersionLifecycleIT {
             .statusCode(400)
     }
 
+    /**
+     * Trust may only get stricter. Deriving it from the fork *target* would make "fork it into a
+     * first-party namespace" a laundering step for creator content.
+     */
+    @Test
+    fun `forking untrusted content into a first-party namespace stays untrusted`() {
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"address":"u/creator/hostile","kind":"plot"}""")
+            .post("/v1/maps")
+            .then()
+            .statusCode(201)
+            .body("trust", equalTo("UNTRUSTED"))
+        given()
+            .contentType(ContentType.JSON)
+            .body("{}")
+            .post("/v1/maps/u/creator/hostile/versions")
+            .then()
+            .statusCode(201)
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":10}""")
+            .post("/v1/maps/u/creator/hostile/versions/1/publish")
+            .then()
+            .statusCode(200)
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"target":"bedwars/laundered"}""")
+            .`when`()
+            .post("/v1/maps/u/creator/hostile/forks")
+            .then()
+            .statusCode(201)
+            .body("trust", equalTo("UNTRUSTED"))
+    }
+
+    @Test
+    fun `forking a version that does not exist is a 404, not the latest one`() {
+        createMap("skywars/pickme")
+        given()
+            .contentType(ContentType.JSON)
+            .body("{}")
+            .post("/v1/maps/skywars/pickme/versions")
+            .then()
+            .statusCode(201)
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":10}""")
+            .post("/v1/maps/skywars/pickme/versions/1/publish")
+            .then()
+            .statusCode(200)
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"target":"skywars/pickme-copy","fromVersion":7}""")
+            .`when`()
+            .post("/v1/maps/skywars/pickme/forks")
+            .then()
+            .statusCode(404)
+    }
+
+    /**
+     * The digest becomes a path game servers append to the CDN base, and a published version is
+     * immutable — so a bad one would be permanent.
+     */
+    @Test
+    fun `a bundle digest that is not a digest is refused`() {
+        createMap("bedwars/badhash")
+        given()
+            .contentType(ContentType.JSON)
+            .body("{}")
+            .post("/v1/maps/bedwars/badhash/versions")
+            .then()
+            .statusCode(201)
+        for (bad in listOf("", "../../etc/passwd", "C0FFEE", BUNDLE.uppercase())) {
+            given()
+                .contentType(ContentType.JSON)
+                .body(json.writeValueAsString(mapOf("bundleSha256" to bad, "sizeBytes" to 1)))
+                .`when`()
+                .post("/v1/maps/bedwars/badhash/versions/1/publish")
+                .then()
+                .statusCode(400)
+        }
+    }
+
+    /** The environment names an object in the public bucket. */
+    @Test
+    fun `an environment name that is a path is refused`() {
+        createMap("bedwars/envcheck")
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"version":1}""")
+            .`when`()
+            .post("/v1/maps/bedwars/envcheck/pins/..%2F..%2Fbundle")
+            .then()
+            .statusCode(400)
+    }
+
+    @Test
+    fun `an empty body is a 400, not a 500`() {
+        createMap("bedwars/emptybody")
+        given()
+            .contentType(ContentType.JSON)
+            .`when`()
+            .post("/v1/maps/bedwars/emptybody/versions")
+            .then()
+            .statusCode(400)
+    }
+
     /** A map named after a sub-resource would be unreachable, so the name is refused. */
     @Test
     fun `reserved names are refused`() {

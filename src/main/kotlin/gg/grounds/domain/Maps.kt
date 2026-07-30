@@ -77,3 +77,27 @@ data class MapRecord(
 /** Thrown when an address is already taken; the API turns it into a 409. */
 class MapAlreadyExistsException(val address: MapAddress) :
     RuntimeException("map already exists: $address")
+
+/**
+ * A content digest, as it appears in an object key.
+ *
+ * Validated rather than trusted, because it becomes a path: the pin file hands game servers
+ * `bundle/sha256/<ab>/<digest>.tar.zst` to append to the CDN base, so a caller who can put
+ * arbitrary text here can point every server at an arbitrary URL. Lowercase hex is also the only
+ * form that round-trips through the key layout — `AB` and `ab` would be two keys for one blob.
+ */
+object Digest {
+    private val SHA256 = Regex("^[0-9a-f]{64}$")
+
+    fun isValid(value: String?): Boolean = value != null && SHA256.matches(value)
+}
+
+/**
+ * An environment name. It becomes the object key `pins/<environment>.json` in the public bucket and
+ * the first half of a pin's primary key, so it is an allowlist rather than a free string.
+ */
+object EnvironmentName {
+    private val VALID = Regex("^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+
+    fun isValid(value: String): Boolean = VALID.matches(value)
+}

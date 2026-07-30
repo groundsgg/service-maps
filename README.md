@@ -45,6 +45,20 @@ Tests start a real Postgres with Testcontainers and run the Flyway migration int
 the schema and its constraints are under test rather than stubbed. `@TestSecurity`
 supplies the identity; there is no Keycloak in a test run.
 
+## Not yet true, and load-bearing
+
+<!-- Both of these are why there is no chart and no Argo application in this repository. -->
+
+- **There is no authorization.** Every route is `@Authenticated` and nothing more: any subject
+  with a valid token can create a map in any namespace, publish a version, and move the `stage`
+  pin — that is, change what every player loads. The `content.*` scopes in `service-permissions`
+  are what closes this, and until they exist this service must not be deployed with a broadly
+  issued client.
+- **Single replica.** The pin file is rebuilt in full and published under a per-environment lock,
+  which orders concurrent moves *within one process*. A second replica can still have two moves
+  land out of order and leave the CDN behind the database. Two replicas need a conditional write
+  or a reconciler first.
+
 ## Status
 
 Scaffold. Implemented: the schema, and create/list/read for maps. Not yet implemented:

@@ -7,6 +7,7 @@ import gg.grounds.domain.PinRecord
 import gg.grounds.domain.PinnedMap
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.sql.Connection
 import java.util.UUID
 import javax.sql.DataSource
 
@@ -18,6 +19,18 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
+                // Serialise on the map row before reading the previous pin. `FOR UPDATE` on
+                // map_pin locks nothing when no pin exists yet — Postgres has no gap locks —
+                // so without this the first two concurrent moves both read "no previous" and
+                // both write a history row claiming to be the initial pin. Same lock object
+                // and same order as version allocation, so no deadlock cycle is introduced.
+                c.prepareStatement("SELECT id FROM map WHERE id = ? FOR UPDATE").use { ps ->
+                    ps.setObject(1, mapId)
+                    ps.executeQuery().use { rs ->
+                        if (!rs.next()) throw IllegalArgumentException("no such map: $mapId")
+                    }
+                }
+
                 // Only a published version may be pinned. The foreign key already stops a
                 // pin at a version that does not exist; this stops a pin at one whose bundle
                 // has not been assembled, which the key cannot see.
@@ -77,7 +90,10 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
                     }
 
                 c.commit()
-                requireNotNull(find(environment, mapId))
+                // Read on the connection already held. Borrowing a second one here would let
+                // a pool-acquisition failure turn an applied move into a 500 — with the
+                // database saying the move happened and the pin file still stale.
+                requireNotNull(readOn(c, environment, mapId))
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -87,28 +103,29 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
         }
 
     override fun find(environment: String, mapId: UUID): PinRecord? =
-        dataSource.connection.use { c ->
-            c.prepareStatement(
-                    """
+        dataSource.connection.use { c -> readOn(c, environment, mapId) }
+
+    private fun readOn(c: Connection, environment: String, mapId: UUID): PinRecord? =
+        c.prepareStatement(
+                """
                     SELECT environment, map, version, moved_by_sub, moved_at
                       FROM map_pin WHERE environment = ? AND map = ?
                     """
-                )
-                .use { ps ->
-                    ps.setString(1, environment)
-                    ps.setObject(2, mapId)
-                    ps.executeQuery().use { rs ->
-                        if (!rs.next()) return@use null
-                        PinRecord(
-                            environment = rs.getString("environment"),
-                            mapId = rs.getObject("map", UUID::class.java),
-                            version = rs.getInt("version"),
-                            movedBySub = rs.getString("moved_by_sub"),
-                            movedAt = rs.getTimestamp("moved_at").toInstant(),
-                        )
-                    }
+            )
+            .use { ps ->
+                ps.setString(1, environment)
+                ps.setObject(2, mapId)
+                ps.executeQuery().use { rs ->
+                    if (!rs.next()) return@use null
+                    PinRecord(
+                        environment = rs.getString("environment"),
+                        mapId = rs.getObject("map", UUID::class.java),
+                        version = rs.getInt("version"),
+                        movedBySub = rs.getString("moved_by_sub"),
+                        movedAt = rs.getTimestamp("moved_at").toInstant(),
+                    )
                 }
-        }
+            }
 
     override fun pinned(environment: String): List<PinnedMap> =
         dataSource.connection.use { c ->

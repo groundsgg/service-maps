@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS map (
     )
 );
 
-CREATE INDEX IF NOT EXISTS map_namespace_idx ON map (namespace, name);
+-- No index on (namespace, name): map_address_unique already creates exactly that btree,
+-- and a second copy would be written on every insert and read by nothing.
 CREATE INDEX IF NOT EXISTS map_forked_from_idx ON map (forked_from_map)
     WHERE forked_from_map IS NOT NULL;
 
@@ -48,7 +49,10 @@ CREATE INDEX IF NOT EXISTS map_forked_from_idx ON map (forked_from_map)
 -- the derive Job has assembled the bundle, which is why the state column and not
 -- the presence of a hash is what says whether a version is usable.
 CREATE TABLE IF NOT EXISTS map_version (
-    map              UUID         NOT NULL REFERENCES map (id) ON DELETE CASCADE,
+    -- RESTRICT, not CASCADE: this file opens by saying a version is never deleted, and a
+    -- cascade would make `DELETE FROM map` a way to delete history without ever naming it.
+    -- A map with versions cannot be dropped; retiring one is a state, not a DELETE.
+    map              UUID         NOT NULL REFERENCES map (id) ON DELETE RESTRICT,
     version          INTEGER      NOT NULL,
     state            TEXT         NOT NULL,
     bundle_sha256    TEXT,
@@ -67,7 +71,12 @@ CREATE TABLE IF NOT EXISTS map_version (
     note             TEXT,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (map, version),
-    CONSTRAINT map_version_positive CHECK (version > 0)
+    CONSTRAINT map_version_positive CHECK (version > 0),
+    -- Provenance has to point at something. NULL is allowed (a first version descends from
+    -- nothing); a number that names no version is not.
+    CONSTRAINT map_version_parent_exists
+        FOREIGN KEY (map, parent_version) REFERENCES map_version (map, version),
+    CONSTRAINT map_version_parent_is_older CHECK (parent_version IS NULL OR parent_version < version)
 );
 
 CREATE INDEX IF NOT EXISTS map_version_bundle_idx ON map_version (bundle_sha256)

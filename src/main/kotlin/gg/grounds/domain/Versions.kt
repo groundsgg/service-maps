@@ -51,6 +51,10 @@ data class BundleFacts(
 class VersionNotFoundException(mapId: UUID, version: Int) :
     RuntimeException("no version $version of map $mapId")
 
+/** One digest, one byte string, one size. A second size for it is a lie about the object. */
+class BlobSizeMismatchException(digest: String, recorded: Long, offered: Long) :
+    RuntimeException("blob $digest is $recorded bytes, not $offered")
+
 class VersionNotPublishableException(val state: VersionState) :
     RuntimeException("a version in state $state cannot be published")
 
@@ -71,17 +75,7 @@ interface MapVersionRepository {
     ): MapVersionRecord
 
     /** Marks a version published and records what the bundle turned out to be. */
-    fun publish(mapId: UUID, version: Int, facts: BundleFacts): MapVersionRecord
-
-    /**
-     * Copies a published version onto a fresh map as its version 1, keeping the same bundle hash —
-     * which is what makes a fork cost zero bytes.
-     */
-    fun copyAsFirstVersion(
-        source: MapVersionRecord,
-        targetMapId: UUID,
-        bySub: String,
-    ): MapVersionRecord
+    fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord
 
     fun find(mapId: UUID, version: Int): MapVersionRecord?
 

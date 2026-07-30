@@ -31,43 +31,63 @@ constructor(
 
     private val log = Logger.getLogger(PinFilePublisher::class.java)
 
-    fun publish(environment: String): Boolean {
-        val body =
-            json.writeValueAsString(
-                PinFile(
-                    environment = environment,
-                    maps =
-                        pins.pinned(environment).associate { pin ->
-                            pin.address.toString() to
-                                PinnedEntry(
-                                    version = pin.version,
-                                    bundleSha256 = pin.bundleSha256,
-                                    bundleKey = BlobStore.bundleKey(pin.bundleSha256),
-                                    sizeBytes = pin.sizeBytes,
-                                    estLoadedMib = pin.estLoadedMib,
+    fun publish(environment: String): Boolean =
+        // Serialised per environment, because a full rebuild is idempotent but not
+        // commutative in publication order: two moves can snapshot in one order and have
+        // their PUTs land in the other, leaving the CDN permanently behind the database
+        // with both callers told the write succeeded. Holding the lock across snapshot and
+        // upload makes the last writer the last snapshot.
+        //
+        // This holds within one process. A second replica needs a conditional write or a
+        // reconciler; until then this service runs single-replica, which is recorded in the
+        // README rather than assumed.
+        locks
+            .computeIfAbsent(environment) { Any() }
+            .let { lock ->
+                synchronized(lock) {
+                    try {
+                        // Snapshot and serialisation are inside the try as well: a failure in
+                        // either is still a failed projection, and letting it escape would turn
+                        // an applied pin move into a 500.
+                        val body =
+                            json.writeValueAsString(
+                                PinFile(
+                                    environment = environment,
+                                    maps =
+                                        pins.pinned(environment).associate { pin ->
+                                            pin.address.toString() to
+                                                PinnedEntry(
+                                                    version = pin.version,
+                                                    bundleSha256 = pin.bundleSha256,
+                                                    bundleKey =
+                                                        BlobStore.bundleKey(pin.bundleSha256),
+                                                    sizeBytes = pin.sizeBytes,
+                                                    estLoadedMib = pin.estLoadedMib,
+                                                )
+                                        },
                                 )
-                        },
-                )
-            )
-        return try {
-            blobs.putPublic(
-                key = BlobStore.pinFileKey(environment),
-                body = body,
-                contentType = "application/json",
-                // The one mutable object in the design, so it is the one object that must
-                // not be cached for a year. Everything it points at is immutable.
-                cacheControl = "public, max-age=30",
-            )
-            true
-        } catch (e: Exception) {
-            log.errorf(
-                e,
-                "could not publish the pin file for %s; the move itself stands",
-                environment,
-            )
-            false
-        }
-    }
+                            )
+                        blobs.putPublic(
+                            key = BlobStore.pinFileKey(environment),
+                            body = body,
+                            contentType = "application/json",
+                            // The one mutable object in the design, so it is the one object that
+                            // must not be cached for a year. Everything it points at is immutable.
+                            cacheControl = "public, max-age=30",
+                        )
+                        true
+                    } catch (e: Exception) {
+                        log.errorf(
+                            e,
+                            "could not publish the pin file for %s; the move itself stands",
+                            environment,
+                        )
+                        false
+                    }
+                }
+            }
+
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
 }
 
 data class PinFile(val environment: String, val maps: Map<String, PinnedEntry>)

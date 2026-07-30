@@ -1,5 +1,6 @@
 package gg.grounds.persistence
 
+import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
@@ -50,7 +51,12 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             }
         }
 
-    override fun publish(mapId: UUID, version: Int, facts: BundleFacts): MapVersionRecord =
+    override fun publish(
+        mapId: UUID,
+        version: Int,
+        facts: BundleFacts,
+        bySub: String,
+    ): MapVersionRecord =
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
@@ -70,7 +76,8 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         """
                         UPDATE map_version
                            SET state = ?, bundle_sha256 = ?, manifest_sha256 = ?,
-                               size_bytes = ?, present_chunks = ?, est_loaded_mib = ?
+                               size_bytes = ?, present_chunks = ?, est_loaded_mib = ?,
+                               published_by_sub = ?
                          WHERE map = ? AND version = ?
                         """
                     )
@@ -81,12 +88,31 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         ps.setLong(4, facts.sizeBytes)
                         ps.setObject(5, facts.presentChunks)
                         ps.setObject(6, facts.estLoadedMib)
-                        ps.setObject(7, mapId)
-                        ps.setInt(8, version)
+                        // Who published it, which is not who created the draft. Reporting the
+                        // committer as the publisher attributes a go-live to the wrong person.
+                        ps.setString(7, bySub)
+                        ps.setObject(8, mapId)
+                        ps.setInt(9, version)
                         ps.executeUpdate()
                     }
                 // Recording the blob is not bookkeeping for its own sake: orphan collection
                 // needs to know a digest was seen before it can decide nothing references it.
+                // A digest names exactly one byte string, so it has exactly one size. Two
+                // different sizes for one digest means somebody supplied a number that is not
+                // true of the object; keep the first and refuse the contradiction rather than
+                // silently overwrite it.
+                c.prepareStatement("SELECT size_bytes FROM map_blob WHERE sha256 = ?").use { ps ->
+                    ps.setString(1, facts.bundleSha256)
+                    ps.executeQuery().use { rs ->
+                        if (rs.next() && rs.getLong(1) != facts.sizeBytes) {
+                            throw BlobSizeMismatchException(
+                                facts.bundleSha256,
+                                rs.getLong(1),
+                                facts.sizeBytes,
+                            )
+                        }
+                    }
+                }
                 c.prepareStatement(
                         """
                         INSERT INTO map_blob (sha256, size_bytes, public)
@@ -101,47 +127,6 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     }
                 c.commit()
                 requireNotNull(read(c, mapId, version))
-            } catch (e: Exception) {
-                c.rollback()
-                throw e
-            } finally {
-                c.autoCommit = true
-            }
-        }
-
-    override fun copyAsFirstVersion(
-        source: MapVersionRecord,
-        targetMapId: UUID,
-        bySub: String,
-    ): MapVersionRecord =
-        dataSource.connection.use { c ->
-            c.autoCommit = false
-            try {
-                c.prepareStatement(
-                        """
-                        INSERT INTO map_version (map, version, state, bundle_sha256, source_sha256,
-                                                 manifest_sha256, size_bytes, present_chunks,
-                                                 est_loaded_mib, published_by_sub, note)
-                        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """
-                    )
-                    .use { ps ->
-                        ps.setObject(1, targetMapId)
-                        // The bytes are already assembled and already public, so the fork's
-                        // first version is usable — and pinnable — the moment it exists.
-                        ps.setString(2, source.state.name)
-                        ps.setString(3, source.bundleSha256)
-                        ps.setString(4, source.sourceSha256)
-                        ps.setString(5, source.manifestSha256)
-                        ps.setObject(6, source.sizeBytes)
-                        ps.setObject(7, source.presentChunks)
-                        ps.setObject(8, source.estLoadedMib)
-                        ps.setString(9, bySub)
-                        ps.setString(10, "forked from ${source.mapId}@${source.version}")
-                        ps.executeUpdate()
-                    }
-                c.commit()
-                requireNotNull(read(c, targetMapId, 1))
             } catch (e: Exception) {
                 c.rollback()
                 throw e

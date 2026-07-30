@@ -2,6 +2,8 @@ package gg.grounds.api
 
 import gg.grounds.blob.BlobStore
 import gg.grounds.domain.BundleFacts
+import gg.grounds.domain.Digest
+import gg.grounds.domain.EnvironmentName
 import gg.grounds.domain.ForkOrigin
 import gg.grounds.domain.MapAddress
 import gg.grounds.domain.MapAlreadyExistsException
@@ -15,6 +17,7 @@ import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.NotPublishedException
 import gg.grounds.domain.VersionNotFoundException
 import gg.grounds.domain.VersionNotPublishableException
+import gg.grounds.domain.VersionState
 import gg.grounds.pins.PinFilePublisher
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
@@ -46,7 +49,8 @@ constructor(
 ) {
 
     @POST
-    fun create(request: CreateMapRequest): Response {
+    fun create(request: CreateMapRequest?): Response {
+        if (request == null) return problem(Response.Status.BAD_REQUEST, "a body is required")
         val address =
             MapAddress.parse(request.address)
                 ?: return problem(
@@ -122,9 +126,11 @@ constructor(
     @Path("/{address:.+}/versions")
     fun commitVersion(
         @PathParam("address") address: String,
-        request: CommitVersionRequest,
+        request: CommitVersionRequest?,
     ): Response =
         withMap(address) { map ->
+            if (request == null)
+                return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
             // The upload id becomes part of an object key, so it is validated as the UUID it
             // is supposed to be rather than interpolated. `../../bundle/sha256/ab/cd` would
             // otherwise escape the uploads prefix and be handed to the derive Job as a
@@ -141,6 +147,17 @@ constructor(
                                 "uploadId is not an upload id: $uploadId",
                             )
                 }
+            // The schema now refuses provenance that names no version; catch it here so it
+            // is a 400 about the field rather than a constraint violation surfacing as a 500.
+            if (
+                request.parentVersion != null &&
+                    versions.find(map.id, request.parentVersion) == null
+            ) {
+                return@withMap problem(
+                    Response.Status.BAD_REQUEST,
+                    "no version ${request.parentVersion} to descend from",
+                )
+            }
             val committed =
                 versions.commit(
                     mapId = map.id,
@@ -170,9 +187,20 @@ constructor(
     fun publishVersion(
         @PathParam("address") address: String,
         @PathParam("version") version: Int,
-        request: PublishVersionRequest,
+        request: PublishVersionRequest?,
     ): Response =
         withMap(address) { map ->
+            if (request == null)
+                return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
+            // The digest becomes a path in the pin file that game servers append to the CDN
+            // base, and a published version is immutable — so an unchecked or empty value
+            // here is permanent and points every server somewhere nobody chose.
+            if (!Digest.isValid(request.bundleSha256)) {
+                return@withMap problem(
+                    Response.Status.BAD_REQUEST,
+                    "bundleSha256 must be 64 lowercase hex characters",
+                )
+            }
             try {
                 val published =
                     versions.publish(
@@ -185,6 +213,7 @@ constructor(
                             presentChunks = request.presentChunks,
                             estLoadedMib = request.estLoadedMib,
                         ),
+                        identity.principal.name,
                     )
                 Response.ok(published.toDto()).build()
             } catch (e: VersionNotFoundException) {
@@ -202,25 +231,38 @@ constructor(
      */
     @POST
     @Path("/{address:.+}/forks")
-    fun fork(@PathParam("address") address: String, request: ForkRequest): Response =
+    fun fork(@PathParam("address") address: String, request: ForkRequest?): Response =
         withMap(address) { source ->
+            if (request == null)
+                return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
             val target =
                 MapAddress.parse(request.target)
                     ?: return@withMap problem(
                         Response.Status.BAD_REQUEST,
                         "not a valid map address: ${request.target}",
                     )
+            // A named version that does not exist is a 404, not a quiet fall back to the
+            // latest: forking "version 7" and silently getting version 9 is help nobody asked
+            // for.
             val from =
-                request.fromVersion?.let { versions.find(source.id, it) }
-                    ?: versions.latestPublished(source.id)
-                    ?: return@withMap problem(
-                        Response.Status.CONFLICT,
-                        "$address has no published version to fork",
-                    )
-            if (from.bundleSha256 == null) {
+                when (val wanted = request.fromVersion) {
+                    null ->
+                        versions.latestPublished(source.id)
+                            ?: return@withMap problem(
+                                Response.Status.CONFLICT,
+                                "$address has no published version to fork",
+                            )
+                    else ->
+                        versions.find(source.id, wanted)
+                            ?: return@withMap problem(
+                                Response.Status.NOT_FOUND,
+                                "no version $wanted of $address",
+                            )
+                }
+            if (from.state != VersionState.PUBLISHED || from.bundleSha256 == null) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
-                    "version ${from.version} has no bundle yet",
+                    "version ${from.version} is ${from.state} and has no usable bundle",
                 )
             }
             try {
@@ -230,13 +272,23 @@ constructor(
                         displayName = request.displayName ?: target.name,
                         kind = source.kind,
                         stateful = source.stateful,
+                        // Trust is inherited from the SOURCE and can only get stricter.
+                        // Deriving it from the target namespace would let anyone launder an
+                        // untrusted creator world into a first-party namespace by forking it
+                        // there — the exact boundary this design exists to hold.
                         trust =
-                            if (target.namespace.startsWith("u/")) MapTrust.UNTRUSTED
+                            if (
+                                source.trust == MapTrust.UNTRUSTED ||
+                                    target.namespace.startsWith("u/")
+                            )
+                                MapTrust.UNTRUSTED
                             else MapTrust.FIRST_PARTY,
                         ownerSub = identity.principal.name,
                         forkedFrom = ForkOrigin(source.id, from.version),
+                        // One fact, one transaction: a map created without its first version
+                        // would burn the address on something that can never be forked again.
+                        firstVersion = from,
                     )
-                versions.copyAsFirstVersion(from, created.id, identity.principal.name)
                 Response.created(URI.create("/v1/maps/${created.address}"))
                     .entity(created.toDto())
                     .build()
@@ -257,9 +309,19 @@ constructor(
     fun movePin(
         @PathParam("address") address: String,
         @PathParam("environment") environment: String,
-        request: MovePinRequest,
+        request: MovePinRequest?,
     ): Response =
         withMap(address) { map ->
+            if (request == null)
+                return@withMap problem(Response.Status.BAD_REQUEST, "a body is required")
+            // The environment names an object in the public bucket; it is an allowlist, not
+            // a free string a caller can steer with separators.
+            if (!EnvironmentName.isValid(environment)) {
+                return@withMap problem(
+                    Response.Status.BAD_REQUEST,
+                    "not an environment name: $environment",
+                )
+            }
             try {
                 val moved = pins.move(environment, map.id, request.version, identity.principal.name)
                 val published = pinFiles.publish(environment)
