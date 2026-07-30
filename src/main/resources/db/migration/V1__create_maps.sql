@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS map_version (
     state            TEXT         NOT NULL,
     bundle_sha256    TEXT,
     source_sha256    TEXT,
+    -- Where the uploaded source still sits in the private bucket, so the derive Job can
+    -- find it. Null on a fork, which has no upload of its own.
+    source_key       TEXT,
     manifest_sha256  TEXT,
     parent_version   INTEGER,
     size_bytes       BIGINT,

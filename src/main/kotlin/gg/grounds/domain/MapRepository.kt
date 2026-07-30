@@ -10,6 +10,7 @@ interface MapRepository {
         stateful: Boolean,
         trust: MapTrust,
         ownerSub: String,
+        forkedFrom: ForkOrigin? = null,
     ): MapRecord
 
     fun find(address: MapAddress): MapRecord?

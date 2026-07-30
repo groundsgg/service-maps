@@ -28,6 +28,11 @@ data class MapAddress(val namespace: String, val name: String) {
     init {
         require(NAMESPACE.matches(namespace)) { "invalid namespace: $namespace" }
         require(NAME.matches(name)) { "invalid map name: $name" }
+        // The API addresses a map with a catch-all path parameter and hangs its
+        // sub-resources off literal suffixes, so a map actually named `versions` would be
+        // shadowed by `/{address}/versions` and become unreachable. Refusing the name is
+        // cheaper than discovering that from a support ticket.
+        require(name !in RESERVED) { "reserved map name: $name" }
     }
 
     override fun toString(): String = "$namespace/$name"
@@ -36,6 +41,9 @@ data class MapAddress(val namespace: String, val name: String) {
         private val SEGMENT = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
         private val NAMESPACE = Regex("^(?:$SEGMENT|u/$SEGMENT)$")
         private val NAME = Regex("^$SEGMENT$")
+
+        /** Names that would collide with a sub-resource of a map. */
+        val RESERVED = setOf("uploads", "versions", "pins", "forks")
 
         /**
          * Splits an address at its **last** slash, so the creator namespace `u/hendrik` survives.

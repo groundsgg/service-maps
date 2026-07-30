@@ -32,6 +32,12 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-opentelemetry")
+    // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
+    // UrlConnectionHttpClient rather than the Netty async client: every call here is a
+    // presign or a small metadata write, so an event loop buys nothing.
+    implementation(platform("software.amazon.awssdk:bom:2.31.6"))
+    implementation("software.amazon.awssdk:s3")
+    implementation("software.amazon.awssdk:url-connection-client")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-test-security")

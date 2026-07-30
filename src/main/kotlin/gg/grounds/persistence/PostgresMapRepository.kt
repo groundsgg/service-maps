@@ -24,6 +24,7 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
         stateful: Boolean,
         trust: MapTrust,
         ownerSub: String,
+        forkedFrom: ForkOrigin?,
     ): MapRecord {
         val id = UUID.randomUUID()
         dataSource.connection.use { c ->
@@ -32,8 +33,9 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
             // the unique constraint decides. An empty result here IS the conflict.
             c.prepareStatement(
                     """
-                    INSERT INTO map (id, namespace, name, display_name, kind, stateful, trust, owner_sub)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO map (id, namespace, name, display_name, kind, stateful, trust,
+                                     owner_sub, forked_from_map, forked_from_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT ON CONSTRAINT map_address_unique DO NOTHING
                     """
                 )
@@ -46,6 +48,8 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
                     ps.setBoolean(6, stateful)
                     ps.setString(7, trust.name)
                     ps.setString(8, ownerSub)
+                    ps.setObject(9, forkedFrom?.mapId)
+                    ps.setObject(10, forkedFrom?.version)
                     if (ps.executeUpdate() == 0) throw MapAlreadyExistsException(address)
                 }
         }
