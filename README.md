@@ -61,8 +61,10 @@ supplies the identity; there is no Keycloak in a test run.
 
 ## Status
 
-Scaffold. Implemented: the schema, and create/list/read for maps. Not yet implemented:
-versions, uploads, forks, pins and the pin-file publish, the derive Job and its watch.
+Phase 1. Implemented: the schema; create, list and read for maps; presigned uploads;
+version commit and publish; forks; pin moves and the published `pins/<env>.json`. Not yet
+implemented: the derive Job and its watch, moderation and review, leases and stateful
+snapshots, quotas.
 
 > **The derive-Job watch must ship with a poll reconciler in the same commit.**
 > `grounds-forge`'s build informer drops terminal Job events today, and a developer
