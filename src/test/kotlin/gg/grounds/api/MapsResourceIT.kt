@@ -6,6 +6,7 @@ import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
+import org.hamcrest.Matchers.endsWith
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
 import org.junit.jupiter.api.Test
@@ -26,7 +27,9 @@ class MapsResourceIT {
             .post("/v1/maps")
             .then()
             .statusCode(201)
-            .header("Location", equalTo("/v1/maps/bedwars/4x4-baumhaus"))
+            // JAX-RS resolves the relative URI against the request base, so Location is
+            // absolute — which is what HTTP asks for. Assert the path, not the host.
+            .header("Location", endsWith("/v1/maps/bedwars/4x4-baumhaus"))
             .body("address", equalTo("bedwars/4x4-baumhaus"))
             .body("kind", equalTo("ARENA"))
             .body("trust", equalTo("FIRST_PARTY"))
