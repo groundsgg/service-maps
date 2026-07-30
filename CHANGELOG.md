@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/groundsgg/service-maps/compare/v1.0.0...v1.1.0) (2026-07-30)
+
+
+### Features
+
+* serve creator content from its own bucket and host ([#10](https://github.com/groundsgg/service-maps/issues/10)) ([64cae63](https://github.com/groundsgg/service-maps/commit/64cae63ecd77f1199a4c1cfaec5f3cbe6156e26f))
+
+
+### Bug Fixes
+
+* first-party content is served from maps.grounds.gg ([#12](https://github.com/groundsgg/service-maps/issues/12)) ([9f71c69](https://github.com/groundsgg/service-maps/commit/9f71c69cea36e6713216de7d4df75e50110891ad))
+
 ## 1.0.0 (2026-07-30)
 
 
