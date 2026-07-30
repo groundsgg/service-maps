@@ -66,6 +66,11 @@ supplies the identity; there is no Keycloak in a test run.
 
 <!-- Both of these are why there is no chart and no Argo application in this repository. -->
 
+- **A Keycloak client `service-maps` has to exist**, and its tokens must carry
+  `aud: service-maps`. Without the audience check this service would accept any token the
+  realm signed, including one minted for another client entirely. Adding the client touches
+  the realm import, which is known to rotate other clients' secrets on re-import — so it is
+  a deliberate step, not a side effect of a deploy.
 - **Authorization is by Keycloak group, and the groups have to exist.** The token's `groups`
   claim decides staff actions and ownership decides creator ones; which group grants which
   action is configuration (`MAPS_AUTHOR_GROUPS`, `MAPS_PUBLISH_GROUPS`, `MAPS_GOLIVE_GROUPS`,

@@ -59,6 +59,8 @@ spec:
               value: {{ .Values.config.oidc.serverUrl | quote }}
             - name: GROUNDS_OIDC_CLIENT_ID
               value: {{ .Values.config.oidc.clientId | quote }}
+            - name: GROUNDS_OIDC_AUDIENCE
+              value: {{ .Values.config.oidc.audience | quote }}
             - name: MAPS_S3_ENDPOINT
               value: {{ required "config.r2.endpoint is required: an EU-jurisdiction bucket answers on its own endpoint host" .Values.config.r2.endpoint | quote }}
             - name: MAPS_S3_REGION

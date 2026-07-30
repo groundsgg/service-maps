@@ -33,6 +33,9 @@ config:
   oidc:
     serverUrl: https://account.grounds.gg/realms/grounds
     clientId: service-maps
+    # Tokens must carry this audience. The Keycloak client has to exist and put it in the
+    # `aud` claim; otherwise every request is a 401 — which is the safe direction to fail.
+    audience: service-maps
   r2:
     # An EU-jurisdiction bucket answers on a different endpoint host than the default one.
     # Getting this wrong is a 404 on a bucket that plainly exists.
