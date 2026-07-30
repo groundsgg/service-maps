@@ -90,7 +90,7 @@ class VersionLifecycleIT {
         // 5. Publishing twice is refused: a published version is immutable.
         given()
             .contentType(ContentType.JSON)
-            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":1}""")
+            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":20971520}""")
             .`when`()
             .post("/v1/maps/bedwars/crater/versions/1/publish")
             .then()
@@ -135,7 +135,7 @@ class VersionLifecycleIT {
             .statusCode(201)
         given()
             .contentType(ContentType.JSON)
-            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":1234}""")
+            .body("""{"bundleSha256":"${digest(2)}","sizeBytes":1234}""")
             .post("/v1/maps/skywars/origin/versions/1/publish")
             .then()
             .statusCode(200)
@@ -161,7 +161,7 @@ class VersionLifecycleIT {
             .statusCode(200)
             .body("[0].version", equalTo(1))
             .body("[0].state", equalTo("PUBLISHED"))
-            .body("[0].bundleSha256", equalTo(BUNDLE))
+            .body("[0].bundleSha256", equalTo(digest(2)))
 
         assertEquals(before, listPublic().size, "a fork must not write objects")
 
@@ -244,7 +244,7 @@ class VersionLifecycleIT {
             .statusCode(201)
         given()
             .contentType(ContentType.JSON)
-            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":10}""")
+            .body("""{"bundleSha256":"${digest(3)}","sizeBytes":10}""")
             .post("/v1/maps/u/creator/hostile/versions/1/publish")
             .then()
             .statusCode(200)
@@ -270,7 +270,7 @@ class VersionLifecycleIT {
             .statusCode(201)
         given()
             .contentType(ContentType.JSON)
-            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":10}""")
+            .body("""{"bundleSha256":"${digest(3)}","sizeBytes":10}""")
             .post("/v1/maps/skywars/pickme/versions/1/publish")
             .then()
             .statusCode(200)
@@ -371,5 +371,12 @@ class VersionLifecycleIT {
 
     private companion object {
         const val BUNDLE = "c0ffee00000000000000000000000000000000000000000000000000000000ab"
+
+        /**
+         * A distinct digest per test, because a digest names exactly one byte string: reusing one
+         * across two different sizes is a contradiction the registry now refuses, and it is right
+         * to.
+         */
+        fun digest(seed: Int): String = "%064x".format(seed.toLong() * 31 + 7)
     }
 }

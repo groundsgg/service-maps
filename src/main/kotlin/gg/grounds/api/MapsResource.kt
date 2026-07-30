@@ -1,6 +1,7 @@
 package gg.grounds.api
 
 import gg.grounds.blob.BlobStore
+import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
 import gg.grounds.domain.Digest
 import gg.grounds.domain.EnvironmentName
@@ -220,6 +221,11 @@ constructor(
                 problem(Response.Status.NOT_FOUND, e.message ?: "no such version")
             } catch (e: VersionNotPublishableException) {
                 problem(Response.Status.CONFLICT, e.message ?: "not publishable")
+            } catch (e: BlobSizeMismatchException) {
+                // The caller supplied a size that is not true of that digest. One of the two
+                // is wrong and the registry cannot tell which, so it refuses rather than
+                // overwrite a recorded fact.
+                problem(Response.Status.CONFLICT, e.message ?: "blob size mismatch")
             }
         }
 
