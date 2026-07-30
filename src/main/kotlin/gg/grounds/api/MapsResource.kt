@@ -125,11 +125,27 @@ constructor(
         request: CommitVersionRequest,
     ): Response =
         withMap(address) { map ->
+            // The upload id becomes part of an object key, so it is validated as the UUID it
+            // is supposed to be rather than interpolated. `../../bundle/sha256/ab/cd` would
+            // otherwise escape the uploads prefix and be handed to the derive Job as a
+            // source to read.
+            val sourceKey =
+                when (val uploadId = request.uploadId) {
+                    null -> null
+                    else ->
+                        runCatching { UUID.fromString(uploadId) }
+                            .getOrNull()
+                            ?.let { BlobStore.uploadKey(it.toString()) }
+                            ?: return@withMap problem(
+                                Response.Status.BAD_REQUEST,
+                                "uploadId is not an upload id: $uploadId",
+                            )
+                }
             val committed =
                 versions.commit(
                     mapId = map.id,
                     sourceSha256 = request.sourceSha256,
-                    sourceKey = request.uploadId?.let(BlobStore::uploadKey),
+                    sourceKey = sourceKey,
                     parentVersion = request.parentVersion,
                     note = request.note,
                     bySub = identity.principal.name,

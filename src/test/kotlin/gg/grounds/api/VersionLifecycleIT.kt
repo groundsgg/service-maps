@@ -207,6 +207,22 @@ class VersionLifecycleIT {
         assertEquals(1, entry["version"].asInt(), "the rollback is what the file must show")
     }
 
+    /**
+     * The upload id becomes part of an object key, so anything that is not an upload id is refused
+     * rather than interpolated into one.
+     */
+    @Test
+    fun `an upload id that is a path is refused`() {
+        createMap("bedwars/traversal")
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"uploadId":"../../bundle/sha256/ab/cd"}""")
+            .`when`()
+            .post("/v1/maps/bedwars/traversal/versions")
+            .then()
+            .statusCode(400)
+    }
+
     /** A map named after a sub-resource would be unreachable, so the name is refused. */
     @Test
     fun `reserved names are refused`() {
