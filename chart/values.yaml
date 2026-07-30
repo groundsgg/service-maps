@@ -43,6 +43,12 @@ config:
     region: auto
     privateBucket: grounds-maps
     publicBucket: grounds-maps-public
+    # Creator content lives in its own bucket on its own host, so blocking or purging it
+    # never touches the lobby every player loads.
+    ugcBucket: grounds-maps-ugc
+  cdn:
+    contentBase: https://content.grounds.gg
+    ugcBase: https://ugc-content.grounds.gg
   # Which Keycloak group grants which action. Ownership of `u/<sub>` needs no group.
   # Going live is deliberately narrower than publishing.
   authz:

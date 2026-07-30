@@ -34,6 +34,7 @@ class MinioResource : QuarkusTestResourceLifecycleManager {
         client(endpoint!!).use { s3 ->
             s3.createBucket(CreateBucketRequest.builder().bucket(PRIVATE).build())
             s3.createBucket(CreateBucketRequest.builder().bucket(PUBLIC).build())
+            s3.createBucket(CreateBucketRequest.builder().bucket(UGC).build())
         }
 
         return mapOf(
@@ -43,6 +44,9 @@ class MinioResource : QuarkusTestResourceLifecycleManager {
             "grounds.maps.r2.secret-key" to SECRET,
             "grounds.maps.r2.private-bucket" to PRIVATE,
             "grounds.maps.r2.public-bucket" to PUBLIC,
+            "grounds.maps.r2.ugc-bucket" to UGC,
+            "grounds.maps.cdn.content-base" to "https://content.test",
+            "grounds.maps.cdn.ugc-base" to "https://ugc-content.test",
         )
     }
 
@@ -56,6 +60,7 @@ class MinioResource : QuarkusTestResourceLifecycleManager {
         const val SECRET = "testsecret"
         const val PRIVATE = "maps-private"
         const val PUBLIC = "maps-public"
+        const val UGC = "maps-ugc"
 
         /** Set while the container runs, so a test can look into the buckets itself. */
         var endpoint: String? = null

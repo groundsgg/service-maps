@@ -18,6 +18,8 @@ data class PinnedMap(
     val bundleSha256: String,
     val sizeBytes: Long?,
     val estLoadedMib: Int?,
+    /** Decides which host serves it, so the pin file can name an absolute URL. */
+    val trust: MapTrust,
 )
 
 class NotPublishedException(val version: Int) :
