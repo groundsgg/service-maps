@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service-maps.name" . }}
+  labels: {{- include "service-maps.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    # Recreate, not RollingUpdate: a rollout would otherwise briefly run two pods, and two
+    # pods can publish the pin file out of order. See the comment on `replicas` in values.
+    type: Recreate
+  selector:
+    matchLabels: {{- include "service-maps.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "service-maps.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "service-maps.name" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: service-maps
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: QUARKUS_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            # CNPG writes a full URI into its own key; Quarkus wants a jdbc: one with the
+            # schema pinned, so it is assembled here from the parts rather than reused.
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: host }
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: dbname }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: username }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.database.existingSecret }}, key: password }
+            - name: POSTGRES_URL
+              value: "jdbc:postgresql://$(DB_HOST):5432/$(DB_NAME)?currentSchema={{ .Values.database.schema }}"
+            - name: GROUNDS_OIDC_SERVER_URL
+              value: {{ .Values.config.oidc.serverUrl | quote }}
+            - name: GROUNDS_OIDC_CLIENT_ID
+              value: {{ .Values.config.oidc.clientId | quote }}
+            - name: GROUNDS_OIDC_AUDIENCE
+              value: {{ .Values.config.oidc.audience | quote }}
+            - name: MAPS_S3_ENDPOINT
+              value: {{ required "config.r2.endpoint is required: an EU-jurisdiction bucket answers on its own endpoint host" .Values.config.r2.endpoint | quote }}
+            - name: MAPS_S3_REGION
+              value: {{ .Values.config.r2.region | quote }}
+            - name: MAPS_R2_PRIVATE_BUCKET
+              value: {{ .Values.config.r2.privateBucket | quote }}
+            - name: MAPS_R2_PUBLIC_BUCKET
+              value: {{ .Values.config.r2.publicBucket | quote }}
+            - name: MAPS_R2_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.existingSecret }}, key: MAPS_R2_ACCESS_KEY_ID }
+            - name: MAPS_R2_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.existingSecret }}, key: MAPS_R2_SECRET_ACCESS_KEY }
+            - name: MAPS_AUTHOR_GROUPS
+              value: {{ .Values.config.authz.authorGroups | quote }}
+            - name: MAPS_PUBLISH_GROUPS
+              value: {{ .Values.config.authz.publishGroups | quote }}
+            - name: MAPS_GOLIVE_GROUPS
+              value: {{ .Values.config.authz.goliveGroups | quote }}
+            - name: MAPS_REVIEW_GROUPS
+              value: {{ .Values.config.authz.reviewGroups | quote }}
+            - name: OTEL_SDK_DISABLED
+              value: {{ .Values.config.otel.disabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.config.otel.endpoint | quote }}
+          startupProbe:
+            # Flyway runs at boot, so the first readiness can be slower than the steady state.
+            httpGet: { path: /q/health/started, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            # Fails when the database is unreachable, which is the case a TCP check calls healthy.
+            httpGet: { path: /q/health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /q/health/live, port: http }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only; Quarkus still wants somewhere to write.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
