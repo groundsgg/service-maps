@@ -1,0 +1,66 @@
+# One replica, and this is a correctness setting rather than a capacity one.
+#
+# A pin move rewrites pins/<env>.json in full, ordered by an in-process lock. A second
+# replica can snapshot in one order and have its upload land in the other, leaving the CDN
+# permanently behind the database — with both callers told the write succeeded. Raising this
+# needs a conditional write or a reconciler first.
+replicas: 1
+
+image:
+  repository: ghcr.io/groundsgg/service-maps
+  tag: "" # set by the chart consumer
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  port: 9000
+
+# Secret holding the R2 credentials and anything else that must not be in values.
+# Provisioned outside this chart (InfisicalSecret), because a chart that mints secrets
+# puts them in the release history.
+existingSecret: service-maps-secrets
+
+# Secret CNPG generates for the application user.
+database:
+  existingSecret: service-maps-db-app
+  # Appended to the URI from the secret. The schema has to be explicit or the queries look
+  # in `public` and find nothing.
+  schema: maps
+
+config:
+  logLevel: info
+  oidc:
+    serverUrl: https://account.grounds.gg/realms/grounds
+    clientId: service-maps
+  r2:
+    # An EU-jurisdiction bucket answers on a different endpoint host than the default one.
+    # Getting this wrong is a 404 on a bucket that plainly exists.
+    endpoint: ""
+    region: auto
+    privateBucket: grounds-maps
+    publicBucket: grounds-maps-public
+  # Which Keycloak group grants which action. Ownership of `u/<sub>` needs no group.
+  # Going live is deliberately narrower than publishing.
+  authz:
+    authorGroups: grounds-staff,map-authors
+    publishGroups: grounds-staff,map-authors
+    goliveGroups: grounds-staff
+    reviewGroups: grounds-staff,map-reviewers
+  otel:
+    disabled: "false"
+    endpoint: http://alloy.observability.svc.cluster.local:4317
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# No ServiceMonitor: nothing here exports Prometheus metrics yet, and a template pointing at
+# an endpoint that 404s is worse than no template. Tracing goes to Alloy over OTLP.
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

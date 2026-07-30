@@ -32,6 +32,9 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-opentelemetry")
+    // Real probes rather than a TCP check: the readiness probe then also fails when the
+    // database is unreachable, which is the failure a tcpSocket probe reports as healthy.
+    implementation("io.quarkus:quarkus-smallrye-health")
     // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
     // UrlConnectionHttpClient rather than the Netty async client: every call here is a
     // presign or a small metadata write, so an event loop buys nothing.

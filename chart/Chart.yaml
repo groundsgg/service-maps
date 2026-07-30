@@ -1,0 +1,9 @@
+apiVersion: v2
+name: service-maps
+description: The map registry — which content hash is which version of which map, and which version players get
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+home: https://github.com/groundsgg/service-maps
+sources:
+  - https://github.com/groundsgg/service-maps

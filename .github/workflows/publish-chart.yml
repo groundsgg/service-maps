@@ -1,0 +1,51 @@
+name: Publish Chart
+
+# Tag-driven, like the image: release-please cuts `v<version>`, and both the image and the
+# chart are published from that same tag so a chart version always names an image that
+# exists. Chart.yaml's own version is overridden here rather than kept in sync by hand.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to publish, for example 0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: arc-linux
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push
+        run: |
+          helm package chart/ \
+            --version "${{ steps.meta.outputs.version }}" \
+            --app-version "${{ steps.meta.outputs.version }}"
+          helm push "service-maps-${{ steps.meta.outputs.version }}.tgz" \
+            oci://ghcr.io/groundsgg/charts

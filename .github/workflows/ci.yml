@@ -9,3 +9,26 @@ on:
 jobs:
   reusable:
     uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
+
+  chart:
+    runs-on: arc-linux
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4
+      - name: Lint and render
+        run: |
+          helm lint chart/
+          # `config.r2.endpoint` is deliberately required, so rendering without it must fail;
+          # a chart that renders with no object endpoint would deploy a service that cannot
+          # reach R2 and would only say so at the first upload.
+          if helm template t chart/ --set image.tag=test >/dev/null 2>&1; then
+            echo "chart rendered without config.r2.endpoint, which must be required" >&2
+            exit 1
+          fi
+          helm template t chart/ --set image.tag=test \
+            --set config.r2.endpoint=https://acct.eu.r2.cloudflarestorage.com > rendered.yaml
+      - name: Validate against the Kubernetes schema
+        run: |
+          curl -sfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+          ./kubeconform -strict -summary -kubernetes-version 1.35.0 rendered.yaml
