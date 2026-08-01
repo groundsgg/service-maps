@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/groundsgg/service-maps/compare/v1.1.0...v1.1.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **chart:** allow the platform to own the ServiceAccount ([#14](https://github.com/groundsgg/service-maps/issues/14)) ([a310070](https://github.com/groundsgg/service-maps/commit/a310070f52c1e1d70c35c7feea4184cb5faf7e56))
+
 ## [1.1.0](https://github.com/groundsgg/service-maps/compare/v1.0.0...v1.1.0) (2026-07-30)
 
 
