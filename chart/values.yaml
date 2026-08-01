@@ -13,6 +13,13 @@ image:
 
 imagePullSecrets: []
 
+serviceAccount:
+  # When false the chart renders no ServiceAccount and expects one of this name to
+  # exist. Needed where the platform owns the SA (core creates it with the pull
+  # secret attached): Helm refuses to adopt an object it did not label, so a
+  # same-named SA from both sides fails the whole install.
+  create: true
+
 service:
   port: 9000
 
