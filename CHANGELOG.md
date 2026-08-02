@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/groundsgg/service-maps/compare/v1.1.1...v1.1.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* publishing must promote the bundle into a public bucket ([#16](https://github.com/groundsgg/service-maps/issues/16)) ([ceae9e9](https://github.com/groundsgg/service-maps/commit/ceae9e90bfc4d384e17132a2cd4324bdff8e34ad))
+
 ## [1.1.1](https://github.com/groundsgg/service-maps/compare/v1.1.0...v1.1.1) (2026-08-01)
 
 
