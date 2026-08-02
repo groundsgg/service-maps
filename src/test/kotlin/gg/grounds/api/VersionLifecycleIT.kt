@@ -166,7 +166,9 @@ class VersionLifecycleIT {
             .statusCode(201)
         given()
             .contentType(ContentType.JSON)
-            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":${WORLD_BYTES.length}}""")
+            // Its own digest: a digest names exactly one byte string, so reusing another
+            // test's with a different size is the contradiction the registry refuses with 409.
+            .body("""{"bundleSha256":"$LIVENESS_BUNDLE","sizeBytes":${WORLD_BYTES.length}}""")
             .`when`()
             .post("/v1/maps/bedwars/liveness/versions/1/publish")
             .then()
@@ -448,6 +450,10 @@ class VersionLifecycleIT {
 
         /** What the presigned PUT stores, and therefore what publishing must promote. */
         const val WORLD_BYTES = "pretend this is a world zip"
+
+        /** A digest of its own, because these tests share one database. */
+        const val LIVENESS_BUNDLE =
+            "11feed00000000000000000000000000000000000000000000000000000000cd"
 
         /**
          * A distinct digest per test, because a digest names exactly one byte string: reusing one
