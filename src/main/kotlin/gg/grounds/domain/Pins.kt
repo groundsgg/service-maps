@@ -35,6 +35,12 @@ interface MapPinRepository {
 
     fun find(environment: String, mapId: UUID): PinRecord?
 
+    /**
+     * Every environment this map is live on. Without it the only way to see what players load is to
+     * fetch the published pin file, which is a projection rather than the record.
+     */
+    fun findAll(mapId: UUID): List<PinRecord>
+
     /** What the pin file for this environment should contain, straight from the database. */
     fun pinned(environment: String): List<PinnedMap>
 }

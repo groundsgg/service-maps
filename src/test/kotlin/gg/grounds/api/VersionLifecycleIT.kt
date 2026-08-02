@@ -136,6 +136,68 @@ class VersionLifecycleIT {
         )
     }
 
+    /**
+     * Without this an interface can only learn what is live by fetching the published pin file,
+     * which is a projection: it cannot tell "not live" from "live but not written yet".
+     */
+    @Test
+    fun `a map reports where it is live`() {
+        createMap("bedwars/liveness")
+        val upload =
+            given()
+                .`when`()
+                .post("/v1/maps/bedwars/liveness/uploads")
+                .then()
+                .statusCode(200)
+                .extract()
+        HttpClient.newHttpClient()
+            .send(
+                HttpRequest.newBuilder(URI.create(upload.path<String>("url")))
+                    .PUT(HttpRequest.BodyPublishers.ofString(WORLD_BYTES))
+                    .build(),
+                HttpResponse.BodyHandlers.discarding(),
+            )
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"uploadId":"${upload.path<String>("uploadId")}"}""")
+            .`when`()
+            .post("/v1/maps/bedwars/liveness/versions")
+            .then()
+            .statusCode(201)
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"bundleSha256":"$BUNDLE","sizeBytes":${WORLD_BYTES.length}}""")
+            .`when`()
+            .post("/v1/maps/bedwars/liveness/versions/1/publish")
+            .then()
+            .statusCode(200)
+
+        // Published is not live, and the read has to say so rather than imply it.
+        given()
+            .`when`()
+            .get("/v1/maps/bedwars/liveness/pins")
+            .then()
+            .statusCode(200)
+            .body("size()", equalTo(0))
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"version":1}""")
+            .`when`()
+            .post("/v1/maps/bedwars/liveness/pins/stage")
+            .then()
+            .statusCode(200)
+
+        given()
+            .`when`()
+            .get("/v1/maps/bedwars/liveness/pins")
+            .then()
+            .statusCode(200)
+            .body("size()", equalTo(1))
+            .body("[0].environment", equalTo("stage"))
+            .body("[0].version", equalTo(1))
+    }
+
     @Test
     fun `a fork copies no bytes and is immediately pinnable`() {
         createMap("skywars/origin")
