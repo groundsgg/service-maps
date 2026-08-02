@@ -191,6 +191,30 @@ constructor(
             Response.status(Response.Status.CREATED).entity(committed.toDto()).build()
         }
 
+    /**
+     * Where this map is live, per environment.
+     *
+     * Read from the database rather than from the published pin file: the file is a projection and
+     * can lag a move, and an interface that shows the projection cannot distinguish "not live" from
+     * "live but not written yet" — which is exactly the state a mover needs to see.
+     */
+    @GET
+    @Path("/{address:.+}/pins")
+    fun listPins(@PathParam("address") address: String): Response =
+        withMap(address) { map ->
+            Response.ok(
+                    pins.findAll(map.id).map {
+                        LivePinDto(
+                            environment = it.environment,
+                            version = it.version,
+                            movedBySub = it.movedBySub,
+                            movedAt = it.movedAt,
+                        )
+                    }
+                )
+                .build()
+        }
+
     @GET
     @Path("/{address:.+}/versions")
     fun listVersions(@PathParam("address") address: String): Response =
@@ -494,6 +518,18 @@ data class VersionDto(
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
+)
+
+/**
+ * A pin as it stands, without [PinDto.pinFilePublished]. That field answers "did the move I just
+ * made reach the CDN", which a later read cannot know — and a DTO that reports `true` because it
+ * has nothing better to say is worse than one that does not claim it.
+ */
+data class LivePinDto(
+    val environment: String,
+    val version: Int,
+    val movedBySub: String,
+    val movedAt: Instant,
 )
 
 data class PinDto(

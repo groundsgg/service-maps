@@ -106,6 +106,34 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
     override fun find(environment: String, mapId: UUID): PinRecord? =
         dataSource.connection.use { c -> readOn(c, environment, mapId) }
 
+    override fun findAll(mapId: UUID): List<PinRecord> =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    """
+                    SELECT environment, map, version, moved_by_sub, moved_at
+                      FROM map_pin WHERE map = ? ORDER BY environment
+                    """
+                )
+                .use { ps ->
+                    ps.setObject(1, mapId)
+                    ps.executeQuery().use { rs ->
+                        buildList {
+                            while (rs.next()) {
+                                add(
+                                    PinRecord(
+                                        environment = rs.getString("environment"),
+                                        mapId = rs.getObject("map", UUID::class.java),
+                                        version = rs.getInt("version"),
+                                        movedBySub = rs.getString("moved_by_sub"),
+                                        movedAt = rs.getTimestamp("moved_at").toInstant(),
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+        }
+
     private fun readOn(c: Connection, environment: String, mapId: UUID): PinRecord? =
         c.prepareStatement(
                 """
