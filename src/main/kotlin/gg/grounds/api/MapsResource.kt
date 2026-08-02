@@ -238,19 +238,19 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
-            val sourceKey =
-                existing.sourceKey
-                    ?: return@withMap problem(
-                        Response.Status.CONFLICT,
-                        "version $version has no uploaded object to publish",
-                    )
+            // No uploaded object is not an error: a fork's first version carries the digest of
+            // a bundle that was promoted when the source was published, and copies no bytes by
+            // design. Only an upload that was referenced and then vanished is a problem.
+            val sourceKey = existing.sourceKey
             try {
-                blobs.copyToPublic(
-                    sourceKey = sourceKey,
-                    destinationKey = BlobStore.bundleKey(request.bundleSha256),
-                    contentType = BUNDLE_CONTENT_TYPE,
-                    trust = map.trust,
-                )
+                if (sourceKey != null) {
+                    blobs.copyToPublic(
+                        sourceKey = sourceKey,
+                        destinationKey = BlobStore.bundleKey(request.bundleSha256),
+                        contentType = BUNDLE_CONTENT_TYPE,
+                        trust = map.trust,
+                    )
+                }
             } catch (e: NoSuchKeyException) {
                 // The upload expired (the private bucket drops tmp/uploads after a day) or
                 // never happened. Say which, rather than failing later as a CDN 404.

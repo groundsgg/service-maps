@@ -127,8 +127,8 @@ class VersionLifecycleIT {
         // 8. The bundle the pin file points at actually exists, under the digest key and in
         //    the public bucket. Without the promotion this whole path is a URL that 404s:
         //    every earlier assertion passes while a server can load nothing.
-        val bundleKey = "bundle/sha256/${'$'}{BUNDLE.take(2)}/${'$'}BUNDLE.tar.zst"
-        assertTrue(publicKeys.contains(bundleKey), "no ${'$'}bundleKey in ${'$'}publicKeys")
+        val bundleKey = "bundle/sha256/${BUNDLE.take(2)}/$BUNDLE.tar.zst"
+        assertTrue(publicKeys.contains(bundleKey), "no $bundleKey in $publicKeys")
         assertEquals(
             WORLD_BYTES,
             readPublic(bundleKey),
