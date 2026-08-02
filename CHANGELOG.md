@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/groundsgg/service-maps/compare/v1.2.0...v1.3.0) (2026-08-02)
+
+
+### Features
+
+* publish an OpenAPI snapshot ([#20](https://github.com/groundsgg/service-maps/issues/20)) ([3423259](https://github.com/groundsgg/service-maps/commit/34232591258edcc4391a3afbfc1cf82234d52baa))
+
 ## [1.2.0](https://github.com/groundsgg/service-maps/compare/v1.1.2...v1.2.0) (2026-08-02)
 
 
