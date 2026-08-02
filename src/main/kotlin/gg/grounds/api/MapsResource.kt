@@ -35,11 +35,14 @@ import jakarta.ws.rs.core.Response
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
+import org.eclipse.microprofile.openapi.annotations.Operation
+import org.eclipse.microprofile.openapi.annotations.tags.Tag
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 
 /** What a bundle object is stored as. The key already says `.tar.zst`; this agrees with it. */
 private const val BUNDLE_CONTENT_TYPE = "application/zstd"
 
+@Tag(name = "Maps")
 @Path("/v1/maps")
 @Produces(MediaType.APPLICATION_JSON)
 @Authenticated
@@ -55,6 +58,12 @@ constructor(
     private val identity: SecurityIdentity,
 ) {
 
+    @Operation(
+        summary = "Create a map",
+        description =
+            "Trust and owner are derived, never taken from the request: a creator asking to be " +
+                "first-party is exactly the request to refuse.",
+    )
     @POST
     fun create(request: CreateMapRequest?): Response {
         if (request == null) return problem(Response.Status.BAD_REQUEST, "a body is required")
@@ -97,6 +106,11 @@ constructor(
      * Other creators' work is not everyone's business: without a review group a caller sees
      * first-party maps and their own, and nothing else.
      */
+    @Operation(
+        summary = "List maps",
+        description =
+            "Without a review group a caller sees first-party maps and their own, and nothing else.",
+    )
     @GET
     fun list(@QueryParam("namespace") namespace: String?): List<MapDto> =
         maps
@@ -108,6 +122,7 @@ constructor(
      * The address is one catch-all parameter rather than two segments, because a creator namespace
      * is itself `u/<creator>` and would otherwise not route.
      */
+    @Operation(summary = "Read one map")
     @GET
     @Path("/{address:.+}")
     fun get(@PathParam("address") address: String): Response {
@@ -129,6 +144,13 @@ constructor(
      * Hands back a URL the client PUTs the world zip to directly. The bytes never enter this
      * process, which is also what keeps a large publish clear of the edge's body limit.
      */
+    @Tag(name = "Versions")
+    @Operation(
+        summary = "Open an upload",
+        description =
+            "Returns a presigned URL the client PUTs the world to directly. The bytes never enter " +
+                "this service, which is also what keeps a large publish clear of the edge's body limit.",
+    )
     @POST
     @Path("/{address:.+}/uploads")
     fun createUpload(@PathParam("address") address: String): Response =
@@ -142,6 +164,11 @@ constructor(
 
     // --------------------------------------------------------------- versions
 
+    @Tag(name = "Versions")
+    @Operation(
+        summary = "Commit a version",
+        description = "Allocates the next version number for this map as a draft.",
+    )
     @POST
     @Path("/{address:.+}/versions")
     fun commitVersion(
@@ -198,6 +225,13 @@ constructor(
      * can lag a move, and an interface that shows the projection cannot distinguish "not live" from
      * "live but not written yet" — which is exactly the state a mover needs to see.
      */
+    @Tag(name = "Pins")
+    @Operation(
+        summary = "Where this map is live",
+        description =
+            "Read from the record, not from the published pin file: the file is a projection and " +
+                "can lag a move, so it cannot tell \"not live\" from \"live but not written yet\".",
+    )
     @GET
     @Path("/{address:.+}/pins")
     fun listPins(@PathParam("address") address: String): Response =
@@ -215,6 +249,8 @@ constructor(
                 .build()
         }
 
+    @Tag(name = "Versions")
+    @Operation(summary = "List versions")
     @GET
     @Path("/{address:.+}/versions")
     fun listVersions(@PathParam("address") address: String): Response =
@@ -227,6 +263,13 @@ constructor(
      * facts for an already-assembled tree. Nothing else about the state machine changes when that
      * happens, which is the point of having the step at all.
      */
+    @Tag(name = "Versions")
+    @Operation(
+        summary = "Publish a version",
+        description =
+            "Promotes the uploaded object into a public bucket and makes the version pinnable. " +
+                "That copy is the moderation gate. Publishing does not put anything in front of players.",
+    )
     @POST
     @Path("/{address:.+}/versions/{version}/publish")
     fun publishVersion(
@@ -317,6 +360,12 @@ constructor(
      * A new map from an existing version. Copies no bytes: the fork's first version carries the
      * same bundle digest, so it is usable — and pinnable — immediately.
      */
+    @Operation(
+        summary = "Fork a map",
+        description =
+            "A new map from an existing version. Copies no bytes, starts its own version counter " +
+                "at 1, and inherits trust from the source — only ever stricter.",
+    )
     @POST
     @Path("/{address:.+}/forks")
     fun fork(@PathParam("address") address: String, request: ForkRequest?): Response =
@@ -396,6 +445,13 @@ constructor(
      * operation. The pin file is republished afterwards; if that write fails the move still stands,
      * because the file is a projection and the move is the fact.
      */
+    @Tag(name = "Pins")
+    @Operation(
+        summary = "Move a pin",
+        description =
+            "Changes the version this environment serves. Going live and rolling back are the same " +
+                "call; nothing is deleted either way. Never granted by ownership.",
+    )
     @POST
     @Path("/{address:.+}/pins/{environment}")
     fun movePin(

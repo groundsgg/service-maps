@@ -1,6 +1,29 @@
+import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.Delete
+
 plugins {
     id("gg.grounds.root") version "0.1.1"
     id("io.quarkus") version "3.30.6"
+}
+
+val cleanProductionOpenApi =
+    tasks.register<Delete>("cleanProductionOpenApi") {
+        delete(layout.buildDirectory.dir("generated/openapi"))
+        delete(layout.buildDirectory.dir("quarkus"))
+        delete(layout.buildDirectory.dir("quarkus-app"))
+        delete(layout.buildDirectory.dir("quarkus-build"))
+    }
+
+// The snapshot must come from a clean production build: a dev-mode schema carries endpoints the
+// deployed service does not have, and the published reference would describe a service nobody runs.
+val quarkusBuildTask = tasks.named("quarkusBuild") { mustRunAfter(cleanProductionOpenApi) }
+
+tasks.register<Copy>("generateOpenApiSnapshot") {
+    group = "documentation"
+    dependsOn(cleanProductionOpenApi, quarkusBuildTask)
+    from(layout.buildDirectory.file("generated/openapi/openapi.json"))
+    into(layout.buildDirectory.dir("api-reference"))
+    rename { "openapi.json" }
 }
 
 repositories {
@@ -35,6 +58,7 @@ dependencies {
     // Real probes rather than a TCP check: the readiness probe then also fails when the
     // database is unreachable, which is the failure a tcpSocket probe reports as healthy.
     implementation("io.quarkus:quarkus-smallrye-health")
+    implementation("io.quarkus:quarkus-smallrye-openapi")
     // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
     // UrlConnectionHttpClient rather than the Netty async client: every call here is a
     // presign or a small metadata write, so an event loop buys nothing.
