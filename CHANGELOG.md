@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/groundsgg/service-maps/compare/v1.1.2...v1.2.0) (2026-08-02)
+
+
+### Features
+
+* report where a map is live ([#18](https://github.com/groundsgg/service-maps/issues/18)) ([8f52c06](https://github.com/groundsgg/service-maps/commit/8f52c06817a0a868c298dfc6d5f9a8ddac615e62))
+
 ## [1.1.2](https://github.com/groundsgg/service-maps/compare/v1.1.1...v1.1.2) (2026-08-02)
 
 
