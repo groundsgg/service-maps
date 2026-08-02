@@ -236,6 +236,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             state = VersionState.valueOf(getString("state")),
             bundleSha256 = getString("bundle_sha256"),
             sourceSha256 = getString("source_sha256"),
+            sourceKey = getString("source_key"),
             manifestSha256 = getString("manifest_sha256"),
             parentVersion = getObject("parent_version") as Int?,
             sizeBytes = getObject("size_bytes") as Long?,
@@ -249,7 +250,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
     private companion object {
         const val SELECT_COLUMNS =
             """
-            SELECT map, version, state, bundle_sha256, source_sha256, manifest_sha256,
+            SELECT map, version, state, bundle_sha256, source_sha256, source_key, manifest_sha256,
                    parent_version, size_bytes, present_chunks, est_loaded_mib,
                    published_by_sub, note, created_at
             FROM map_version

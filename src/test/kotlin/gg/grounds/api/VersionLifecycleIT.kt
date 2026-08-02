@@ -34,7 +34,7 @@ class VersionLifecycleIT {
 
         // 1. The upload URL is presigned against the PRIVATE bucket, and an outside client
         //    with no credentials of its own can PUT to it.
-        val upload =
+        val uploadResponse =
             given()
                 .`when`()
                 .post("/v1/maps/bedwars/crater/uploads")
@@ -42,13 +42,14 @@ class VersionLifecycleIT {
                 .statusCode(200)
                 .body("uploadId", notNullValue())
                 .extract()
-                .path<String>("url")
+        val upload = uploadResponse.path<String>("url")
+        val uploadId = uploadResponse.path<String>("uploadId")
 
         val put =
             HttpClient.newHttpClient()
                 .send(
                     HttpRequest.newBuilder(URI.create(upload))
-                        .PUT(HttpRequest.BodyPublishers.ofString("pretend this is a world zip"))
+                        .PUT(HttpRequest.BodyPublishers.ofString(WORLD_BYTES))
                         .build(),
                     HttpResponse.BodyHandlers.discarding(),
                 )
@@ -57,7 +58,7 @@ class VersionLifecycleIT {
         // 2. Committing allocates version 1 as a draft: no bundle yet, so not usable yet.
         given()
             .contentType(ContentType.JSON)
-            .body("""{"sourceSha256":"aaaa","note":"first pass"}""")
+            .body("""{"uploadId":"$uploadId","sourceSha256":"aaaa","note":"first pass"}""")
             .`when`()
             .post("/v1/maps/bedwars/crater/versions")
             .then()
@@ -122,6 +123,17 @@ class VersionLifecycleIT {
         //    should: only an approved copy crosses that line.
         val publicKeys = listPublic()
         assertTrue(publicKeys.none { it.startsWith("tmp/uploads/") }, "found $publicKeys")
+
+        // 8. The bundle the pin file points at actually exists, under the digest key and in
+        //    the public bucket. Without the promotion this whole path is a URL that 404s:
+        //    every earlier assertion passes while a server can load nothing.
+        val bundleKey = "bundle/sha256/${'$'}{BUNDLE.take(2)}/${'$'}BUNDLE.tar.zst"
+        assertTrue(publicKeys.contains(bundleKey), "no ${'$'}bundleKey in ${'$'}publicKeys")
+        assertEquals(
+            WORLD_BYTES,
+            readPublic(bundleKey),
+            "the promoted object must be the bytes that were uploaded, not a placeholder",
+        )
     }
 
     @Test
@@ -371,6 +383,9 @@ class VersionLifecycleIT {
 
     private companion object {
         const val BUNDLE = "c0ffee00000000000000000000000000000000000000000000000000000000ab"
+
+        /** What the presigned PUT stores, and therefore what publishing must promote. */
+        const val WORLD_BYTES = "pretend this is a world zip"
 
         /**
          * A distinct digest per test, because a digest names exactly one byte string: reusing one

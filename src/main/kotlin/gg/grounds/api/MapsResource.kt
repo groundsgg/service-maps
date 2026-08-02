@@ -35,6 +35,10 @@ import jakarta.ws.rs.core.Response
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException
+
+/** What a bundle object is stored as. The key already says `.tar.zst`; this agrees with it. */
+private const val BUNDLE_CONTENT_TYPE = "application/zstd"
 
 @Path("/v1/maps")
 @Produces(MediaType.APPLICATION_JSON)
@@ -220,6 +224,42 @@ constructor(
                     "bundleSha256 must be 64 lowercase hex characters",
                 )
             }
+            // Promote the bytes BEFORE recording the state, and in that order on purpose.
+            // A failed publish after a successful copy leaves an orphan object in a public
+            // bucket, which is content-addressed and harmless — orphan collection sweeps it.
+            // The other order leaves a PUBLISHED version whose bundle is not public, and the
+            // first pin move then points every server at a 404 nobody can explain.
+            //
+            // This copy IS the moderation gate: nothing reaches a public bucket except
+            // through this call.
+            val existing =
+                versions.find(map.id, version)
+                    ?: return@withMap problem(
+                        Response.Status.NOT_FOUND,
+                        "no version $version of $address",
+                    )
+            val sourceKey =
+                existing.sourceKey
+                    ?: return@withMap problem(
+                        Response.Status.CONFLICT,
+                        "version $version has no uploaded object to publish",
+                    )
+            try {
+                blobs.copyToPublic(
+                    sourceKey = sourceKey,
+                    destinationKey = BlobStore.bundleKey(request.bundleSha256),
+                    contentType = BUNDLE_CONTENT_TYPE,
+                    trust = map.trust,
+                )
+            } catch (e: NoSuchKeyException) {
+                // The upload expired (the private bucket drops tmp/uploads after a day) or
+                // never happened. Say which, rather than failing later as a CDN 404.
+                return@withMap problem(
+                    Response.Status.CONFLICT,
+                    "the uploaded object for version $version is gone; upload and commit again",
+                )
+            }
+
             try {
                 val published =
                     versions.publish(
