@@ -29,6 +29,11 @@ data class MapVersionRecord(
     val state: VersionState,
     val bundleSha256: String?,
     val sourceSha256: String?,
+    /**
+     * Where the uploaded object still sits in the private bucket. Publishing promotes exactly this
+     * object into a public one, so it has to survive the commit that recorded it.
+     */
+    val sourceKey: String?,
     val manifestSha256: String?,
     val parentVersion: Int?,
     val sizeBytes: Long?,
