@@ -39,7 +39,7 @@ repositories {
 }
 
 dependencies {
-    implementation(enforcedPlatform("io.quarkus.platform:quarkus-bom:3.30.8"))
+    implementation(enforcedPlatform("io.quarkus.platform:quarkus-bom:3.38.1"))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-kotlin")
     // HTTP + JSON rather than gRPC, unlike the gameplay services: the callers are
