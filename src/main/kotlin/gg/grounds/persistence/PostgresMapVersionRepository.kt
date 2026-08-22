@@ -146,6 +146,55 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             }
         }
 
+    override fun replaceSceneProjection(
+        mapId: UUID,
+        version: Int,
+        deriveAttempt: UUID?,
+        deriveFailureScope: DeriveFailureScope?,
+        deriveRetryable: Boolean,
+        scene: SceneProjection,
+    ): MapVersionRecord =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                read(c, mapId, version, forUpdate = true)
+                    ?: throw VersionNotFoundException(mapId, version)
+                c.prepareStatement(
+                        """
+                        UPDATE map_version
+                           SET derive_attempt = ?, derive_failure_scope = ?, derive_retryable = ?,
+                               scene_present = ?, scene_schema_version = ?, scene_sha256 = ?,
+                               asset_catalog_id = ?, asset_catalog_version = ?,
+                               action_catalog_id = ?, action_catalog_version = ?
+                         WHERE map = ? AND version = ?
+                        """
+                    )
+                    .use { ps ->
+                        ps.setObject(1, deriveAttempt)
+                        ps.setString(2, deriveFailureScope?.name)
+                        ps.setBoolean(3, deriveRetryable)
+                        ps.setObject(4, scene.presentValue())
+                        ps.setObject(5, scene.schemaVersion.persistedSchemaVersion())
+                        ps.setString(6, scene.sha256)
+                        ps.setString(7, scene.assetCatalog?.id)
+                        ps.setString(8, scene.assetCatalog?.version)
+                        ps.setString(9, scene.actionCatalog?.id)
+                        ps.setString(10, scene.actionCatalog?.version)
+                        ps.setObject(11, mapId)
+                        ps.setInt(12, version)
+                        ps.executeUpdate()
+                    }
+                replaceSceneCollections(c, mapId, version, scene)
+                c.commit()
+                requireNotNull(read(c, mapId, version))
+            } catch (e: Exception) {
+                c.rollback()
+                throw e
+            } finally {
+                c.autoCommit = true
+            }
+        }
+
     override fun find(mapId: UUID, version: Int): MapVersionRecord? =
         dataSource.connection.use { c -> read(c, mapId, version) }
 
@@ -343,6 +392,72 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 ps.executeUpdate()
             }
     }
+
+    /** Replaces normalized collections inside the caller's transaction. */
+    private fun replaceSceneCollections(
+        c: Connection,
+        mapId: UUID,
+        version: Int,
+        scene: SceneProjection,
+    ) {
+        clearSceneCollections(c, mapId, version)
+        c.prepareStatement(
+                """
+                INSERT INTO map_version_required_action (map, version, action_id)
+                VALUES (?, ?, ?)
+                """
+            )
+            .use { ps ->
+                scene.requiredActions.distinct().sorted().forEach { actionId ->
+                    ps.setObject(1, mapId)
+                    ps.setInt(2, version)
+                    ps.setString(3, actionId)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+        c.prepareStatement(
+                """
+                INSERT INTO map_version_derive_problem (
+                    map, version, ordinal, scope, path, code, qualified_identity, message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            )
+            .use { ps ->
+                scene.problems.forEachIndexed { ordinal, problem ->
+                    ps.setObject(1, mapId)
+                    ps.setInt(2, version)
+                    ps.setInt(3, ordinal)
+                    ps.setString(4, problem.scope.name)
+                    ps.setString(5, problem.path)
+                    ps.setString(6, problem.code)
+                    ps.setString(7, problem.qualifiedIdentity)
+                    ps.setString(8, problem.message)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+    }
+
+    private fun SceneProjection.presentValue(): Boolean? =
+        when (status) {
+            SceneStatus.VALID -> true
+            SceneStatus.NONE -> false
+            SceneStatus.PENDING,
+            SceneStatus.INVALID -> null
+        }
+
+    /**
+     * Flyway persists the Scene v1 schema number as an integer even though the API contract is
+     * text.
+     */
+    private fun String?.persistedSchemaVersion(): Int? =
+        when (this) {
+            null -> null
+            else ->
+                requireNotNull(toIntOrNull()) { "scene schema version must be a positive integer" }
+                    .also { require(it > 0) { "scene schema version must be a positive integer" } }
+        }
 
     private companion object {
         const val SELECT_COLUMNS =

@@ -96,7 +96,10 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
                                     else -> null
                                 },
                             )
-                            ps.setObject(13, firstVersion.scene.schemaVersion?.toIntOrNull())
+                            ps.setObject(
+                                13,
+                                firstVersion.scene.schemaVersion.persistedSchemaVersion(),
+                            )
                             ps.setString(14, firstVersion.scene.sha256)
                             ps.setString(15, firstVersion.scene.assetCatalog?.id)
                             ps.setString(16, firstVersion.scene.assetCatalog?.version)
@@ -192,7 +195,7 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
                 """
             )
             .use { ps ->
-                scene.requiredActions.sorted().forEach { actionId ->
+                scene.requiredActions.distinct().sorted().forEach { actionId ->
                     ps.setObject(1, mapId)
                     ps.setInt(2, version)
                     ps.setString(3, actionId)
@@ -222,6 +225,18 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
                 ps.executeBatch()
             }
     }
+
+    /**
+     * Flyway persists the Scene v1 schema number as an integer even though the API contract is
+     * text.
+     */
+    private fun String?.persistedSchemaVersion(): Int? =
+        when (this) {
+            null -> null
+            else ->
+                requireNotNull(toIntOrNull()) { "scene schema version must be a positive integer" }
+                    .also { require(it > 0) { "scene schema version must be a positive integer" } }
+        }
 
     private companion object {
         const val SELECT_COLUMNS =

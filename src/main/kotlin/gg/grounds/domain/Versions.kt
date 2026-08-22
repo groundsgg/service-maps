@@ -86,6 +86,19 @@ interface MapVersionRepository {
     /** Marks a version published and records what the bundle turned out to be. */
     fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord
 
+    /**
+     * Replaces all persisted derive facts for one version atomically. Lifecycle transitions remain
+     * the caller's responsibility; the derive state machine composes this with its row lock later.
+     */
+    fun replaceSceneProjection(
+        mapId: UUID,
+        version: Int,
+        deriveAttempt: UUID?,
+        deriveFailureScope: DeriveFailureScope?,
+        deriveRetryable: Boolean,
+        scene: SceneProjection,
+    ): MapVersionRecord
+
     fun find(mapId: UUID, version: Int): MapVersionRecord?
 
     fun list(mapId: UUID): List<MapVersionRecord>
