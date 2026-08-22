@@ -159,12 +159,14 @@ class CatalogJarLoaderTest {
                     Files.createTempDirectory("catalog-loader"),
                     allowLoopbackHttp = true,
                     maxEntryExpandedBytes = 1,
-                    maxExpandedBytes = 8,
+                    maxExpandedBytes = Long.MAX_VALUE,
                 )
                 .use { loader ->
-                    assertThrows(CatalogContentException::class.java) {
-                        loader.load(candidate(server, expanded))
-                    }
+                    val failure =
+                        assertThrows(CatalogContentException::class.java) {
+                            loader.load(candidate(server, expanded))
+                        }
+                    assertEquals("Catalog JAR expands too far.", failure.message)
                 }
         } finally {
             server.stop(0)
@@ -178,11 +180,12 @@ class CatalogJarLoaderTest {
         val base = catalogJar()
         val ownerBytes = classBytes(base)
         listOf(
-                catalogJar(includeOwner = false),
-                catalogJar(mapOf(versionedOwner to ownerBytes)),
-                catalogJar(mapOf(versionedOwner to ownerBytes), includeOwner = false),
+                "zero owner" to catalogJar(includeOwner = false),
+                "base plus multi-release owner" to catalogJar(mapOf(versionedOwner to ownerBytes)),
+                "multi-release-only owner" to
+                    catalogJar(mapOf(versionedOwner to ownerBytes), includeOwner = false),
             )
-            .forEach { bytes ->
+            .forEach { (case, bytes) ->
                 val server = serverFor(bytes)
                 try {
                     CatalogJarLoader(
@@ -190,9 +193,15 @@ class CatalogJarLoaderTest {
                             allowLoopbackHttp = true,
                         )
                         .use { loader ->
-                            assertThrows(CatalogContentException::class.java) {
-                                loader.load(candidate(server, bytes))
-                            }
+                            val failure =
+                                assertThrows(CatalogContentException::class.java) {
+                                    loader.load(candidate(server, bytes))
+                                }
+                            assertEquals(
+                                "Catalog JAR must define exactly one catalog owner.",
+                                failure.message,
+                                case,
+                            )
                         }
                 } finally {
                     server.stop(0)
@@ -226,6 +235,10 @@ class CatalogJarLoaderTest {
                         .use { it.load(candidate(server, bytes).copy(id = "wrong:id")) }
                 }
             assertEquals(listOf(cleanupFailure), primary.suppressed.toList())
+            assertEquals(
+                "Catalog identity does not match the validated candidate.",
+                primary.message,
+            )
         } finally {
             server.stop(0)
         }
@@ -278,29 +291,51 @@ class CatalogJarLoaderTest {
     }
 
     @Test
+    fun `propagates ThreadDeath and VirtualMachineError without catalog wrapping`() {
+        val bytes = catalogJar()
+        val server = serverFor(bytes)
+        val cleanup = IllegalStateException("cleanup")
+        try {
+            val threadDeath = ThreadDeath()
+            val virtualMachineError = InjectedVirtualMachineError("fatal")
+            listOf(threadDeath, virtualMachineError).forEach { fatal ->
+                val thrown =
+                    assertThrows(Throwable::class.java) {
+                        CatalogJarLoader(
+                                Files.createTempDirectory("catalog-loader"),
+                                allowLoopbackHttp = true,
+                                deleteJar = { throw cleanup },
+                                beforeLoad = { throw fatal },
+                            )
+                            .use { it.load(candidate(server, bytes)) }
+                    }
+                assertEquals(fatal, thrown)
+                assertEquals(fatal.javaClass, thrown.javaClass)
+                assertEquals(false, thrown is CatalogContentException)
+                assertEquals(listOf(cleanup), thrown.suppressed.toList())
+            }
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `enforces entry count and aggregate expanded byte limits independently`() {
         val tooMany = catalogJar((1..3).associate { "entry-$it" to byteArrayOf(1) })
-        val aggregate = catalogJar(mapOf("one" to ByteArray(3), "two" to ByteArray(3)))
-        listOf(Triple(tooMany, 2, 32L), Triple(aggregate, 20, 5L)).forEach { (bytes, entries, total)
-            ->
-            val server = serverFor(bytes)
-            try {
-                CatalogJarLoader(
-                        Files.createTempDirectory("catalog-loader"),
-                        allowLoopbackHttp = true,
-                        maxEntries = entries,
-                        maxEntryExpandedBytes = 4,
-                        maxExpandedBytes = total,
-                    )
-                    .use { loader ->
-                        assertThrows(CatalogContentException::class.java) {
-                            loader.load(candidate(server, bytes))
-                        }
-                    }
-            } finally {
-                server.stop(0)
-            }
-        }
+        val entryCountFailure = loadFailure(tooMany, maxEntries = 2)
+        assertEquals("Catalog JAR has unsafe entries.", entryCountFailure.message)
+
+        val aggregate = catalogJar(mapOf("one" to ByteArray(16), "two" to ByteArray(16)))
+        val expanded = expandedSizes(aggregate)
+        val maxEntry = expanded.max()
+        val total = expanded.sum()
+        val aggregateFailure =
+            loadFailure(
+                aggregate,
+                maxEntryExpandedBytes = maxEntry.toLong(),
+                maxExpandedBytes = (total - 1).toLong(),
+            )
+        assertEquals("Catalog JAR expands too far.", aggregateFailure.message)
     }
 
     @Test
@@ -404,22 +439,34 @@ class CatalogJarLoaderTest {
     @Test
     fun `cleans temporary jars after archive validation and reflection failures`() {
         listOf(
-                rawCatalogJar(
-                    listOf(OWNER_ENTRY to classBytes(catalogJar()), "../escape" to byteArrayOf(1))
-                ),
-                catalogJar(
-                    ownerSource =
-                        "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); }"
-                ),
+                "archive validation" to
+                    rawCatalogJar(
+                        listOf(
+                            OWNER_ENTRY to classBytes(catalogJar()),
+                            "../escape" to byteArrayOf(1),
+                        )
+                    ),
+                "reflection" to
+                    catalogJar(
+                        ownerSource =
+                            "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); }"
+                    ),
             )
-            .forEach { bytes ->
+            .forEach { (stage, bytes) ->
                 val directory = Files.createTempDirectory("catalog-loader")
                 val server = serverFor(bytes)
                 try {
-                    assertThrows(CatalogContentException::class.java) {
-                        CatalogJarLoader(directory, allowLoopbackHttp = true).use {
-                            it.load(candidate(server, bytes))
+                    val failure =
+                        assertThrows(CatalogContentException::class.java) {
+                            CatalogJarLoader(directory, allowLoopbackHttp = true).use {
+                                it.load(candidate(server, bytes))
+                            }
                         }
+                    if (stage == "archive validation") {
+                        assertEquals("Catalog JAR has unsafe entries.", failure.message)
+                    } else {
+                        assertEquals("Catalog owner could not be loaded.", failure.message)
+                        assertEquals(NoSuchMethodException::class.java, failure.cause?.javaClass)
                     }
                     assertEquals(0, directory.listDirectoryEntries().size)
                 } finally {
@@ -460,7 +507,13 @@ class CatalogJarLoaderTest {
         assertEquals(message, failure.message, context)
     }
 
-    private fun loadFailure(bytes: ByteArray, context: String? = null): CatalogContentException {
+    private fun loadFailure(
+        bytes: ByteArray,
+        context: String? = null,
+        maxEntries: Int = 512,
+        maxEntryExpandedBytes: Long = 16L * 1024 * 1024,
+        maxExpandedBytes: Long = 64L * 1024 * 1024,
+    ): CatalogContentException {
         val server = serverFor(bytes)
         try {
             return assertThrows(
@@ -469,6 +522,9 @@ class CatalogJarLoaderTest {
                     CatalogJarLoader(
                             Files.createTempDirectory("catalog-loader"),
                             allowLoopbackHttp = true,
+                            maxEntries = maxEntries,
+                            maxEntryExpandedBytes = maxEntryExpandedBytes,
+                            maxExpandedBytes = maxExpandedBytes,
                         )
                         .use { it.load(candidate(server, bytes)) }
                 },
@@ -584,6 +640,16 @@ class CatalogJarLoaderTest {
                 .let { input.readBytes() }
         }
 
+    private fun expandedSizes(jar: ByteArray): List<Int> =
+        java.util.jar.JarInputStream(jar.inputStream()).use { input ->
+            buildList {
+                while (true) {
+                    val entry = input.nextJarEntry ?: break
+                    if (!entry.isDirectory) add(input.readBytes().size)
+                }
+            }
+        }
+
     private fun rawCatalogJar(
         entries: List<Pair<String, ByteArray>>,
         modes: Map<String, Int> = emptyMap(),
@@ -664,6 +730,8 @@ class CatalogJarLoaderTest {
         const val OWNER_ENTRY = "gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class"
     }
 }
+
+private class InjectedVirtualMachineError(message: String) : VirtualMachineError(message)
 
 object CatalogJarLoaderFixtures {
     @JvmStatic
