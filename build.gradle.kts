@@ -51,6 +51,11 @@ dependencies {
     // The derive worker constructs its strict mapper outside Quarkus, so it must carry Kotlin
     // constructor metadata rather than relying on the application-managed ObjectMapper.
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("com.github.luben:zstd-jni:1.5.7-6")
+    implementation("gg.grounds:scene-format:0.1.0")
+    implementation("tools.jackson.core:jackson-databind:3.1.5")
+    implementation("tools.jackson.module:jackson-module-kotlin:3.1.5")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
     // server lives on the grounds-dev spoke while this runs on core, and a k8s
     // SA token from one cluster means nothing to the other cluster's JWKS.
@@ -77,4 +82,9 @@ dependencies {
     // quietly resolves a different one.
     testImplementation("org.testcontainers:postgresql")
     testImplementation("org.testcontainers:junit-jupiter")
+}
+
+configurations.configureEach {
+    // scene-format 0.1.0 uses Jackson 3.1, whose compatibility annotations require 2.21.
+    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.21")
 }
