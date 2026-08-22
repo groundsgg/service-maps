@@ -11,6 +11,8 @@ import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
+import gg.grounds.domain.VersionNotPublishableException
+import gg.grounds.domain.VersionState
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
@@ -18,6 +20,7 @@ import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
@@ -58,14 +61,20 @@ class SceneProjectionRepositoryIT {
     fun `replacing a projection sorts unique actions and preserves problem ordinal`() {
         val map = createMap("projection-replacement")
         versions.commit(map.id, null, null, null, null, "builder-sub")
-        versions.replaceSceneProjection(
+        versions.transitionSceneProjection(
             mapId = map.id,
             version = 1,
+            expectedState = VersionState.DRAFT,
+            nextState = VersionState.DERIVING,
             deriveAttempt = UUID.randomUUID(),
             deriveFailureScope = DeriveFailureScope.CONTENT,
-            deriveRetryable = false,
+            deriveRetryable = true,
             scene =
                 validScene(
+                    schemaVersion = "1",
+                    sha256 = "%064x".format(44),
+                    assetCatalog = CatalogReference("assets-a", "2026.07"),
+                    actionCatalog = CatalogReference("actions-a", "1"),
                     requiredActions = listOf("obsolete.action"),
                     problems =
                         listOf(
@@ -85,22 +94,67 @@ class SceneProjectionRepositoryIT {
                 DeriveProblem(DeriveFailureScope.SYSTEM, null, "IO", "grounds:io", "retry"),
             )
 
-        versions.replaceSceneProjection(
+        val finalAttempt = UUID.randomUUID()
+        val finalScene =
+            validScene(
+                schemaVersion = "2",
+                sha256 = "%064x".format(45),
+                assetCatalog = CatalogReference("assets-b", "2026.08"),
+                actionCatalog = CatalogReference("actions-b", "2"),
+                requiredActions = listOf("z.action", "a.action", "z.action"),
+                problems = problems,
+            )
+        versions.transitionSceneProjection(
             mapId = map.id,
             version = 1,
-            deriveAttempt = UUID.randomUUID(),
+            expectedState = VersionState.DERIVING,
+            nextState = VersionState.PUBLISHED,
+            deriveAttempt = finalAttempt,
             deriveFailureScope = null,
             deriveRetryable = false,
-            scene =
-                validScene(
-                    requiredActions = listOf("z.action", "a.action", "z.action"),
-                    problems = problems,
-                ),
+            scene = finalScene,
         )
 
         val stored = requireNotNull(versions.find(map.id, 1))
+        assertEquals(SceneStatus.VALID, stored.scene.status)
+        assertEquals(finalScene.schemaVersion, stored.scene.schemaVersion)
+        assertEquals(finalScene.sha256, stored.scene.sha256)
+        assertEquals(finalScene.assetCatalog, stored.scene.assetCatalog)
+        assertEquals(finalScene.actionCatalog, stored.scene.actionCatalog)
+        assertEquals(finalAttempt, stored.deriveAttempt)
+        assertEquals(null, stored.deriveFailureScope)
+        assertEquals(false, stored.deriveRetryable)
         assertEquals(listOf("a.action", "z.action"), stored.scene.requiredActions)
         assertEquals(problems, stored.scene.problems)
+    }
+
+    @Test
+    fun `a terminal version cannot transition its scene projection`() {
+        val map = createMap("terminal-projection")
+        versions.commit(map.id, null, null, null, null, "builder-sub")
+        versions.transitionSceneProjection(
+            map.id,
+            1,
+            VersionState.DRAFT,
+            VersionState.PUBLISHED,
+            UUID.randomUUID(),
+            null,
+            false,
+            validScene(emptyList(), emptyList()),
+        )
+
+        assertThrows<VersionNotPublishableException> {
+            versions.transitionSceneProjection(
+                map.id,
+                1,
+                VersionState.PUBLISHED,
+                VersionState.PUBLISHED,
+                UUID.randomUUID(),
+                null,
+                false,
+                validScene(emptyList(), emptyList()),
+            )
+        }
     }
 
     @Test
@@ -131,7 +185,7 @@ class SceneProjectionRepositoryIT {
             gg.grounds.domain.MapVersionRecord(
                 mapId = source.id,
                 version = 1,
-                state = gg.grounds.domain.VersionState.PUBLISHED,
+                state = VersionState.PUBLISHED,
                 bundleSha256 = "%064x".format(42),
                 sourceSha256 = null,
                 sourceKey = null,
@@ -181,13 +235,20 @@ class SceneProjectionRepositoryIT {
             ownerSub = "builder-sub",
         )
 
-    private fun validScene(requiredActions: List<String>, problems: List<DeriveProblem>) =
+    private fun validScene(
+        requiredActions: List<String>,
+        problems: List<DeriveProblem>,
+        schemaVersion: String = "1",
+        sha256: String = "%064x".format(43),
+        assetCatalog: CatalogReference = CatalogReference("assets", "2026.08"),
+        actionCatalog: CatalogReference = CatalogReference("actions", "1"),
+    ) =
         SceneProjection(
             status = SceneStatus.VALID,
-            schemaVersion = "1",
-            sha256 = "%064x".format(43),
-            assetCatalog = CatalogReference("assets", "2026.08"),
-            actionCatalog = CatalogReference("actions", "1"),
+            schemaVersion = schemaVersion,
+            sha256 = sha256,
+            assetCatalog = assetCatalog,
+            actionCatalog = actionCatalog,
             requiredActions = requiredActions,
             problems = problems,
         )

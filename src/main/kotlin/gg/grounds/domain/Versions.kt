@@ -87,12 +87,14 @@ interface MapVersionRepository {
     fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord
 
     /**
-     * Replaces all persisted derive facts for one version atomically. Lifecycle transitions remain
-     * the caller's responsibility; the derive state machine composes this with its row lock later.
+     * Atomically transitions a non-terminal version while replacing all persisted derive facts.
+     * Claim and acceptance semantics remain owned by the derive state machine.
      */
-    fun replaceSceneProjection(
+    fun transitionSceneProjection(
         mapId: UUID,
         version: Int,
+        expectedState: VersionState,
+        nextState: VersionState,
         deriveAttempt: UUID?,
         deriveFailureScope: DeriveFailureScope?,
         deriveRetryable: Boolean,

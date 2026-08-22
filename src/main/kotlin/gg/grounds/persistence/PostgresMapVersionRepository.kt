@@ -146,9 +146,11 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             }
         }
 
-    override fun replaceSceneProjection(
+    override fun transitionSceneProjection(
         mapId: UUID,
         version: Int,
+        expectedState: VersionState,
+        nextState: VersionState,
         deriveAttempt: UUID?,
         deriveFailureScope: DeriveFailureScope?,
         deriveRetryable: Boolean,
@@ -157,12 +159,19 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
-                read(c, mapId, version, forUpdate = true)
-                    ?: throw VersionNotFoundException(mapId, version)
+                val current =
+                    read(c, mapId, version, forUpdate = true)
+                        ?: throw VersionNotFoundException(mapId, version)
+                if (current.state in TERMINAL_STATES || current.state != expectedState) {
+                    throw VersionNotPublishableException(current.state)
+                }
+                require(nextState !in FORBIDDEN_TARGET_STATES) {
+                    "a scene projection cannot transition to $nextState"
+                }
                 c.prepareStatement(
                         """
                         UPDATE map_version
-                           SET derive_attempt = ?, derive_failure_scope = ?, derive_retryable = ?,
+                           SET state = ?, derive_attempt = ?, derive_failure_scope = ?, derive_retryable = ?,
                                scene_present = ?, scene_schema_version = ?, scene_sha256 = ?,
                                asset_catalog_id = ?, asset_catalog_version = ?,
                                action_catalog_id = ?, action_catalog_version = ?
@@ -170,18 +179,19 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         """
                     )
                     .use { ps ->
-                        ps.setObject(1, deriveAttempt)
-                        ps.setString(2, deriveFailureScope?.name)
-                        ps.setBoolean(3, deriveRetryable)
-                        ps.setObject(4, scene.presentValue())
-                        ps.setObject(5, scene.schemaVersion.persistedSchemaVersion())
-                        ps.setString(6, scene.sha256)
-                        ps.setString(7, scene.assetCatalog?.id)
-                        ps.setString(8, scene.assetCatalog?.version)
-                        ps.setString(9, scene.actionCatalog?.id)
-                        ps.setString(10, scene.actionCatalog?.version)
-                        ps.setObject(11, mapId)
-                        ps.setInt(12, version)
+                        ps.setString(1, nextState.name)
+                        ps.setObject(2, deriveAttempt)
+                        ps.setString(3, deriveFailureScope?.name)
+                        ps.setBoolean(4, deriveRetryable)
+                        ps.setObject(5, scene.presentValue())
+                        ps.setObject(6, scene.schemaVersion.persistedSchemaVersion())
+                        ps.setString(7, scene.sha256)
+                        ps.setString(8, scene.assetCatalog?.id)
+                        ps.setString(9, scene.assetCatalog?.version)
+                        ps.setString(10, scene.actionCatalog?.id)
+                        ps.setString(11, scene.actionCatalog?.version)
+                        ps.setObject(12, mapId)
+                        ps.setInt(13, version)
                         ps.executeUpdate()
                     }
                 replaceSceneCollections(c, mapId, version, scene)
@@ -460,6 +470,16 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
         }
 
     private companion object {
+        val TERMINAL_STATES =
+            setOf(
+                VersionState.DERIVE_FAILED,
+                VersionState.PUBLISHED,
+                VersionState.REJECTED,
+                VersionState.TAKEN_DOWN,
+            )
+        val FORBIDDEN_TARGET_STATES =
+            setOf(VersionState.DRAFT, VersionState.REJECTED, VersionState.TAKEN_DOWN)
+
         const val SELECT_COLUMNS =
             """
             SELECT map, version, state, bundle_sha256, source_sha256, source_key, manifest_sha256,
