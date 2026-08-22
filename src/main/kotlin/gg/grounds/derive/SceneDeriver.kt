@@ -56,7 +56,13 @@ class SceneDeriver(
         if (authored?.directory == true)
             return invalid("scene.json must be a regular file", "scene.json")
         val sceneResult =
-            if (authored == null) noScene() else deriveScene(Files.readAllBytes(authored.file!!))
+            if (authored == null) noScene()
+            else {
+                if (Files.size(authored.file) > limits.maxSceneBytes) {
+                    return invalid("scene.json exceeds size limit", "scene.json")
+                }
+                deriveScene(Files.readAllBytes(authored.file!!))
+            }
         if (sceneResult is SceneParseResult.Invalid)
             return SceneDerivationOutcome.Invalid(sceneResult.problems)
         val sceneFacts = (sceneResult as SceneParseResult.Facts).facts
@@ -65,7 +71,8 @@ class SceneDeriver(
             spool.filterNot { it.path == "scene.json" } +
                 listOfNotNull(
                     sceneFacts.canonical?.let { canonical ->
-                        val output = workerDirectory.resolve("canonical-scene.json")
+                        val output =
+                            Files.createTempFile(workerDirectory, ".canonical-scene-", ".json")
                         Files.write(output, canonical)
                         SpoolEntry("scene.json", output, false)
                     }

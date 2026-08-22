@@ -28,3 +28,32 @@ The JDK emitted the expected zstd-jni native-access warning; it did not affect t
 - Its Jackson 3.1 runtime requires `jackson-annotations:2.21`; the Quarkus BOM otherwise forced
   2.20, producing `NoClassDefFoundError: JsonSerializeAs`. The build now pins the compatible
   annotations artifact explicitly.
+
+## Fix round 1 — subtask A
+
+### RED
+
+Added source-I/O classification regressions, then ran:
+
+```text
+./gradlew test --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest
+```
+
+The pre-fix code classified the injected source `IOException` as `ArchiveContentException`.
+
+### GREEN
+
+Replaced Commons Compress on the untrusted input path with an owned 512-byte physical tar parser;
+it validates checksums, extension metadata, declared payload/padding, physical limits and exact
+two-record termination. The compressed source is disk-spooled and memory-mapped so the one zstd
+frame must consume the complete file. Scene bytes are independently limited and canonical output
+uses an out-of-tree temporary path. Content defects are converted to CONTENT only; source and
+ordinary disk I/O propagate.
+
+Verified with:
+
+```text
+./gradlew test --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest --tests gg.grounds.derive.DeriveContractsTest
+./gradlew spotlessApply
+./gradlew spotlessCheck testClasses
+```

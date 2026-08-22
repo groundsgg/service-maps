@@ -3,6 +3,7 @@ package gg.grounds.derive
 import com.github.luben.zstd.ZstdOutputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
@@ -12,6 +13,20 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SafeTarZstdReaderTest {
+    @Test
+    fun `propagates source io failures rather than misclassifying them as archive content`() {
+        val source =
+            object : ByteArrayInputStream(ByteArray(0)) {
+                override fun read(bytes: ByteArray, offset: Int, length: Int): Int =
+                    throw IOException("source unavailable")
+            }
+
+        assertThrows(IOException::class.java) {
+                SafeTarZstdReader().read(source, Files.createTempDirectory("safe-tar-test"))
+            }
+            .also { error -> assertTrue(error !is ArchiveContentException) }
+    }
+
     @Test
     fun `rejects unsafe names and special entries before writing them`() {
         listOf("../escape", "dir\\backslash", "dir//empty", "./dot", "C:/drive").forEach { name ->
@@ -23,7 +38,9 @@ class SafeTarZstdReaderTest {
                 }
             assertEquals("ARCHIVE", error.problem.code)
             assertTrue(
-                Files.list(root).use { it.noneMatch { path -> path.fileName.toString() != "." } }
+                Files.list(root).use {
+                    it.noneMatch { path -> !path.fileName.toString().startsWith(".source-") }
+                }
             )
         }
         assertThrows(ArchiveContentException::class.java) {
@@ -77,7 +94,7 @@ class SafeTarZstdReaderTest {
                 )
         }
         assertThrows(ArchiveContentException::class.java) {
-            SafeTarZstdReader(ArchiveLimits(maxFileBytes = 1))
+            SafeTarZstdReader(ArchiveLimits(maxFileBytes = 1, maxSceneBytes = 1))
                 .read(
                     ByteArrayInputStream(archive(entry("a", "12".encodeToByteArray()))),
                     Files.createTempDirectory("safe-tar-test"),
@@ -90,6 +107,67 @@ class SafeTarZstdReaderTest {
                     Files.createTempDirectory("safe-tar-test"),
                 )
         }
+    }
+
+    @Test
+    fun `rejects all unsafe physical entry kinds and malformed physical structure`() {
+        listOf('1', '2', '3', '4', '6', 'S', 'K', 'g', '9').forEach { type ->
+            assertThrows(ArchiveContentException::class.java) {
+                SafeTarZstdReader()
+                    .read(
+                        ByteArrayInputStream(rawArchive(rawHeader("unsafe", type))),
+                        Files.createTempDirectory("safe-tar-test"),
+                    )
+            }
+        }
+        listOf(
+                rawArchive(rawHeader("file", '0'), terminators = 1),
+                rawArchive(rawHeader("file", '0'), terminators = 3),
+                rawArchive(rawHeader("file", '0'), trailing = rawHeader("later", '0')),
+                rawArchive(rawHeader("file", '0', byteArrayOf(0)), padding = byteArrayOf(1)),
+            )
+            .forEach { archive ->
+                assertThrows(ArchiveContentException::class.java) {
+                    SafeTarZstdReader()
+                        .read(
+                            ByteArrayInputStream(archive),
+                            Files.createTempDirectory("safe-tar-test"),
+                        )
+                }
+            }
+    }
+
+    @Test
+    fun `rejects appended zstd frames and physical extension limit bypasses`() {
+        val normal = rawArchive(rawHeader("file", '0'))
+        val appended = normal + ZstdOutputStream(ByteArrayOutputStream()).let { byteArrayOf() }
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader(ArchiveLimits(maxCompressedBytes = 1))
+                .read(ByteArrayInputStream(normal), Files.createTempDirectory("safe-tar-test"))
+        }
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader(ArchiveLimits(maxEntries = 1))
+                .read(
+                    ByteArrayInputStream(
+                        rawArchive(
+                            rawHeader("pax", 'x', "11 path=a\\n".encodeToByteArray()),
+                            rawHeader("a", '0'),
+                        )
+                    ),
+                    Files.createTempDirectory("safe-tar-test"),
+                )
+        }
+        // A separately-compressed empty frame is bytes after the authoritative single frame.
+        val emptyFrame =
+            ByteArrayOutputStream().also { out -> ZstdOutputStream(out).use {} }.toByteArray()
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader()
+                .read(
+                    ByteArrayInputStream(normal + emptyFrame),
+                    Files.createTempDirectory("safe-tar-test"),
+                )
+        }
+        assertTrue(appended.isNotEmpty())
     }
 
     private fun entry(name: String, content: ByteArray = "x".encodeToByteArray()) =
@@ -131,5 +209,40 @@ class SafeTarZstdReaderTest {
         val checksum = tar.copyOfRange(0, 512).sumOf { it.toInt() and 0xff }
         "%06o\u0000 ".format(checksum).encodeToByteArray().copyInto(tar, 148)
         return com.github.luben.zstd.Zstd.compress(tar)
+    }
+
+    private fun rawArchive(
+        vararg headers: ByteArray,
+        terminators: Int = 2,
+        trailing: ByteArray = byteArrayOf(),
+        padding: ByteArray? = null,
+    ): ByteArray {
+        val tar = ByteArrayOutputStream()
+        headers.forEach { header ->
+            tar.write(header)
+            val size =
+                header.copyOfRange(124, 136).toString(Charsets.US_ASCII).trim().toLongOrNull(8) ?: 0
+            if (size > 0) tar.write(ByteArray(size.toInt()))
+            val pad = ByteArray(((512 - size % 512) % 512).toInt())
+            if (padding != null && pad.isNotEmpty()) padding.copyInto(pad)
+            tar.write(pad)
+        }
+        repeat(terminators) { tar.write(ByteArray(512)) }
+        tar.write(trailing)
+        return ByteArrayOutputStream()
+            .also { out -> ZstdOutputStream(out).use { it.write(tar.toByteArray()) } }
+            .toByteArray()
+    }
+
+    private fun rawHeader(name: String, type: Char, content: ByteArray = byteArrayOf()): ByteArray {
+        val header = ByteArray(512)
+        name.encodeToByteArray().copyInto(header)
+        "%011o".format(content.size).encodeToByteArray().copyInto(header, 124)
+        header[135] = 0
+        header[156] = type.code.toByte()
+        header.fill(' '.code.toByte(), 148, 156)
+        val checksum = header.sumOf { it.toInt() and 0xff }
+        "%06o\u0000 ".format(checksum).encodeToByteArray().copyInto(header, 148)
+        return header
     }
 }

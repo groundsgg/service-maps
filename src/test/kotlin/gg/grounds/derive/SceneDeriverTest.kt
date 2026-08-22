@@ -7,15 +7,31 @@ import gg.grounds.scene.format.CatalogId
 import gg.grounds.scene.format.CatalogVersionRange
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class SceneDeriverTest {
+    @Test
+    fun `propagates archive source io failures as system failures`() {
+        val source =
+            object : ByteArrayInputStream(ByteArray(0)) {
+                override fun read(bytes: ByteArray, offset: Int, length: Int): Int =
+                    throw IOException("source unavailable")
+            }
+
+        assertThrows(IOException::class.java) {
+            SceneDeriver(emptyCatalogResolver)
+                .derive(source, "a".repeat(64), Files.createTempDirectory("derive"))
+        }
+    }
+
     @Test
     fun `identical no-scene sources produce identical bundles and NONE`() {
         val source = archive(mapOf("level.dat" to "world".encodeToByteArray()))
@@ -76,6 +92,20 @@ class SceneDeriverTest {
                     Files.createTempDirectory("derive"),
                 )
         assertInstanceOf(SceneDerivationOutcome.Invalid::class.java, result)
+    }
+
+    @Test
+    fun `scene-specific byte limit is a content failure`() {
+        val result =
+            SceneDeriver(emptyCatalogResolver, ArchiveLimits(maxSceneBytes = 1))
+                .derive(
+                    ByteArrayInputStream(archive(mapOf("scene.json" to "{}".encodeToByteArray()))),
+                    "a".repeat(64),
+                    Files.createTempDirectory("derive"),
+                )
+
+        val failure = assertInstanceOf(SceneDerivationOutcome.Invalid::class.java, result)
+        assertEquals("SCENE", failure.problems.single().code)
     }
 
     @Test
