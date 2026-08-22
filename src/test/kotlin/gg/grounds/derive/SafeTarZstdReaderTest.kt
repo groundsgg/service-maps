@@ -4,6 +4,7 @@ import com.github.luben.zstd.ZstdOutputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.Files
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
@@ -149,9 +150,9 @@ class SafeTarZstdReaderTest {
             SafeTarZstdReader(ArchiveLimits(maxEntries = 1))
                 .read(
                     ByteArrayInputStream(
-                        rawArchive(
-                            rawHeader("pax", 'x', "11 path=a\\n".encodeToByteArray()),
-                            rawHeader("a", '0'),
+                        rawArchiveEntries(
+                            rawHeader("pax", 'x', paxRecord("path", "a")) to paxRecord("path", "a"),
+                            rawHeader("a", '0') to byteArrayOf(),
                         )
                     ),
                     Files.createTempDirectory("safe-tar-test"),
@@ -195,7 +196,7 @@ class SafeTarZstdReaderTest {
     @Test
     fun `strictly parses PAX records and consumes pathless metadata once`() {
         listOf(
-                "999999999999999999999 x=y\n".encodeToByteArray(),
+                paxRecord("mtime", "0") + "2147483647 x=y\n".encodeToByteArray(),
                 paxRecord("size", "1"),
                 paxRecord("linkpath", "target"),
             )
@@ -244,6 +245,30 @@ class SafeTarZstdReaderTest {
                 SafeTarZstdReader(outputFactory = { throw IOException("disk unavailable") })
                     .read(
                         ByteArrayInputStream(archive(entry("file"))),
+                        Files.createTempDirectory("safe-tar-test"),
+                    )
+            }
+            .also { assertTrue(it !is ArchiveContentException) }
+        assertThrows(IOException::class.java) {
+                SafeTarZstdReader(
+                        outputFactory = {
+                            object : OutputStream() {
+                                private var written = false
+
+                                override fun write(value: Int) {
+                                    if (written) throw IOException("disk full")
+                                    written = true
+                                }
+
+                                override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                                    write(bytes[offset].toInt())
+                                    if (length > 1) throw IOException("disk full")
+                                }
+                            }
+                        }
+                    )
+                    .read(
+                        ByteArrayInputStream(archive(entry("file", ByteArray(2)))),
                         Files.createTempDirectory("safe-tar-test"),
                     )
             }

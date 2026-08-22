@@ -81,3 +81,18 @@ Verified with:
 ./gradlew spotlessCheck testClasses
 ./gradlew test --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest --tests gg.grounds.derive.DeriveContractsTest
 ```
+
+## Subtask A coverage fix
+
+Replaced the zero-filled PAX physical-entry fixture with a valid encoded PAX record, added the
+nonzero-offset `Int`-overflow PAX length case, and added an output stream that writes one payload
+byte before simulating capacity failure. These tests assert CONTENT for malformed archive policy and
+the original generic `IOException` for mid-write disk failure.
+
+Verified with:
+
+```text
+./gradlew test --rerun-tasks --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest --tests gg.grounds.derive.DeriveContractsTest
+./gradlew spotlessApply
+./gradlew spotlessCheck testClasses
+```
