@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 
 @QuarkusTest
@@ -50,8 +51,9 @@ class BlobStoreIT {
                     HttpResponse.BodyHandlers.discarding(),
                 )
         assertEquals(200, put.statusCode())
-        assertEquals(BlobMetadata(sizeBytes = 6), blobs.headPrivate(result))
+        assertEquals(6, blobs.headPrivate(result)?.sizeBytes)
         assertEquals("result", readPrivate(result))
+        assertEquals("source", getPresigned(getUrl, "source"))
     }
 
     @Test
@@ -61,8 +63,8 @@ class BlobStoreIT {
         putPrivate(privateKey, "private")
         putPublic(publicKey, "public")
 
-        assertEquals(BlobMetadata(sizeBytes = 7), blobs.headPrivate(privateKey))
-        assertEquals(BlobMetadata(sizeBytes = 6), blobs.headPublic(publicKey, MapTrust.FIRST_PARTY))
+        assertEquals(7, blobs.headPrivate(privateKey)?.sizeBytes)
+        assertEquals(6, blobs.headPublic(publicKey, MapTrust.FIRST_PARTY)?.sizeBytes)
         assertNull(blobs.headPrivate("tmp/test/${UUID.randomUUID()}/missing"))
         assertNull(blobs.headPublic("bundle/test/${UUID.randomUUID()}", MapTrust.FIRST_PARTY))
     }
@@ -75,10 +77,7 @@ class BlobStoreIT {
 
         blobs.copyPrivateToPublic(source, destination, expectedSizeBytes = 6, MapTrust.FIRST_PARTY)
 
-        assertEquals(
-            BlobMetadata(sizeBytes = 6),
-            blobs.headPublic(destination, MapTrust.FIRST_PARTY),
-        )
+        assertEquals(6, blobs.headPublic(destination, MapTrust.FIRST_PARTY)?.sizeBytes)
         assertEquals("bundle", readPublic(destination))
     }
 
@@ -92,6 +91,34 @@ class BlobStoreIT {
         blobs.copyPrivateToPublic(source, destination, expectedSizeBytes = 6, MapTrust.FIRST_PARTY)
 
         assertEquals("public", readPublic(destination))
+    }
+
+    @Test
+    fun `promotion accepts a matching destination when the private source has expired`() {
+        val destination = "bundle/test/${UUID.randomUUID()}.tar.zst"
+        putPublic(destination, "public")
+
+        blobs.copyPrivateToPublic(
+            "tmp/derive/${UUID.randomUUID()}/missing.tar.zst",
+            destination,
+            expectedSizeBytes = 6,
+            MapTrust.FIRST_PARTY,
+        )
+
+        assertEquals("public", readPublic(destination))
+    }
+
+    @Test
+    fun `promotion and head use the untrusted public bucket`() {
+        val source = "tmp/derive/${UUID.randomUUID()}/bundle.tar.zst"
+        val destination = "bundle/test/${UUID.randomUUID()}.tar.zst"
+        putPrivate(source, "bundle")
+
+        blobs.copyPrivateToPublic(source, destination, expectedSizeBytes = 6, MapTrust.UNTRUSTED)
+
+        assertEquals(6, blobs.headPublic(destination, MapTrust.UNTRUSTED)?.sizeBytes)
+        assertEquals("bundle", read(MinioResource.UGC, destination))
+        assertNull(blobs.headPublic(destination, MapTrust.FIRST_PARTY))
     }
 
     @Test
@@ -110,6 +137,33 @@ class BlobStoreIT {
             )
         }
         assertEquals("different", readPublic(destination))
+    }
+
+    @Test
+    fun `promotion rejects a missing private source when no public object exists`() {
+        assertThrows(NoSuchKeyException::class.java) {
+            blobs.copyPrivateToPublic(
+                "tmp/derive/${UUID.randomUUID()}/missing.tar.zst",
+                "bundle/test/${UUID.randomUUID()}.tar.zst",
+                expectedSizeBytes = 6,
+                MapTrust.FIRST_PARTY,
+            )
+        }
+    }
+
+    @Test
+    fun `promotion rejects a private source whose size disagrees with the result`() {
+        val source = "tmp/derive/${UUID.randomUUID()}/bundle.tar.zst"
+        putPrivate(source, "short")
+
+        assertThrows(BlobIntegrityException::class.java) {
+            blobs.copyPrivateToPublic(
+                source,
+                "bundle/test/${UUID.randomUUID()}.tar.zst",
+                expectedSizeBytes = 6,
+                MapTrust.FIRST_PARTY,
+            )
+        }
     }
 
     private fun putPrivate(key: String, body: String) = put(MinioResource.PRIVATE, key, body)
@@ -134,6 +188,16 @@ class BlobStoreIT {
             s3.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key(key).build())
                 .asUtf8String()
         }
+
+    private fun getPresigned(url: String, expectedBody: String): String {
+        putPrivate(URI.create(url).path.substringAfter("/${MinioResource.PRIVATE}/"), expectedBody)
+        return HttpClient.newHttpClient()
+            .send(
+                HttpRequest.newBuilder(URI.create(url)).GET().build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            .body()
+    }
 
     private fun URI.queryParameters(): Map<String, String> =
         requireNotNull(rawQuery).split('&').associate { parameter ->

@@ -27,6 +27,10 @@ import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignReques
 /** A public content-addressed key names bytes that conflict with its recorded size. */
 class BlobIntegrityException(message: String) : RuntimeException(message)
 
+/** A conditional copy did not leave a public object whose size can be safely accepted. */
+class BlobCopyPreconditionException(message: String, cause: Throwable? = null) :
+    RuntimeException(message, cause)
+
 /**
  * R2, reached with the plain AWS SDK exactly as grounds-lod's generator does.
  *
@@ -125,8 +129,9 @@ constructor(
 
     /**
      * Creates a public derived object or proves that an already-public object has the expected
-     * size. A post-copy head closes the usual request/response race: only a verified public object
-     * can be accepted by the caller's later database transaction.
+     * size. R2 independently conditions selection of the private source and commit of the public
+     * destination; those checks are documented as non-atomic relative to one another. The final
+     * head therefore remains the only fact this service accepts for its database transition.
      */
     fun copyPrivateToPublic(
         sourceKey: String,
@@ -135,9 +140,6 @@ constructor(
         trust: MapTrust,
     ) {
         require(expectedSizeBytes >= 0) { "expected size must be non-negative" }
-        val source = headPrivate(sourceKey) ?: throw noSuchPrivateObject(sourceKey)
-        requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
-
         val destinationBucket = publicBucketFor(trust)
         val beforeCopy = head(destinationBucket, destinationKey)
         if (beforeCopy != null) {
@@ -149,20 +151,40 @@ constructor(
             return
         }
 
-        client.copyObject(
-            CopyObjectRequest.builder()
-                .sourceBucket(privateBucket)
-                .sourceKey(sourceKey)
-                .destinationBucket(destinationBucket)
-                .destinationKey(destinationKey)
-                .build()
-        )
-
-        val afterCopy =
-            head(destinationBucket, destinationKey)
-                ?: throw BlobIntegrityException(
-                    "copy did not create public destination $destinationKey"
+        val source = headPrivate(sourceKey) ?: throw noSuchPrivateObject(sourceKey)
+        requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
+        val sourceVersionToken =
+            source.eTag
+                ?: throw BlobCopyPreconditionException(
+                    "private source $sourceKey has no version token"
                 )
+
+        try {
+            client.copyObject(
+                conditionalCopyRequest(
+                    sourceBucket = privateBucket,
+                    sourceKey = sourceKey,
+                    sourceVersionToken = sourceVersionToken,
+                    destinationBucket = destinationBucket,
+                    destinationKey = destinationKey,
+                )
+            )
+        } catch (e: S3Exception) {
+            if (e.statusCode() != 412) throw e
+            resolveCopyPreconditionFailure(
+                head(destinationBucket, destinationKey),
+                expectedSizeBytes,
+                e,
+            )
+            return
+        }
+
+        val afterCopy = head(destinationBucket, destinationKey)
+        if (afterCopy == null) {
+            throw BlobCopyPreconditionException(
+                "copy did not create public destination $destinationKey"
+            )
+        }
         requireMatchingSize(
             "public destination $destinationKey",
             afterCopy.sizeBytes,
@@ -212,12 +234,9 @@ constructor(
 
     private fun head(bucket: String, key: String): BlobMetadata? =
         try {
-            BlobMetadata(
-                sizeBytes =
-                    client
-                        .headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build())
-                        .contentLength()
-            )
+            val response =
+                client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build())
+            BlobMetadata(sizeBytes = response.contentLength(), eTag = response.eTag())
         } catch (e: S3Exception) {
             if (e.statusCode() == 404) null else throw e
         }
@@ -259,4 +278,42 @@ constructor(
         /** The one deliberately mutable object in the design. */
         fun pinFileKey(environment: String): String = "pins/$environment.json"
     }
+}
+
+internal fun conditionalCopyRequest(
+    sourceBucket: String,
+    sourceKey: String,
+    sourceVersionToken: String,
+    destinationBucket: String,
+    destinationKey: String,
+): CopyObjectRequest =
+    CopyObjectRequest.builder()
+        .sourceBucket(sourceBucket)
+        .sourceKey(sourceKey)
+        .destinationBucket(destinationBucket)
+        .destinationKey(destinationKey)
+        .overrideConfiguration { configuration ->
+            configuration.putHeader("x-amz-copy-source-if-match", sourceVersionToken)
+            configuration.putHeader("cf-copy-destination-if-none-match", "*")
+        }
+        .build()
+
+/** Handles the 412 race outcome: only a now-visible public object of the expected size is safe. */
+internal fun resolveCopyPreconditionFailure(
+    destination: BlobMetadata?,
+    expectedSizeBytes: Long,
+    cause: Throwable? = null,
+): Boolean {
+    if (destination == null) {
+        throw BlobCopyPreconditionException(
+            "conditional copy failed without a public destination to verify",
+            cause,
+        )
+    }
+    if (destination.sizeBytes != expectedSizeBytes) {
+        throw BlobIntegrityException(
+            "public destination is ${destination.sizeBytes} bytes, expected $expectedSizeBytes"
+        )
+    }
+    return true
 }
