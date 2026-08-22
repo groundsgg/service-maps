@@ -25,6 +25,7 @@ class CatalogJarLoader(
     private val maxEntryExpandedBytes: Long = MAX_ENTRY_EXPANDED_BYTES,
     private val maxExpandedBytes: Long = MAX_EXPANDED_BYTES,
     internal val deleteJar: (Path) -> Unit = { Files.deleteIfExists(it) },
+    internal val beforeLoad: () -> Unit = {},
 ) : AutoCloseable {
     init {
         require(maxCatalogBytes > 0)
@@ -46,14 +47,25 @@ class CatalogJarLoader(
         try {
             Files.write(jar, bytes)
             inspect(jar)
+            beforeLoad()
             return loadCatalog(jar, candidate)
         } catch (failure: CatalogContentException) {
             primary = failure
             throw failure
-        } catch (failure: Throwable) {
+        } catch (failure: LinkageError) {
             val content = CatalogContentException("Catalog owner could not be loaded.", failure)
             primary = content
             throw content
+        } catch (failure: Exception) {
+            val content = CatalogContentException("Catalog owner could not be loaded.", failure)
+            primary = content
+            throw content
+        } catch (failure: ThreadDeath) {
+            primary = failure
+            throw failure
+        } catch (failure: Error) {
+            primary = failure
+            throw failure
         } finally {
             try {
                 deleteJar(jar)

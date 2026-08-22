@@ -229,6 +229,78 @@ class CatalogJarLoaderTest {
         }
     }
 
+    @Test
+    fun `rejects short HTTP bodies and cleans temporary jars on download and archive failures`() {
+        val bytes = catalogJar()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.jar") { exchange ->
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { it.write(bytes.copyOf(bytes.size - 1)) }
+        }
+        server.start()
+        val directory = Files.createTempDirectory("catalog-loader")
+        try {
+            CatalogJarLoader(directory, allowLoopbackHttp = true).use { loader ->
+                assertThrows(CatalogContentException::class.java) {
+                    loader.load(candidate(server, bytes))
+                }
+            }
+            assertEquals(0, directory.listDirectoryEntries().size)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `propagates fatal errors while retaining cleanup failures as suppressed`() {
+        val bytes = catalogJar()
+        val server = serverFor(bytes)
+        val fatal = AssertionError("fatal")
+        val cleanup = IllegalStateException("cleanup")
+        try {
+            val thrown =
+                assertThrows(AssertionError::class.java) {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                            deleteJar = { throw cleanup },
+                            beforeLoad = { throw fatal },
+                        )
+                        .use { it.load(candidate(server, bytes)) }
+                }
+            assertEquals(fatal, thrown)
+            assertEquals(listOf(cleanup), thrown.suppressed.toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `enforces entry count and aggregate expanded byte limits independently`() {
+        val tooMany = catalogJar((1..3).associate { "entry-$it" to byteArrayOf(1) })
+        val aggregate = catalogJar(mapOf("one" to ByteArray(3), "two" to ByteArray(3)))
+        listOf(Triple(tooMany, 2, 32L), Triple(aggregate, 20, 5L)).forEach { (bytes, entries, total)
+            ->
+            val server = serverFor(bytes)
+            try {
+                CatalogJarLoader(
+                        Files.createTempDirectory("catalog-loader"),
+                        allowLoopbackHttp = true,
+                        maxEntries = entries,
+                        maxEntryExpandedBytes = 4,
+                        maxExpandedBytes = total,
+                    )
+                    .use { loader ->
+                        assertThrows(CatalogContentException::class.java) {
+                            loader.load(candidate(server, bytes))
+                        }
+                    }
+            } finally {
+                server.stop(0)
+            }
+        }
+    }
+
     private fun candidate(server: HttpServer, bytes: ByteArray): AssetCatalogCandidate =
         candidate(URI("http://127.0.0.1:${server.address.port}/catalog.jar"), bytes)
 

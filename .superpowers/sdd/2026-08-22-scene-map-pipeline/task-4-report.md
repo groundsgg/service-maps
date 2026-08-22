@@ -53,3 +53,8 @@ DONE
 - The exact owner class is loaded child-first with no parent fallback; catalog-package support classes may fall back only after `ClassNotFoundException`, never a linkage failure.
 - Cleanup no longer drops errors: a successful load surfaces deletion failure, while an existing catalog-load failure retains its primary exception and carries cleanup failure as suppressed. Tests inject a deterministic delete failure for both paths.
 - `./gradlew spotlessApply test --tests gg.grounds.catalog.CatalogJarLoaderTest --rerun-tasks --no-daemon` passed: **8 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 18 actionable tasks).
+
+## Fix round 3 — subtask 4B (partial)
+
+- Added deterministic fatal-error and short-body response coverage; fatal errors preserve their original identity and receive cleanup errors as suppressed.
+- Added independent entry-count and aggregate-expanded-byte checks. `CatalogJarLoaderTest --rerun-tasks` passed: **11 tests completed, 0 failed**.
