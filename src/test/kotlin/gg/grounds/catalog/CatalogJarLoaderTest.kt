@@ -169,6 +169,66 @@ class CatalogJarLoaderTest {
         }
     }
 
+    @Test
+    fun `requires the base owner and rejects multi-release owner definitions`() {
+        val versionedOwner =
+            "META-INF/versions/17/gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class"
+        val base = catalogJar()
+        val ownerBytes = classBytes(base)
+        listOf(
+                catalogJar(includeOwner = false),
+                catalogJar(mapOf(versionedOwner to ownerBytes)),
+                catalogJar(mapOf(versionedOwner to ownerBytes), includeOwner = false),
+            )
+            .forEach { bytes ->
+                val server = serverFor(bytes)
+                try {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                        )
+                        .use { loader ->
+                            assertThrows(CatalogContentException::class.java) {
+                                loader.load(candidate(server, bytes))
+                            }
+                        }
+                } finally {
+                    server.stop(0)
+                }
+            }
+    }
+
+    @Test
+    fun `surfaces deletion failures and suppresses them behind primary failures`() {
+        val bytes = catalogJar()
+        val server = serverFor(bytes)
+        val cleanupFailure = IllegalStateException("delete failed")
+        try {
+            val successFailure =
+                assertThrows(IllegalStateException::class.java) {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                            deleteJar = { throw cleanupFailure },
+                        )
+                        .use { it.load(candidate(server, bytes)) }
+                }
+            assertEquals(cleanupFailure, successFailure)
+            val primary =
+                assertThrows(CatalogContentException::class.java) {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                            deleteJar = { throw cleanupFailure },
+                        )
+                        .use { it.load(candidate(server, bytes).copy(id = "wrong:id")) }
+                }
+            assertEquals(listOf(cleanupFailure), primary.suppressed.toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun candidate(server: HttpServer, bytes: ByteArray): AssetCatalogCandidate =
         candidate(URI("http://127.0.0.1:${server.address.port}/catalog.jar"), bytes)
 
@@ -193,7 +253,10 @@ class CatalogJarLoaderTest {
             server.start()
         }
 
-    private fun catalogJar(extra: Map<String, ByteArray> = emptyMap()): ByteArray {
+    private fun catalogJar(
+        extra: Map<String, ByteArray> = emptyMap(),
+        includeOwner: Boolean = true,
+    ): ByteArray {
         val sourceDirectory = Files.createTempDirectory("catalog-source")
         val classesDirectory = Files.createTempDirectory("catalog-classes")
         try {
@@ -242,11 +305,13 @@ class CatalogJarLoaderTest {
                         classesDirectory.resolve(
                             "gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class"
                         )
-                    jar.putNextEntry(
-                        JarEntry("gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class")
-                    )
-                    jar.write(Files.readAllBytes(classFile))
-                    jar.closeEntry()
+                    if (includeOwner) {
+                        jar.putNextEntry(
+                            JarEntry("gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class")
+                        )
+                        jar.write(Files.readAllBytes(classFile))
+                        jar.closeEntry()
+                    }
                     extra.forEach { (name, content) ->
                         jar.putNextEntry(JarEntry(name))
                         jar.write(content)
@@ -263,6 +328,13 @@ class CatalogJarLoaderTest {
 
     private fun digest(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun classBytes(jar: ByteArray): ByteArray =
+        java.util.jar.JarInputStream(jar.inputStream()).use { input ->
+            generateSequence { input.nextJarEntry }
+                .first { it.name.endsWith("GroundsAssetCatalog.class") }
+                .let { input.readBytes() }
+        }
 }
 
 object CatalogJarLoaderFixtures {

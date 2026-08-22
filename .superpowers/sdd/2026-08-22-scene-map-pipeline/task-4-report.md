@@ -46,3 +46,10 @@ DONE
 - Replaced central-directory size accounting with Commons Compress streaming validation. The loader now rejects unsafe names, duplicates, non-regular/non-directory Unix entry types, excessive entry count/per-entry/total expansion, and any zero or additional (including multi-release) generated owner definition.
 - The loader is child-first only for the generated catalog package, delegates JDK/Kotlin/scene-format identities to its parent, validates the materialized AssetCatalog id/version, then closes the loader and deletes the temporary JAR on every path without replacing the primary failure.
 - `./gradlew test --tests gg.grounds.catalog.CatalogJarLoaderTest spotlessCheck testClasses --no-daemon` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 18 actionable tasks).
+
+## Fix round 2 — subtask 4B
+
+- RED/GREEN: owner validation now requires exactly one base owner entry and rejects every suffixed owner definition, including multi-release-only and base-plus-multi-release layouts.
+- The exact owner class is loaded child-first with no parent fallback; catalog-package support classes may fall back only after `ClassNotFoundException`, never a linkage failure.
+- Cleanup no longer drops errors: a successful load surfaces deletion failure, while an existing catalog-load failure retains its primary exception and carries cleanup failure as suppressed. Tests inject a deterministic delete failure for both paths.
+- `./gradlew spotlessApply test --tests gg.grounds.catalog.CatalogJarLoaderTest --rerun-tasks --no-daemon` passed: **8 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 18 actionable tasks).

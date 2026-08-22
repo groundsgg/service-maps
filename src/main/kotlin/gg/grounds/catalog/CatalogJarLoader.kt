@@ -24,6 +24,7 @@ class CatalogJarLoader(
     private val maxEntries: Int = MAX_ENTRIES,
     private val maxEntryExpandedBytes: Long = MAX_ENTRY_EXPANDED_BYTES,
     private val maxExpandedBytes: Long = MAX_EXPANDED_BYTES,
+    internal val deleteJar: (Path) -> Unit = { Files.deleteIfExists(it) },
 ) : AutoCloseable {
     init {
         require(maxCatalogBytes > 0)
@@ -41,16 +42,24 @@ class CatalogJarLoader(
         val bytes = download(candidate)
         Files.createDirectories(cacheDirectory)
         val jar = Files.createTempFile(cacheDirectory, "catalog-", ".jar")
+        var primary: Throwable? = null
         try {
             Files.write(jar, bytes)
             inspect(jar)
             return loadCatalog(jar, candidate)
         } catch (failure: CatalogContentException) {
+            primary = failure
             throw failure
-        } catch (failure: Exception) {
-            throw CatalogContentException("Catalog owner could not be loaded.", failure)
+        } catch (failure: Throwable) {
+            val content = CatalogContentException("Catalog owner could not be loaded.", failure)
+            primary = content
+            throw content
         } finally {
-            runCatching { Files.deleteIfExists(jar) }
+            try {
+                deleteJar(jar)
+            } catch (cleanup: Throwable) {
+                primary?.addSuppressed(cleanup) ?: throw cleanup
+            }
         }
     }
 
@@ -115,7 +124,8 @@ class CatalogJarLoader(
                 val names = mutableSetOf<String>()
                 var entries = 0
                 var totalExpanded = 0L
-                var ownerDefinitions = 0
+                var baseOwnerDefinitions = 0
+                var additionalOwnerDefinitions = 0
                 zip.entries.asSequence().forEach { entry: ZipArchiveEntry ->
                     if (++entries > maxEntries || !safeName(entry.name) || !names.add(entry.name)) {
                         throw CatalogContentException("Catalog JAR has unsafe entries.")
@@ -138,9 +148,10 @@ class CatalogJarLoader(
                             }
                         }
                     }
-                    if (isOwnerDefinition(entry.name)) ownerDefinitions++
+                    if (entry.name == OWNER_ENTRY) baseOwnerDefinitions++
+                    else if (isAdditionalOwnerDefinition(entry.name)) additionalOwnerDefinitions++
                 }
-                if (ownerDefinitions != 1) {
+                if (baseOwnerDefinitions != 1 || additionalOwnerDefinitions != 0) {
                     throw CatalogContentException(
                         "Catalog JAR must define exactly one catalog owner."
                     )
@@ -194,8 +205,7 @@ class CatalogJarLoader(
             (!entry.isDirectory && type == UNIX_REGULAR)
     }
 
-    private fun isOwnerDefinition(name: String): Boolean =
-        name == OWNER_ENTRY || name.endsWith("/$OWNER_ENTRY")
+    private fun isAdditionalOwnerDefinition(name: String): Boolean = name.endsWith("/$OWNER_ENTRY")
 
     override fun close() = Unit
 
@@ -208,8 +218,14 @@ class CatalogJarLoader(
             synchronized(getClassLoadingLock(name)) {
                 findLoadedClass(name)
                     ?: run {
-                            if (name.startsWith(CATALOG_PACKAGE)) {
-                                runCatching { findClass(name) }.getOrElse { parent.loadClass(name) }
+                            if (name == OWNER_CLASS) {
+                                findClass(name)
+                            } else if (name.startsWith(CATALOG_PACKAGE)) {
+                                try {
+                                    findClass(name)
+                                } catch (_: ClassNotFoundException) {
+                                    parent.loadClass(name)
+                                }
                             } else {
                                 parent.loadClass(name)
                             }
