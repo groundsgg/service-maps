@@ -24,8 +24,11 @@ fun interface SceneCatalogResolver {
 }
 
 sealed interface SceneDerivationOutcome {
-    data class Valid(val bundle: ByteArray, val manifest: ByteArray, val scene: DerivedScene) :
-        SceneDerivationOutcome
+    data class Valid(
+        val bundle: DerivedBundleArtifact,
+        val manifest: ByteArray,
+        val scene: DerivedScene,
+    ) : SceneDerivationOutcome
 
     data class Invalid(val problems: List<DeriveProblem>) : SceneDerivationOutcome
 }
@@ -85,7 +88,13 @@ class SceneDeriver(
                     scene = scene,
                 )
             )
-        return SceneDerivationOutcome.Valid(bundleWriter.write(updated, manifest), manifest, scene)
+        val output =
+            Files.createTempDirectory(workerDirectory, ".derived-bundle-").resolve("bundle.tar.zst")
+        return SceneDerivationOutcome.Valid(
+            bundleWriter.write(updated, manifest, output),
+            manifest,
+            scene,
+        )
     }
 
     private fun noScene() =

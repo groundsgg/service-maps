@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.nio.file.Files
+import java.security.MessageDigest
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -56,7 +57,11 @@ class SceneDeriverTest {
                     ),
             )
         assertEquals(DerivedScene(false, null, null, null, null, emptyList()), one.scene)
-        assertArrayEquals(one.bundle, two.bundle)
+        assertArrayEquals(Files.readAllBytes(one.bundle.path), Files.readAllBytes(two.bundle.path))
+        assertEquals(one.bundle.sha256, two.bundle.sha256)
+        assertEquals(one.bundle.size, two.bundle.size)
+        assertEquals(one.bundle.size, Files.size(one.bundle.path))
+        assertEquals(one.bundle.sha256, digest(Files.readAllBytes(one.bundle.path)))
         assertArrayEquals(one.manifest, two.manifest)
     }
 
@@ -124,7 +129,7 @@ class SceneDeriverTest {
             )
         val root = Files.createTempDirectory("bundle")
         val files =
-            SafeTarZstdReader().read(ByteArrayInputStream(result.bundle), root).associateBy {
+            SafeTarZstdReader().read(Files.newInputStream(result.bundle.path), root).associateBy {
                 it.path
             }
         assertEquals(true, result.scene.present)
@@ -156,7 +161,7 @@ class SceneDeriverTest {
             )
         val entries =
             SafeTarZstdReader()
-                .read(ByteArrayInputStream(result.bundle), Files.createTempDirectory("bundle"))
+                .read(Files.newInputStream(result.bundle.path), Files.createTempDirectory("bundle"))
                 .associateBy { it.path }
 
         assertEquals(
@@ -179,6 +184,9 @@ class SceneDeriverTest {
             .also { compressed -> ZstdOutputStream(compressed).use { it.write(tar.toByteArray()) } }
             .toByteArray()
     }
+
+    private fun digest(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private val emptyCatalogResolver = SceneCatalogResolver {
         error("scene catalog should not resolve")

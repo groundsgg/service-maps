@@ -96,3 +96,26 @@ Verified with:
 ./gradlew spotlessApply
 ./gradlew spotlessCheck testClasses
 ```
+
+## Fix round 1 — subtask B
+
+### RED
+
+Added artifact-path/digest/size, deterministic-cross-work-directory, large ordinary-file, and
+mid-output-failure regressions. The focused writer test initially failed to compile because
+`DerivedBundleWriter.write` still accepted only entries/manifest and returned a `ByteArray`.
+
+### GREEN
+
+`DerivedBundleWriter` now writes a deterministic tar directly through zstd and SHA-256/counting
+streams to a caller-provided `CREATE_NEW` path. Ordinary spool files use `Files.size` and bounded
+input streaming; a failed write removes only the output it created and preserves the original
+`IOException`. `SceneDeriver` creates the output in a fresh generated directory beneath the worker
+root and returns the immutable artifact instead of bundle bytes.
+
+Verified with:
+
+```text
+./gradlew test --tests gg.grounds.derive.DeriveContractsTest --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest --tests gg.grounds.derive.DerivedBundleWriterTest --rerun-tasks
+./gradlew spotlessCheck testClasses
+```
