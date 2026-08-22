@@ -129,6 +129,15 @@ constructor(
         require(retryable == (scope == DeriveFailureScope.SYSTEM)) {
             "retryable must match failure scope"
         }
+        problems.forEach { problem ->
+            require(problem.scope == scope) { "problem scope must match failure scope" }
+            require(problem.code.isNotBlank()) { "problem code cannot be blank" }
+            require(problem.message.isNotBlank()) { "problem message cannot be blank" }
+            require(problem.path?.isNotBlank() != false) { "problem path cannot be blank" }
+            require(problem.qualifiedIdentity?.isNotBlank() != false) {
+                "problem qualifiedIdentity cannot be blank"
+            }
+        }
     }
 }
 
@@ -151,6 +160,12 @@ constructor(
             requireSha256("scene.sha256", sha256)
             require(assetCatalog != null) { "present scene requires assetCatalog" }
             require(actionCatalog != null) { "present scene requires actionCatalog" }
+            require(assetCatalog.id.isNotBlank() && assetCatalog.version.isNotBlank()) {
+                "present scene requires nonblank assetCatalog id and version"
+            }
+            require(actionCatalog.id.isNotBlank() && actionCatalog.version.isNotBlank()) {
+                "present scene requires nonblank actionCatalog id and version"
+            }
         } else {
             require(schemaVersion == null && sha256 == null) {
                 "absent scene cannot have scene metadata"
