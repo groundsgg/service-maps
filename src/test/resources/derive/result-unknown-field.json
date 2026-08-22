@@ -1,0 +1,14 @@
+{
+  "kind": "FAILURE",
+  "schemaVersion": 1,
+  "mapId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "version": 1,
+  "attempt": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "scope": "SYSTEM",
+  "retryable": true,
+  "problems": [
+    { "scope": "SYSTEM", "path": null, "code": "IO", "qualifiedIdentity": null, "message": "temporary failure" }
+  ],
+  "unexpected": true
+}

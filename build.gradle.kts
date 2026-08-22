@@ -48,6 +48,9 @@ dependencies {
     // the CDN — so there is no in-cluster RPC client to serve.
     implementation("io.quarkus:quarkus-rest")
     implementation("io.quarkus:quarkus-rest-jackson")
+    // The derive worker constructs its strict mapper outside Quarkus, so it must carry Kotlin
+    // constructor metadata rather than relying on the application-managed ObjectMapper.
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
     // server lives on the grounds-dev spoke while this runs on core, and a k8s
     // SA token from one cluster means nothing to the other cluster's JWKS.
