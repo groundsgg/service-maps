@@ -133,6 +133,11 @@ class BlobStorePromotionTest {
         private val failure = AtomicReference<Throwable?>()
         private var destinationHeads = 0
         private val destinationHeadPaths = mutableListOf<String>()
+        private var copyRequests = 0
+        private val copySources = mutableListOf<String?>()
+        private val copySourceConditions = mutableListOf<String?>()
+        private val destinationConditions = mutableListOf<String?>()
+        private val authorizations = mutableListOf<String?>()
         private val server =
             HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
                 executor = Executors.newSingleThreadExecutor()
@@ -176,7 +181,7 @@ class BlobStorePromotionTest {
         private fun destinationHead(exchange: HttpExchange) {
             destinationHeads += 1
             destinationHeadPaths += exchange.requestURI.path
-            if (destinationHeads == 1 || recoverySize == null) {
+            if (destinationHeads == 1 || copyRequests == 0 || recoverySize == null) {
                 exchange.sendResponseHeaders(404, -1)
             } else {
                 head(exchange, size = recoverySize, etag = "\"destination-v1\"")
@@ -184,14 +189,12 @@ class BlobStorePromotionTest {
         }
 
         private fun copy(exchange: HttpExchange) {
-            assertEquals(
-                "\"opaque-v1\"",
-                exchange.requestHeaders.getFirst("x-amz-copy-source-if-match"),
-            )
-            assertEquals("*", exchange.requestHeaders.getFirst("cf-copy-destination-if-none-match"))
-            val authorization = requireNotNull(exchange.requestHeaders.getFirst("Authorization"))
-            assertTrue(authorization.contains("x-amz-copy-source-if-match"))
-            assertTrue(authorization.contains("cf-copy-destination-if-none-match"))
+            copyRequests += 1
+            copySources += exchange.requestHeaders.getFirst("x-amz-copy-source")
+            copySourceConditions += exchange.requestHeaders.getFirst("x-amz-copy-source-if-match")
+            destinationConditions +=
+                exchange.requestHeaders.getFirst("cf-copy-destination-if-none-match")
+            authorizations += exchange.requestHeaders.getFirst("Authorization")
             val body = "<Error><Code>PreconditionFailed</Code></Error>".toByteArray()
             exchange.responseHeaders.add("Content-Type", "application/xml")
             exchange.sendResponseHeaders(412, body.size.toLong())
@@ -206,6 +209,13 @@ class BlobStorePromotionTest {
 
         fun assertConditionalCopy() {
             failure.get()?.let { throw AssertionError("loopback request assertion failed", it) }
+            assertEquals(1, copyRequests, "must issue exactly one CopyObject request")
+            assertEquals(listOf("private/source"), copySources)
+            assertEquals(listOf("\"opaque-v1\""), copySourceConditions)
+            assertEquals(listOf("*"), destinationConditions)
+            val authorization = requireNotNull(authorizations.single())
+            assertTrue(authorization.contains("x-amz-copy-source-if-match"))
+            assertTrue(authorization.contains("cf-copy-destination-if-none-match"))
             assertEquals(
                 2,
                 destinationHeads,
