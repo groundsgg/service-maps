@@ -18,7 +18,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 /** The only source of runtime catalogs: validated PackSet snapshots for Stable then Edge. */
 @ApplicationScoped
-class PackSetCatalogProvider internal constructor(
+class PackSetCatalogProvider
+internal constructor(
     private val stableClient: PackSetClient,
     private val edgeClient: PackSetClient,
 ) : AutoCloseable {

@@ -26,3 +26,9 @@ DONE
 - Added four loopback-HTTP behavioral lifecycle tests covering initial/down readiness, exact Stable/Edge validated activation and separate caches, degraded fallback on server/corrupt failures, served-document mutation, disabled health, and terminal close behavior.
 - `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 tasks).
 - `./gradlew spotlessCheck testClasses` was executed; it is blocked by an existing formatting violation in `src/main/kotlin/gg/grounds/catalog/PackSetCatalogProvider.kt` (the accepted production owner declaration). The new test file was formatted with `spotlessApply`; no production source formatting change is included in this test-only commit.
+
+## 4A formatter cleanup
+
+- Ran `./gradlew spotlessApply`; the only production change is Spotless’s line break between `PackSetCatalogProvider` and its `internal constructor`, with no behavior change.
+- `./gradlew spotlessCheck testClasses` passed (`BUILD SUCCESSFUL`, 17 actionable tasks).
+- `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 actionable tasks).
