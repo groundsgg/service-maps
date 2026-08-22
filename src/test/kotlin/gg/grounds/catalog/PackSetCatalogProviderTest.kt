@@ -1,6 +1,7 @@
 package gg.grounds.catalog
 
 import com.sun.net.httpserver.HttpServer
+import gg.grounds.derive.AssetCatalogCandidate
 import gg.grounds.resourcepacks.client.PackSetClient
 import gg.grounds.resourcepacks.client.PackSetClientConfig
 import gg.grounds.resourcepacks.client.PackSetHttpResponse
@@ -42,27 +43,16 @@ class PackSetCatalogProviderTest {
                 )
                 provider.start()
                 await { provider.candidates().size == 2 }
-                assertEquals(listOf("stable", "edge"), provider.candidates().map { it.channel })
-                assertEquals(
-                    listOf("1.2.3", edgeVersion(1)),
-                    provider.candidates().map { it.version },
-                )
-                assertEquals(
-                    listOf(
-                        "https://assets.example.test/resourcepacks/packsets/global/releases/v1.2.3/grounds-resourcepack-catalog-v1.2.3.jar",
-                        "https://assets.example.test/resourcepacks/packsets/global/builds/$BUILD_ID/grounds-resourcepack-catalog-edge-${BUILD_ID.take(12)}.jar",
-                    ),
-                    provider.candidates().map { it.uri.toString() },
-                )
+                assertEquals(expectedCandidates("1.2.3", edgeVersion(1)), provider.candidates())
                 assertEquals(
                     listOf("READY", "READY"),
                     provider.channelStates().values.map { it.status },
                 )
                 assertTrue(Files.isDirectory(root.resolve("stable")))
                 assertTrue(Files.isDirectory(root.resolve("edge")))
-                assertTrue(server.requests.contains(stable.channelUri.path))
-                assertTrue(server.requests.contains(edge.channelUri.path))
-                assertEquals(2, server.requests.count { it.endsWith("/manifest.json") })
+                assertTrue(server.requestPaths().contains(stable.channelUri.path))
+                assertTrue(server.requestPaths().contains(edge.channelUri.path))
+                assertEquals(2, server.requestPaths().count { it.endsWith("/manifest.json") })
             }
             assertEquals("CLOSED", stableClient.state().status.name)
             assertEquals("CLOSED", edgeClient.state().status.name)
@@ -108,25 +98,31 @@ class PackSetCatalogProviderTest {
             server.publish(stable, "1.2.3", 1)
             server.publish(edge, edgeVersion(1), 1)
             val (provider, stableClient, edgeClient) = provider(server, root)
-            provider.start()
-            await { provider.candidates().size == 2 }
-            server.publish(stable, "1.2.4", 2)
-            server.publish(edge, edgeVersion(2), 2)
-            stableClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
-            edgeClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
-            await { provider.candidates().map { it.version } == listOf("1.2.4", edgeVersion(2)) }
-            assertEquals(listOf("1.2.4", edgeVersion(2)), provider.candidates().map { it.version })
-            provider.close()
-            assertEquals(
-                listOf("CLOSED", "CLOSED"),
-                provider.channelStates().values.map { it.status },
-            )
-            stableClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
-            edgeClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
-            assertEquals(
-                listOf("CLOSED", "CLOSED"),
-                provider.channelStates().values.map { it.status },
-            )
+            try {
+                provider.start()
+                await { provider.candidates().size == 2 }
+                server.publish(stable, "1.2.4", 2)
+                server.publish(edge, edgeVersion(2), 2)
+                stableClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
+                edgeClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
+                await { provider.candidates() == expectedCandidates("1.2.4", edgeVersion(2)) }
+                assertEquals(expectedCandidates("1.2.4", edgeVersion(2)), provider.candidates())
+                val requestsBeforeClose = server.requestPaths()
+                provider.close()
+                assertEquals(
+                    listOf("CLOSED", "CLOSED"),
+                    provider.channelStates().values.map { it.status },
+                )
+                stableClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
+                edgeClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
+                assertEquals(requestsBeforeClose, server.requestPaths())
+                assertEquals(
+                    listOf("CLOSED", "CLOSED"),
+                    provider.channelStates().values.map { it.status },
+                )
+            } finally {
+                provider.close()
+            }
         }
     }
 
@@ -170,6 +166,33 @@ class PackSetCatalogProviderTest {
         while (!condition() && System.nanoTime() < deadline) Thread.sleep(10)
         assertTrue(condition())
     }
+
+    private fun expectedCandidates(stableVersion: String, edgeVersion: String) =
+        listOf(
+            candidate("stable", stableVersion, "v$stableVersion", "releases", "v$stableVersion"),
+            candidate("edge", edgeVersion, "edge-${BUILD_ID.take(12)}", "builds", BUILD_ID),
+        )
+
+    private fun candidate(
+        channel: String,
+        version: String,
+        suffix: String,
+        publicationDirectory: String,
+        publicationId: String,
+    ) =
+        AssetCatalogCandidate(
+            channel = channel,
+            id = "grounds:resourcepacks",
+            version = version,
+            coordinate = "gg.grounds:resourcepacks-catalog:$version",
+            file = "grounds-resourcepack-catalog-$suffix.jar",
+            uri =
+                URI(
+                    "https://assets.example.test/resourcepacks/packsets/global/$publicationDirectory/$publicationId/grounds-resourcepack-catalog-$suffix.jar"
+                ),
+            sha256 = "a".repeat(64),
+            size = 3,
+        )
 
     private inner class LoopbackCatalogServer : AutoCloseable {
         private val responses = AtomicReference<Map<String, Response>>(emptyMap())
@@ -215,6 +238,8 @@ class PackSetCatalogProviderTest {
             }
         }
 
+        fun requestPaths(): List<String> = synchronized(requests) { requests.toList() }
+
         fun transport() =
             object : PackSetHttpTransport {
                 override fun get(
@@ -227,6 +252,10 @@ class PackSetCatalogProviderTest {
                             .toURL()
                             .openConnection() as HttpURLConnection
                     connection.instanceFollowRedirects = false
+                    val timeoutMillis =
+                        timeout.toMillis().coerceIn(1, Int.MAX_VALUE.toLong()).toInt()
+                    connection.connectTimeout = timeoutMillis
+                    connection.readTimeout = timeoutMillis
                     try {
                         val status = connection.responseCode
                         val body =

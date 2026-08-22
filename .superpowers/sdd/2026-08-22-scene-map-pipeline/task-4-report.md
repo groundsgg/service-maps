@@ -32,3 +32,9 @@ DONE
 - Ran `./gradlew spotlessApply`; the only production change is Spotless’s line break between `PackSetCatalogProvider` and its `internal constructor`, with no behavior change.
 - `./gradlew spotlessCheck testClasses` passed (`BUILD SUCCESSFUL`, 17 actionable tasks).
 - `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 actionable tasks).
+
+## 4A lifecycle assertion hardening
+
+- Hardened lifecycle tests to assert both full Stable/Edge `AssetCatalogCandidate` values, preserve clients/server through assertion failures, use supplied HTTP connect/read timeouts, and prove post-close refreshes issue no additional HTTP requests.
+- `./gradlew spotlessCheck testClasses` passed (`BUILD SUCCESSFUL`, 17 actionable tasks).
+- `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 actionable tasks).
