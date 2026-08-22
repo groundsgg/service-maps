@@ -2,8 +2,13 @@ package gg.grounds.persistence
 
 import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
+import gg.grounds.domain.CatalogReference
+import gg.grounds.domain.DeriveFailureScope
+import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
+import gg.grounds.domain.SceneProjection
+import gg.grounds.domain.SceneStatus
 import gg.grounds.domain.VersionNotFoundException
 import gg.grounds.domain.VersionNotPublishableException
 import gg.grounds.domain.VersionState
@@ -77,7 +82,10 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         UPDATE map_version
                            SET state = ?, bundle_sha256 = ?, manifest_sha256 = ?,
                                size_bytes = ?, present_chunks = ?, est_loaded_mib = ?,
-                               published_by_sub = ?
+                               published_by_sub = ?, scene_present = FALSE,
+                               scene_schema_version = NULL, scene_sha256 = NULL,
+                               asset_catalog_id = NULL, asset_catalog_version = NULL,
+                               action_catalog_id = NULL, action_catalog_version = NULL
                          WHERE map = ? AND version = ?
                         """
                     )
@@ -95,6 +103,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         ps.setInt(9, version)
                         ps.executeUpdate()
                     }
+                // Compatibility publishing produces a successful no-scene version. A previous
+                // derive attempt must not leave action requirements or diagnostics attached to it.
+                clearSceneCollections(c, mapId, version)
                 // Recording the blob is not bookkeeping for its own sake: orphan collection
                 // needs to know a digest was seen before it can decide nothing references it.
                 // A digest names exactly one byte string, so it has exactly one size. Two
@@ -142,7 +153,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
         dataSource.connection.use { c ->
             c.prepareStatement("$SELECT_COLUMNS WHERE map = ? ORDER BY version DESC").use { ps ->
                 ps.setObject(1, mapId)
-                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toRecord()) } }
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toRecord(c)) } }
             }
         }
 
@@ -153,7 +164,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 )
                 .use { ps ->
                     ps.setObject(1, mapId)
-                    ps.executeQuery().use { rs -> if (rs.next()) rs.toRecord() else null }
+                    ps.executeQuery().use { rs -> if (rs.next()) rs.toRecord(c) else null }
                 }
         }
 
@@ -226,10 +237,10 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             .use { ps ->
                 ps.setObject(1, mapId)
                 ps.setInt(2, version)
-                ps.executeQuery().use { rs -> if (rs.next()) rs.toRecord() else null }
+                ps.executeQuery().use { rs -> if (rs.next()) rs.toRecord(c) else null }
             }
 
-    private fun ResultSet.toRecord(): MapVersionRecord =
+    private fun ResultSet.toRecord(c: Connection): MapVersionRecord =
         MapVersionRecord(
             mapId = getObject("map", UUID::class.java),
             version = getInt("version"),
@@ -242,16 +253,105 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             sizeBytes = getObject("size_bytes") as Long?,
             presentChunks = getObject("present_chunks") as Int?,
             estLoadedMib = getObject("est_loaded_mib") as Int?,
+            deriveAttempt = getObject("derive_attempt", UUID::class.java),
+            deriveFailureScope =
+                getString("derive_failure_scope")?.let(DeriveFailureScope::valueOf),
+            deriveRetryable = getBoolean("derive_retryable"),
+            scene =
+                SceneProjection(
+                    status = sceneStatus(),
+                    schemaVersion = getString("scene_schema_version"),
+                    sha256 = getString("scene_sha256"),
+                    assetCatalog = catalog("asset_catalog_id", "asset_catalog_version"),
+                    actionCatalog = catalog("action_catalog_id", "action_catalog_version"),
+                    requiredActions =
+                        requiredActions(c, getObject("map", UUID::class.java), getInt("version")),
+                    problems =
+                        deriveProblems(c, getObject("map", UUID::class.java), getInt("version")),
+                ),
             publishedBySub = getString("published_by_sub"),
             note = getString("note"),
             createdAt = getTimestamp("created_at").toInstant(),
         )
+
+    private fun ResultSet.sceneStatus(): SceneStatus =
+        when (VersionState.valueOf(getString("state"))) {
+            VersionState.DERIVE_FAILED -> SceneStatus.INVALID
+            VersionState.PUBLISHED ->
+                if (getObject("scene_present") as Boolean? == true) SceneStatus.VALID
+                else SceneStatus.NONE
+            else -> SceneStatus.PENDING
+        }
+
+    private fun ResultSet.catalog(idColumn: String, versionColumn: String): CatalogReference? =
+        getString(idColumn)?.let { CatalogReference(it, requireNotNull(getString(versionColumn))) }
+
+    private fun requiredActions(c: Connection, mapId: UUID, version: Int): List<String> =
+        c.prepareStatement(
+                """
+                SELECT action_id FROM map_version_required_action
+                 WHERE map = ? AND version = ?
+                 ORDER BY action_id
+                """
+            )
+            .use { ps ->
+                ps.setObject(1, mapId)
+                ps.setInt(2, version)
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+            }
+
+    private fun deriveProblems(c: Connection, mapId: UUID, version: Int): List<DeriveProblem> =
+        c.prepareStatement(
+                """
+                SELECT scope, path, code, qualified_identity, message
+                  FROM map_version_derive_problem
+                 WHERE map = ? AND version = ?
+                 ORDER BY ordinal
+                """
+            )
+            .use { ps ->
+                ps.setObject(1, mapId)
+                ps.setInt(2, version)
+                ps.executeQuery().use { rs ->
+                    buildList {
+                        while (rs.next()) {
+                            add(
+                                DeriveProblem(
+                                    scope = DeriveFailureScope.valueOf(rs.getString("scope")),
+                                    path = rs.getString("path"),
+                                    code = rs.getString("code"),
+                                    qualifiedIdentity = rs.getString("qualified_identity"),
+                                    message = rs.getString("message"),
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+    private fun clearSceneCollections(c: Connection, mapId: UUID, version: Int) {
+        c.prepareStatement("DELETE FROM map_version_required_action WHERE map = ? AND version = ?")
+            .use { ps ->
+                ps.setObject(1, mapId)
+                ps.setInt(2, version)
+                ps.executeUpdate()
+            }
+        c.prepareStatement("DELETE FROM map_version_derive_problem WHERE map = ? AND version = ?")
+            .use { ps ->
+                ps.setObject(1, mapId)
+                ps.setInt(2, version)
+                ps.executeUpdate()
+            }
+    }
 
     private companion object {
         const val SELECT_COLUMNS =
             """
             SELECT map, version, state, bundle_sha256, source_sha256, source_key, manifest_sha256,
                    parent_version, size_bytes, present_chunks, est_loaded_mib,
+                   derive_attempt, derive_failure_scope, derive_retryable,
+                   scene_present, scene_schema_version, scene_sha256,
+                   asset_catalog_id, asset_catalog_version, action_catalog_id, action_catalog_version,
                    published_by_sub, note, created_at
             FROM map_version
             """
