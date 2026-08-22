@@ -1,6 +1,6 @@
 # Scene Map Pipeline Design
 
-**Status:** Approved in chat on 2026-08-22; awaiting review of this written specification
+**Status:** Approved on 2026-08-22
 
 **Parent:** [Scene, NPC & Resource Pack Platform — Concept and Master Plan](https://grounds.atlassian.net/wiki/spaces/GARCHITECT/pages/257622018)
 
