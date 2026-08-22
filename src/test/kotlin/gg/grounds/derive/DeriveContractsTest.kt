@@ -78,6 +78,24 @@ class DeriveContractsTest {
     }
 
     @Test
+    fun `strict parser rejects scalar coercions`() {
+        val success = resource("/derive/result-valid.json")
+        val failure =
+            resource("/derive/result-unknown-field.json").replace(",\n  \"unexpected\": true\n", "")
+
+        listOf(
+                success.replace("\"schemaVersion\": 1", "\"schemaVersion\": \"1\""),
+                success.replace("\"bundleSize\": 42", "\"bundleSize\": \"42\""),
+                failure.replace("\"retryable\": true", "\"retryable\": \"true\""),
+            )
+            .forEach { payload ->
+                assertThrows(JsonMappingException::class.java) {
+                    CanonicalJson.readResult(payload.toByteArray())
+                }
+            }
+    }
+
+    @Test
     fun `canonical JSON omits null optional scene facts`() {
         val bytes =
             CanonicalJson.write(
@@ -92,7 +110,7 @@ class DeriveContractsTest {
 
         assertTrue(!json.contains("assetCatalog"))
         assertTrue(!json.contains("actionCatalog"))
-        assertTrue(!json.contains("\\\"sha256\\\":null"))
+        assertTrue(!json.contains("\"sha256\":null"))
     }
 
     @Test
@@ -181,30 +199,17 @@ class DeriveContractsTest {
     }
 
     @Test
-    fun `failure requires coherent nonblank problems`() {
-        val error =
-            assertThrows(IllegalArgumentException::class.java) {
-                DeriveFailure(
-                    mapId = UUID.randomUUID(),
-                    version = 1,
-                    attempt = UUID.randomUUID(),
-                    sourceSha256 = digest(1),
-                    scope = DeriveFailureScope.CONTENT,
-                    retryable = false,
-                    problems =
-                        listOf(
-                            DeriveProblem(
-                                scope = DeriveFailureScope.SYSTEM,
-                                path = "",
-                                code = "",
-                                qualifiedIdentity = "",
-                                message = "",
-                            )
-                        ),
-                )
+    fun `failure independently rejects incoherent and blank problem fields`() {
+        listOf(
+                DeriveProblem(DeriveFailureScope.SYSTEM, null, "CODE", null, "message"),
+                DeriveProblem(DeriveFailureScope.CONTENT, null, "", null, "message"),
+                DeriveProblem(DeriveFailureScope.CONTENT, null, "CODE", null, ""),
+                DeriveProblem(DeriveFailureScope.CONTENT, "", "CODE", null, "message"),
+                DeriveProblem(DeriveFailureScope.CONTENT, null, "CODE", "", "message"),
+            )
+            .forEach { problem ->
+                assertThrows(IllegalArgumentException::class.java) { contentFailure(problem) }
             }
-
-        assertTrue(error.message!!.contains("problem"))
     }
 
     private fun presentScene(requiredActions: List<String>) =
@@ -218,6 +223,17 @@ class DeriveContractsTest {
         )
 
     private fun digest(value: Int) = "%064x".format(value)
+
+    private fun contentFailure(problem: DeriveProblem) =
+        DeriveFailure(
+            mapId = UUID.randomUUID(),
+            version = 1,
+            attempt = UUID.randomUUID(),
+            sourceSha256 = digest(1),
+            scope = DeriveFailureScope.CONTENT,
+            retryable = false,
+            problems = listOf(problem),
+        )
 
     private fun resource(path: String): String =
         javaClass.getResourceAsStream(path)!!.readBytes().toString(Charsets.UTF_8)
