@@ -20,3 +20,9 @@ DONE
 
 - Reworked provider construction so CDI and test construction both own exactly the two Stable/Edge clients they receive/create; no shadow clients or orphaned executors remain.
 - `testClasses` passed after the ownership correction.
+
+## 4A behavioral test completion
+
+- Added four loopback-HTTP behavioral lifecycle tests covering initial/down readiness, exact Stable/Edge validated activation and separate caches, degraded fallback on server/corrupt failures, served-document mutation, disabled health, and terminal close behavior.
+- `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 tasks).
+- `./gradlew spotlessCheck testClasses` was executed; it is blocked by an existing formatting violation in `src/main/kotlin/gg/grounds/catalog/PackSetCatalogProvider.kt` (the accepted production owner declaration). The new test file was formatted with `spotlessApply`; no production source formatting change is included in this test-only commit.
