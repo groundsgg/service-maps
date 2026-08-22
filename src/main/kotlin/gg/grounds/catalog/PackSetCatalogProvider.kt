@@ -1,29 +1,70 @@
 package gg.grounds.catalog
 
+import gg.grounds.derive.AssetCatalogCandidate
 import gg.grounds.resourcepacks.client.PackSetClient
 import gg.grounds.resourcepacks.client.PackSetClientConfig
 import gg.grounds.resourcepacks.client.PackSetClientState
 import gg.grounds.resourcepacks.client.PackSetSnapshot
 import gg.grounds.resourcepacks.client.PackSetSource
 import gg.grounds.resourcepacks.contract.PackSetChannel
+import io.quarkus.runtime.ShutdownEvent
+import io.quarkus.runtime.StartupEvent
+import jakarta.enterprise.context.ApplicationScoped
+import jakarta.enterprise.event.Observes
+import jakarta.inject.Inject
 import java.net.URI
 import java.nio.file.Path
+import org.eclipse.microprofile.config.inject.ConfigProperty
 
 /** The only source of runtime catalogs: validated PackSet snapshots for Stable then Edge. */
-class PackSetCatalogProvider(private val stable: PackSetClient, private val edge: PackSetClient) :
-    AutoCloseable {
+@ApplicationScoped
+class PackSetCatalogProvider
+@Inject
+constructor(
+    @ConfigProperty(name = "grounds.maps.catalogs.base-uri") private val baseUri: String,
+    @ConfigProperty(name = "grounds.maps.catalogs.pack-set") private val packSet: String,
+    @ConfigProperty(name = "grounds.maps.catalogs.cache-root") private val cacheRoot: String,
+) : AutoCloseable {
+    private val stable =
+        client(URI(baseUri), packSet, PackSetChannel.STABLE, Path.of(cacheRoot, "stable"))
+    private val edge =
+        client(URI(baseUri), packSet, PackSetChannel.EDGE, Path.of(cacheRoot, "edge"))
+
+    internal constructor(
+        stable: PackSetClient,
+        edge: PackSetClient,
+    ) : this("https://cdn.grounds.gg", "grounds-global", "/tmp/service-maps/packsets") {
+        stableOverride = stable
+        edgeOverride = edge
+    }
+
+    private var stableOverride: PackSetClient? = null
+    private var edgeOverride: PackSetClient? = null
+    private val stableClient
+        get() = stableOverride ?: stable
+
+    private val edgeClient
+        get() = edgeOverride ?: edge
+
+    fun onStart(@Observes event: StartupEvent) = start()
+
+    fun onStop(@Observes event: ShutdownEvent) = close()
+
     fun start() {
-        stable.start()
-        edge.start()
+        stableClient.start()
+        edgeClient.start()
     }
 
     fun candidates(): List<AssetCatalogCandidate> =
-        listOfNotNull(candidate("stable", stable.state()), candidate("edge", edge.state()))
+        listOfNotNull(
+            candidate("stable", stableClient.state()),
+            candidate("edge", edgeClient.state()),
+        )
 
     fun ready(): Boolean = candidates().isNotEmpty()
 
     fun channelStates(): Map<String, CatalogChannelState> =
-        mapOf("stable" to stateOf(stable.state()), "edge" to stateOf(edge.state()))
+        mapOf("stable" to stateOf(stableClient.state()), "edge" to stateOf(edgeClient.state()))
 
     private fun candidate(channel: String, state: PackSetClientState): AssetCatalogCandidate? {
         val snapshot = state.current ?: state.degradedFallback ?: return null
@@ -50,12 +91,12 @@ class PackSetCatalogProvider(private val stable: PackSetClient, private val edge
         CatalogChannelState(
             state.current != null || state.degradedFallback != null,
             state.status.name,
-            state.lastError,
+            state.lastError?.replace(Regex("https?://[^\\s]+"), "<redacted-url>"),
         )
 
     override fun close() {
-        stable.close()
-        edge.close()
+        stableClient.close()
+        edgeClient.close()
     }
 
     companion object {

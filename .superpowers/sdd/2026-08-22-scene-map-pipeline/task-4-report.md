@@ -8,3 +8,10 @@ DONE
 - Added the immutable `grounds:actions` v1 empty action catalog and namespace boundary resolver.
 - Focused catalog tests plus `SceneDeriverTest` passed. `spotlessApply testClasses` passed.
 - Full `./gradlew test` was attempted; its catalog/unit coverage passed, but the suite cannot start `AuthorizationIT` because this environment has no valid Docker/Testcontainers daemon.
+
+## Fix round 1 — subtask 4A
+
+- Activated the Stable/Edge client owner as an application-scoped CDI bean. It starts at Quarkus startup, closes at shutdown, and uses distinct channel caches under the configured root.
+- Added readiness reporting: disabled derivation is UP; otherwise readiness requires one current or validated degraded snapshot and exposes both sanitized channel states.
+- Made `NamespaceCatalogResolver` an interface with an application-scoped default implementation and reused the derive request's shared catalog candidate model.
+- Verified with `spotlessApply`, `testClasses`, `PackSetCatalogProviderTest`, and `NamespaceCatalogResolverTest`.

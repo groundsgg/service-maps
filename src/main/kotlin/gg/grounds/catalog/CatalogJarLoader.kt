@@ -1,25 +1,14 @@
 package gg.grounds.catalog
 
+import gg.grounds.derive.AssetCatalogCandidate
 import gg.grounds.scene.format.AssetCatalog
 import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
-
-data class AssetCatalogCandidate(
-    val channel: String,
-    val id: String,
-    val version: String,
-    val coordinate: String,
-    val file: String,
-    val uri: URI,
-    val sha256: String,
-    val size: Long,
-)
 
 class CatalogContentException(message: String, cause: Throwable? = null) :
     IllegalArgumentException(message, cause)

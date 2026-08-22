@@ -1,5 +1,6 @@
 package gg.grounds.catalog
 
+import gg.grounds.derive.AssetCatalogCandidate
 import java.net.URI
 import java.nio.file.Files
 import org.junit.jupiter.api.Assertions.assertThrows

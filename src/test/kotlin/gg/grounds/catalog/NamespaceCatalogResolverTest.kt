@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test
 class NamespaceCatalogResolverTest {
     @Test
     fun `grounds namespace has immutable empty actions catalog`() {
-        val resolution =
-            NamespaceCatalogResolver().resolve("grounds", CatalogReference("grounds:assets", "1"))
+        val resolver: NamespaceCatalogResolver = DefaultNamespaceCatalogResolver()
+        val resolution = resolver.resolve("grounds", CatalogReference("grounds:assets", "1"))
 
         assertEquals("grounds:actions", resolution.catalog.id.value)
         assertEquals("1", resolution.catalog.version)
@@ -19,7 +19,8 @@ class NamespaceCatalogResolverTest {
     @Test
     fun `unsupported namespace is rejected through resolver`() {
         assertThrows(IllegalArgumentException::class.java) {
-            NamespaceCatalogResolver().resolve("other", CatalogReference("other:assets", "1"))
+            val resolver: NamespaceCatalogResolver = DefaultNamespaceCatalogResolver()
+            resolver.resolve("other", CatalogReference("other:assets", "1"))
         }
     }
 }
