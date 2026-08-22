@@ -18,33 +18,19 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 /** The only source of runtime catalogs: validated PackSet snapshots for Stable then Edge. */
 @ApplicationScoped
-class PackSetCatalogProvider
-@Inject
-constructor(
-    @ConfigProperty(name = "grounds.maps.catalogs.base-uri") private val baseUri: String,
-    @ConfigProperty(name = "grounds.maps.catalogs.pack-set") private val packSet: String,
-    @ConfigProperty(name = "grounds.maps.catalogs.cache-root") private val cacheRoot: String,
+class PackSetCatalogProvider internal constructor(
+    private val stableClient: PackSetClient,
+    private val edgeClient: PackSetClient,
 ) : AutoCloseable {
-    private val stable =
-        client(URI(baseUri), packSet, PackSetChannel.STABLE, Path.of(cacheRoot, "stable"))
-    private val edge =
-        client(URI(baseUri), packSet, PackSetChannel.EDGE, Path.of(cacheRoot, "edge"))
-
-    internal constructor(
-        stable: PackSetClient,
-        edge: PackSetClient,
-    ) : this("https://cdn.grounds.gg", "grounds-global", "/tmp/service-maps/packsets") {
-        stableOverride = stable
-        edgeOverride = edge
-    }
-
-    private var stableOverride: PackSetClient? = null
-    private var edgeOverride: PackSetClient? = null
-    private val stableClient
-        get() = stableOverride ?: stable
-
-    private val edgeClient
-        get() = edgeOverride ?: edge
+    @Inject
+    constructor(
+        @ConfigProperty(name = "grounds.maps.catalogs.base-uri") baseUri: String,
+        @ConfigProperty(name = "grounds.maps.catalogs.pack-set") packSet: String,
+        @ConfigProperty(name = "grounds.maps.catalogs.cache-root") cacheRoot: String,
+    ) : this(
+        client(URI(baseUri), packSet, PackSetChannel.STABLE, Path.of(cacheRoot, "stable")),
+        client(URI(baseUri), packSet, PackSetChannel.EDGE, Path.of(cacheRoot, "edge")),
+    )
 
     fun onStart(@Observes event: StartupEvent) = start()
 

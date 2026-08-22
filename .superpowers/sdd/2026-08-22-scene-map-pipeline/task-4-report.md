@@ -15,3 +15,8 @@ DONE
 - Added readiness reporting: disabled derivation is UP; otherwise readiness requires one current or validated degraded snapshot and exposes both sanitized channel states.
 - Made `NamespaceCatalogResolver` an interface with an application-scoped default implementation and reused the derive request's shared catalog candidate model.
 - Verified with `spotlessApply`, `testClasses`, `PackSetCatalogProviderTest`, and `NamespaceCatalogResolverTest`.
+
+## 4A review fix
+
+- Reworked provider construction so CDI and test construction both own exactly the two Stable/Edge clients they receive/create; no shadow clients or orphaned executors remain.
+- `testClasses` passed after the ownership correction.
