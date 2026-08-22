@@ -242,7 +242,7 @@ fun deriveResultKey(map: UUID, version: Int, attempt: UUID) =
 java -cp app/*:lib/boot/*:lib/main/* gg.grounds.derive.DeriveWorkerMain --request-env DERIVE_REQUEST_JSON
 ```
 
-- [ ] Write an end-to-end worker test with local HTTP endpoints for source GET and exact artifact PUTs. Assert the bundle and manifest upload before `result.json`, and assert a failed bundle upload prevents any result upload.
+- [ ] Write an end-to-end worker test with local HTTP endpoints for source GET and exact artifact PUTs. Assert the bundle and manifest upload before a success `result.json`; when a bundle upload fails, permit only a retryable system-failure result and never upload a manifest or success result.
 - [ ] Test success, content failure, transient download failure, digest mismatch, expired URL, and bounded HTTP response bodies/timeouts.
 - [ ] Run `./gradlew test --tests '*DeriveWorkerMainIT'`; confirm failure.
 - [ ] Implement a dependency-free CLI boundary around the strict mapper, catalog loader, and scene deriver. Read the request from the named environment variable (and allow a local file only in the test/dev entry point), then validate it before any network call.
