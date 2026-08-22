@@ -57,3 +57,27 @@ Verified with:
 ./gradlew spotlessApply
 ./gradlew spotlessCheck testClasses
 ```
+
+## Subtask A review fix
+
+### RED
+
+The scoped review found that the parser's catch-all `IOException` conversion incorrectly marked
+local output failures as content, and that synthetic extension fixtures never wrote their declared
+payload. Regression coverage was added for real PAX/GNU paths and metadata, PAX arithmetic and
+one-entry state, scene temp-name collision, and injected spool-output I/O.
+
+### GREEN
+
+Only `ZstdIOException` is now content-classified at the decompressor boundary; source and ordinary
+filesystem I/O propagate. PAX record lengths use checked `Long` arithmetic and local PAX has an
+explicit pending state that must be consumed by the next file/directory. The physical fixtures now
+write exact extension payload bytes and padding.
+
+Verified with:
+
+```text
+./gradlew spotlessApply
+./gradlew spotlessCheck testClasses
+./gradlew test --tests gg.grounds.derive.SafeTarZstdReaderTest --tests gg.grounds.derive.SceneDeriverTest --tests gg.grounds.derive.DeriveContractsTest
+```

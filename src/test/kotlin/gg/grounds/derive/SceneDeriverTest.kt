@@ -135,6 +135,37 @@ class SceneDeriverTest {
         assertEquals(true, Files.readAllBytes(files.getValue("scene.json").file).isNotEmpty())
     }
 
+    @Test
+    fun `canonical scene temp never collides with an authored logical filename`() {
+        val result =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                SceneDeriver(catalogResolver)
+                    .derive(
+                        ByteArrayInputStream(
+                            archive(
+                                mapOf(
+                                    "scene.json" to validScene.encodeToByteArray(),
+                                    "canonical-scene.json" to "authored".encodeToByteArray(),
+                                )
+                            )
+                        ),
+                        "a".repeat(64),
+                        Files.createTempDirectory("derive"),
+                    ),
+            )
+        val entries =
+            SafeTarZstdReader()
+                .read(ByteArrayInputStream(result.bundle), Files.createTempDirectory("bundle"))
+                .associateBy { it.path }
+
+        assertEquals(
+            "authored",
+            Files.readAllBytes(entries.getValue("canonical-scene.json").file).decodeToString(),
+        )
+        assertEquals(true, Files.readAllBytes(entries.getValue("scene.json").file).isNotEmpty())
+    }
+
     private fun archive(files: Map<String, ByteArray>): ByteArray {
         val tar = ByteArrayOutputStream()
         TarArchiveOutputStream(tar).use { output ->

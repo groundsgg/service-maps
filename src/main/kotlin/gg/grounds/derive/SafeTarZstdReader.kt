@@ -1,6 +1,7 @@
 package gg.grounds.derive
 
 import com.github.luben.zstd.Zstd
+import com.github.luben.zstd.ZstdIOException
 import com.github.luben.zstd.ZstdInputStream
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
@@ -25,7 +26,12 @@ class ArchiveContentException(message: String, path: String? = null) : IOExcepti
 }
 
 /** Reads physical tar records itself; Commons Compress is deliberately not on this input path. */
-class SafeTarZstdReader(private val limits: ArchiveLimits = ArchiveLimits()) {
+class SafeTarZstdReader(
+    private val limits: ArchiveLimits = ArchiveLimits(),
+    private val outputFactory: (Path) -> OutputStream = {
+        Files.newOutputStream(it, CREATE_NEW, WRITE)
+    },
+) {
     fun read(source: InputStream, workerDirectory: Path): List<SpoolEntry> {
         require(Files.isDirectory(workerDirectory)) { "worker directory must exist" }
         Files.list(workerDirectory).use {
@@ -68,10 +74,8 @@ class SafeTarZstdReader(private val limits: ArchiveLimits = ArchiveLimits()) {
             ZstdInputStream(file).use { decoded ->
                 decoded.setContinuous(false)
                 try {
-                    return PhysicalTar(decoded, root, limits).read()
-                } catch (failure: ArchiveContentException) {
-                    throw failure
-                } catch (failure: IOException) {
+                    return PhysicalTar(decoded, root, limits, outputFactory).read()
+                } catch (failure: ZstdIOException) {
                     throw ArchiveContentException("invalid compressed archive: ${failure.message}")
                 }
             }
@@ -85,11 +89,13 @@ private class PhysicalTar(
     private val input: InputStream,
     private val root: Path,
     private val limits: ArchiveLimits,
+    private val outputFactory: (Path) -> OutputStream,
 ) {
     private val paths = mutableSetOf<String>()
     private val entries = mutableListOf<SpoolEntry>()
     private var expanded = 0L
     private var physicalEntries = 0
+    private var pendingPax = false
     private var pendingPaxPath: String? = null
     private var pendingLongPath: String? = null
 
@@ -97,6 +103,8 @@ private class PhysicalTar(
         while (true) {
             val header = record() ?: fail("tar ends before terminator")
             if (header.all { it == 0.toByte() }) {
+                if (pendingPax || pendingLongPath != null)
+                    fail("archive extension metadata is not followed by a file")
                 val second = record() ?: fail("tar ends after one terminator record")
                 if (!second.all { it == 0.toByte() }) fail("tar terminator is malformed")
                 if (input.read() != -1) fail("archive contains trailing tar data")
@@ -106,7 +114,10 @@ private class PhysicalTar(
             if (++physicalEntries > limits.maxEntries) fail("archive has too many entries")
             val size = octal(header, 124, 12, "entry size")
             countExpanded(size)
-            when (header[156].toInt().toChar()) {
+            val type = header[156].toInt().toChar()
+            if (pendingPax && type != '\u0000' && type != '0' && type != '5')
+                fail("archive extension metadata is not followed by a file")
+            when (type) {
                 '\u0000',
                 '0' -> ordinary(header, size)
                 '5' -> directory(header, size)
@@ -136,7 +147,7 @@ private class PhysicalTar(
         if (size > limits.maxFileBytes) fail("archive file exceeds size limit", name)
         val target = target(name)
         target.parent?.let(Files::createDirectories)
-        Files.newOutputStream(target, CREATE_NEW, WRITE).use { copyExactly(it, size, name) }
+        outputFactory(target).use { copyExactly(it, size, name) }
         padding(size)
         entries += SpoolEntry(name, target, false)
     }
@@ -150,7 +161,7 @@ private class PhysicalTar(
     }
 
     private fun pax(size: Long) {
-        if (pendingPaxPath != null || pendingLongPath != null || size > PAX_LIMIT)
+        if (pendingPax || pendingLongPath != null || size > PAX_LIMIT)
             fail("PAX metadata exceeds size limit")
         val bytes = bytes(size)
         padding(size)
@@ -161,16 +172,19 @@ private class PhysicalTar(
                 (offset until bytes.size).firstOrNull { bytes[it] == ' '.code.toByte() } ?: -1
             if (space <= offset) fail("PAX metadata record has malformed length")
             val count =
-                bytes.copyOfRange(offset, space).toString(StandardCharsets.US_ASCII).toIntOrNull()
+                bytes.copyOfRange(offset, space).toString(StandardCharsets.US_ASCII).toLongOrNull()
                     ?: fail("PAX metadata record has malformed length")
             if (
-                count <= space - offset ||
-                    offset + count > bytes.size ||
-                    bytes[offset + count - 1] != '\n'.code.toByte()
+                count <= (space - offset).toLong() ||
+                    count > (bytes.size - offset).toLong() ||
+                    bytes[(offset + count - 1).toInt()] != '\n'.code.toByte()
             )
                 fail("PAX metadata record has malformed length")
             val pair =
-                strictString(bytes.copyOfRange(space + 1, offset + count - 1), "PAX metadata")
+                strictString(
+                    bytes.copyOfRange(space + 1, (offset + count - 1).toInt()),
+                    "PAX metadata",
+                )
             val equals = pair.indexOf('=')
             if (equals <= 0) fail("PAX metadata record is malformed")
             val key = pair.substring(0, equals)
@@ -199,17 +213,14 @@ private class PhysicalTar(
                     )
                         fail("PAX metadata contains unsupported security-relevant field")
             }
-            offset += count
+            offset += count.toInt()
         }
+        pendingPax = true
         pendingPaxPath = path
     }
 
     private fun longName(size: Long) {
-        if (
-            pendingPaxPath != null ||
-                pendingLongPath != null ||
-                size > limits.maxPathBytes.toLong() + 1
-        )
+        if (pendingPax || pendingLongPath != null || size > limits.maxPathBytes.toLong() + 1)
             fail("GNU long name exceeds size limit")
         val bytes = bytes(size)
         padding(size)
@@ -232,6 +243,7 @@ private class PhysicalTar(
                     if (prefix.isEmpty()) name else "$prefix/$name"
                 }
         pendingPaxPath = null
+        pendingPax = false
         pendingLongPath = null
         val normalized = normalize(raw)
         if (!paths.add(normalized)) fail("archive contains duplicate path", normalized)

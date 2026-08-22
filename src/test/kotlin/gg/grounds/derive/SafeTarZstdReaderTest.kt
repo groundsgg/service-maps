@@ -170,6 +170,86 @@ class SafeTarZstdReaderTest {
         assertTrue(appended.isNotEmpty())
     }
 
+    @Test
+    fun `rejects unsafe paths from real PAX and GNU extension payloads`() {
+        listOf("/absolute", "../traversal", "dir\\backslash", "x".repeat(65)).forEach { path ->
+            listOf('x', 'L').forEach { type ->
+                val payload =
+                    if (type == 'x') paxRecord("path", path) else "$path\u0000".encodeToByteArray()
+                assertThrows(ArchiveContentException::class.java) {
+                    SafeTarZstdReader(ArchiveLimits(maxPathBytes = 64))
+                        .read(
+                            ByteArrayInputStream(
+                                rawArchiveEntries(
+                                    rawHeader("extension", type, payload) to payload,
+                                    rawHeader("ignored", '0') to byteArrayOf(),
+                                )
+                            ),
+                            Files.createTempDirectory("safe-tar-test"),
+                        )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `strictly parses PAX records and consumes pathless metadata once`() {
+        listOf(
+                "999999999999999999999 x=y\n".encodeToByteArray(),
+                paxRecord("size", "1"),
+                paxRecord("linkpath", "target"),
+            )
+            .forEach { payload ->
+                assertThrows(ArchiveContentException::class.java) {
+                    SafeTarZstdReader()
+                        .read(
+                            ByteArrayInputStream(
+                                rawArchiveEntries(
+                                    rawHeader("pax", 'x', payload) to payload,
+                                    rawHeader("file", '0') to byteArrayOf(),
+                                )
+                            ),
+                            Files.createTempDirectory("safe-tar-test"),
+                        )
+                }
+            }
+        val metadata = paxRecord("mtime", "0")
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader()
+                .read(
+                    ByteArrayInputStream(
+                        rawArchiveEntries(
+                            rawHeader("pax", 'x', metadata) to metadata,
+                            rawHeader("another", 'x', metadata) to metadata,
+                        )
+                    ),
+                    Files.createTempDirectory("safe-tar-test"),
+                )
+        }
+    }
+
+    @Test
+    fun `counts PAX payload against expanded limit and propagates spool io`() {
+        val metadata = paxRecord("mtime", "0")
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader(ArchiveLimits(maxExpandedBytes = 1))
+                .read(
+                    ByteArrayInputStream(
+                        rawArchiveEntries(rawHeader("pax", 'x', metadata) to metadata)
+                    ),
+                    Files.createTempDirectory("safe-tar-test"),
+                )
+        }
+        assertThrows(IOException::class.java) {
+                SafeTarZstdReader(outputFactory = { throw IOException("disk unavailable") })
+                    .read(
+                        ByteArrayInputStream(archive(entry("file"))),
+                        Files.createTempDirectory("safe-tar-test"),
+                    )
+            }
+            .also { assertTrue(it !is ArchiveContentException) }
+    }
+
     private fun entry(name: String, content: ByteArray = "x".encodeToByteArray()) =
         TarArchiveEntry(name).apply {
             size = content.size.toLong()
@@ -244,5 +324,27 @@ class SafeTarZstdReaderTest {
         val checksum = header.sumOf { it.toInt() and 0xff }
         "%06o\u0000 ".format(checksum).encodeToByteArray().copyInto(header, 148)
         return header
+    }
+
+    private fun rawArchiveEntries(vararg entries: Pair<ByteArray, ByteArray>): ByteArray {
+        val tar = ByteArrayOutputStream()
+        entries.forEach { (header, content) ->
+            tar.write(header)
+            tar.write(content)
+            tar.write(ByteArray(((512 - content.size % 512) % 512)))
+        }
+        tar.write(ByteArray(1024))
+        return ByteArrayOutputStream()
+            .also { out -> ZstdOutputStream(out).use { it.write(tar.toByteArray()) } }
+            .toByteArray()
+    }
+
+    private fun paxRecord(key: String, value: String): ByteArray {
+        var length = 0
+        while (true) {
+            val candidate = "$length $key=$value\n"
+            if (candidate.encodeToByteArray().size == length) return candidate.encodeToByteArray()
+            length = candidate.encodeToByteArray().size
+        }
     }
 }
