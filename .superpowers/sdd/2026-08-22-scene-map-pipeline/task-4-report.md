@@ -38,3 +38,11 @@ DONE
 - Hardened lifecycle tests to assert both full Stable/Edge `AssetCatalogCandidate` values, preserve clients/server through assertion failures, use supplied HTTP connect/read timeouts, and prove post-close refreshes issue no additional HTTP requests.
 - `./gradlew spotlessCheck testClasses` passed (`BUILD SUCCESSFUL`, 17 actionable tasks).
 - `./gradlew test --rerun-tasks --tests gg.grounds.catalog.PackSetCatalogProviderTest --tests gg.grounds.catalog.NamespaceCatalogResolverTest` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 13 actionable tasks).
+
+## Fix round 1 — subtask 4B
+
+- RED: added the loopback-server/runtime-JDK-compiled catalog fixture test; it initially failed because the loader had no explicit loopback HTTP configuration path.
+- GREEN: catalog downloads are bounded, non-redirecting, exact size/SHA-256 checked; production accepts HTTPS only, while an explicit test-only constructor switch permits resolved loopback HTTP hosts only.
+- Replaced central-directory size accounting with Commons Compress streaming validation. The loader now rejects unsafe names, duplicates, non-regular/non-directory Unix entry types, excessive entry count/per-entry/total expansion, and any zero or additional (including multi-release) generated owner definition.
+- The loader is child-first only for the generated catalog package, delegates JDK/Kotlin/scene-format identities to its parent, validates the materialized AssetCatalog id/version, then closes the loader and deletes the temporary JAR on every path without replacing the primary failure.
+- `./gradlew test --tests gg.grounds.catalog.CatalogJarLoaderTest spotlessCheck testClasses --no-daemon` passed: **6 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 18 actionable tasks).
