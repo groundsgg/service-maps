@@ -58,3 +58,11 @@ DONE
 
 - Added deterministic fatal-error and short-body response coverage; fatal errors preserve their original identity and receive cleanup errors as suppressed.
 - Added independent entry-count and aggregate-expanded-byte checks. `CatalogJarLoaderTest --rerun-tasks` passed: **11 tests completed, 0 failed**.
+
+## 4B hostile matrix completion
+
+- Added raw-ZIP coverage for duplicate entries, Unix symlink/device/FIFO/socket modes, raw backslash/dot/empty-segment/blank entry names, and body-size mismatch independently from digest validation.
+- Added runtime-JDK-compiled owner contract coverage (wrong return type/version, missing INSTANCE/method), representative archive/reflection cleanup checks, exact-owner parent-shadow prevention, and support-class LinkageError no-fallback behavior. Existing fatal-throwable propagation and suppressed-cleanup coverage remains in place.
+- The raw entry-name test exposed Commons Compress normalization of backslashes; validation now uses each entry's raw UTF-8 name. Response-body length is also now diagnosed separately from a digest mismatch.
+- `./gradlew test --rerun-tasks --tests 'gg.grounds.catalog.*'` passed: **25 tests completed, 0 failed** (`BUILD SUCCESSFUL`, 14 actionable tasks).
+- `./gradlew spotlessCheck testClasses` passed (`BUILD SUCCESSFUL`, 18 actionable tasks).

@@ -7,6 +7,7 @@ import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
 import java.net.URLClassLoader
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -121,7 +122,10 @@ class CatalogJarLoader(
                 }
             }
             val result = bytes.toByteArray()
-            if (result.size.toLong() != candidate.size || sha256(result) != candidate.sha256) {
+            if (result.size.toLong() != candidate.size) {
+                throw CatalogContentException("Catalog response size does not match manifest.")
+            }
+            if (sha256(result) != candidate.sha256) {
                 throw CatalogContentException("Catalog digest does not match manifest.")
             }
             return result
@@ -139,7 +143,8 @@ class CatalogJarLoader(
                 var baseOwnerDefinitions = 0
                 var additionalOwnerDefinitions = 0
                 zip.entries.asSequence().forEach { entry: ZipArchiveEntry ->
-                    if (++entries > maxEntries || !safeName(entry.name) || !names.add(entry.name)) {
+                    val name = entry.rawName?.toString(StandardCharsets.UTF_8) ?: entry.name
+                    if (++entries > maxEntries || !safeName(name) || !names.add(name)) {
                         throw CatalogContentException("Catalog JAR has unsafe entries.")
                     }
                     if (!safeEntryType(entry))
@@ -160,8 +165,8 @@ class CatalogJarLoader(
                             }
                         }
                     }
-                    if (entry.name == OWNER_ENTRY) baseOwnerDefinitions++
-                    else if (isAdditionalOwnerDefinition(entry.name)) additionalOwnerDefinitions++
+                    if (name == OWNER_ENTRY) baseOwnerDefinitions++
+                    else if (isAdditionalOwnerDefinition(name)) additionalOwnerDefinitions++
                 }
                 if (baseOwnerDefinitions != 1 || additionalOwnerDefinitions != 0) {
                     throw CatalogContentException(

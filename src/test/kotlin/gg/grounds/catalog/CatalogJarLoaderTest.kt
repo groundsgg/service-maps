@@ -13,6 +13,8 @@ import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import javax.tools.ToolProvider
 import kotlin.io.path.listDirectoryEntries
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
@@ -301,6 +303,182 @@ class CatalogJarLoaderTest {
         }
     }
 
+    @Test
+    fun `rejects duplicate zip entries before class loading`() {
+        val owner = classBytes(catalogJar())
+        val bytes = rawCatalogJar(listOf(OWNER_ENTRY to owner, OWNER_ENTRY to owner))
+
+        assertContentFailure(bytes, "Catalog JAR has unsafe entries.")
+    }
+
+    @Test
+    fun `rejects symlink device fifo and socket unix entry modes`() {
+        listOf(0xA000, 0x6000, 0x1000, 0xC000).forEach { mode ->
+            val bytes =
+                rawCatalogJar(
+                    listOf(OWNER_ENTRY to classBytes(catalogJar()), "hostile" to byteArrayOf(1)),
+                    mapOf("hostile" to mode),
+                )
+
+            assertContentFailure(bytes, "Catalog JAR has an unsafe entry type.")
+        }
+    }
+
+    @Test
+    fun `rejects backslash dot empty segment and empty entry names`() {
+        listOf("back\\slash", "./dot", "part/./dot", "part//empty").forEach { name ->
+            val bytes =
+                rawStoredZip(
+                    listOf(OWNER_ENTRY to classBytes(catalogJar()), name to byteArrayOf(1))
+                )
+
+            assertContentFailure(bytes, "Catalog JAR has unsafe entries.", name)
+        }
+        assertContentFailure(
+            rawStoredZip(listOf(OWNER_ENTRY to classBytes(catalogJar()), " " to byteArrayOf(1))),
+            "Catalog JAR has unsafe entries.",
+        )
+    }
+
+    @Test
+    fun `rejects streamed response body size mismatch before digest validation`() {
+        val served = catalogJar()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.jar") { exchange ->
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { it.write(served) }
+        }
+        server.start()
+        try {
+            val failure =
+                assertThrows(CatalogContentException::class.java) {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                        )
+                        .use {
+                            it.load(candidate(server, served).copy(size = served.size.toLong() + 1))
+                        }
+                }
+
+            assertEquals("Catalog response size does not match manifest.", failure.message)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `rejects invalid runtime owner contracts with their reflection causes`() {
+        val cases =
+            listOf(
+                "wrong return type" to
+                    "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); public String getCatalog() { return \"wrong\"; } }",
+                "wrong version" to
+                    ownerSource("gg.grounds.catalog.CatalogJarLoaderFixtures.catalogVersionTwo()"),
+                "missing instance" to
+                    "public final class GroundsAssetCatalog { public Object getCatalog() { return gg.grounds.catalog.CatalogJarLoaderFixtures.catalog(); } }",
+                "missing method" to
+                    "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); }",
+            )
+        cases.forEach { (name, source) ->
+            val bytes = catalogJar(ownerSource = source)
+            val failure = loadFailure(bytes)
+
+            when (name) {
+                "wrong return type" ->
+                    assertEquals("Catalog owner did not return an AssetCatalog.", failure.message)
+                "wrong version" ->
+                    assertEquals(
+                        "Catalog identity does not match the validated candidate.",
+                        failure.message,
+                    )
+                "missing instance" -> {
+                    assertEquals("Catalog owner could not be loaded.", failure.message)
+                    assertEquals(NoSuchFieldException::class.java, failure.cause?.javaClass)
+                }
+                else -> assertEquals(NoSuchMethodException::class.java, failure.cause?.javaClass)
+            }
+        }
+    }
+
+    @Test
+    fun `cleans temporary jars after archive validation and reflection failures`() {
+        listOf(
+                rawCatalogJar(
+                    listOf(OWNER_ENTRY to classBytes(catalogJar()), "../escape" to byteArrayOf(1))
+                ),
+                catalogJar(
+                    ownerSource =
+                        "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); }"
+                ),
+            )
+            .forEach { bytes ->
+                val directory = Files.createTempDirectory("catalog-loader")
+                val server = serverFor(bytes)
+                try {
+                    assertThrows(CatalogContentException::class.java) {
+                        CatalogJarLoader(directory, allowLoopbackHttp = true).use {
+                            it.load(candidate(server, bytes))
+                        }
+                    }
+                    assertEquals(0, directory.listDirectoryEntries().size)
+                } finally {
+                    server.stop(0)
+                }
+            }
+    }
+
+    @Test
+    fun `does not fall back to a parent owner when exact candidate owner is malformed`() {
+        val bytes = rawCatalogJar(listOf(OWNER_ENTRY to byteArrayOf(0, 1, 2, 3)))
+        val failure = loadFailure(bytes)
+
+        assertEquals("Catalog owner could not be loaded.", failure.message)
+        assertEquals(ClassFormatError::class.java, failure.cause?.javaClass)
+    }
+
+    @Test
+    fun `does not fall back to parent support after candidate support linkage error`() {
+        val bytes =
+            catalogJar(
+                ownerSource =
+                    ownerSource("gg.grounds.resourcepacks.catalog.CatalogSupport.catalog()"),
+                extra =
+                    mapOf(
+                        "gg/grounds/resourcepacks/catalog/CatalogSupport.class" to
+                            byteArrayOf(0, 1, 2, 3)
+                    ),
+            )
+        val failure = loadFailure(bytes)
+
+        assertEquals("Catalog owner could not be loaded.", failure.message)
+        assertEquals(ClassFormatError::class.java, failure.cause?.cause?.javaClass)
+    }
+
+    private fun assertContentFailure(bytes: ByteArray, message: String, context: String? = null) {
+        val failure = loadFailure(bytes, context)
+        assertEquals(message, failure.message, context)
+    }
+
+    private fun loadFailure(bytes: ByteArray, context: String? = null): CatalogContentException {
+        val server = serverFor(bytes)
+        try {
+            return assertThrows(
+                CatalogContentException::class.java,
+                {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                        )
+                        .use { it.load(candidate(server, bytes)) }
+                },
+                context,
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun candidate(server: HttpServer, bytes: ByteArray): AssetCatalogCandidate =
         candidate(URI("http://127.0.0.1:${server.address.port}/catalog.jar"), bytes)
 
@@ -328,6 +506,7 @@ class CatalogJarLoaderTest {
     private fun catalogJar(
         extra: Map<String, ByteArray> = emptyMap(),
         includeOwner: Boolean = true,
+        ownerSource: String = ownerSource("gg.grounds.catalog.CatalogJarLoaderFixtures.catalog()"),
     ): ByteArray {
         val sourceDirectory = Files.createTempDirectory("catalog-source")
         val classesDirectory = Files.createTempDirectory("catalog-classes")
@@ -339,10 +518,7 @@ class CatalogJarLoaderTest {
                 source,
                 """
                 package gg.grounds.resourcepacks.catalog;
-                public final class GroundsAssetCatalog {
-                  public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog();
-                  public Object getCatalog() { return gg.grounds.catalog.CatalogJarLoaderFixtures.catalog(); }
-                }
+                $ownerSource
                 """
                     .trimIndent(),
             )
@@ -407,6 +583,86 @@ class CatalogJarLoaderTest {
                 .first { it.name.endsWith("GroundsAssetCatalog.class") }
                 .let { input.readBytes() }
         }
+
+    private fun rawCatalogJar(
+        entries: List<Pair<String, ByteArray>>,
+        modes: Map<String, Int> = emptyMap(),
+    ): ByteArray =
+        java.io.ByteArrayOutputStream().use { bytes ->
+            ZipArchiveOutputStream(bytes).use { zip ->
+                entries.forEach { (name, content) ->
+                    val entry = ZipArchiveEntry(name).apply { unixMode = modes[name] ?: 0x8000 }
+                    zip.putArchiveEntry(entry)
+                    zip.write(content)
+                    zip.closeArchiveEntry()
+                }
+                zip.finish()
+            }
+            bytes.toByteArray()
+        }
+
+    private fun rawStoredZip(entries: List<Pair<String, ByteArray>>): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val central = java.io.ByteArrayOutputStream()
+        entries.forEach { (name, content) ->
+            val nameBytes = name.toByteArray()
+            val crc = java.util.zip.CRC32().apply { update(content) }.value
+            val offset = output.size()
+            output.writeLe(0x04034B50)
+            output.writeLe(20, 2)
+            output.writeLe(0, 2)
+            output.writeLe(0, 2)
+            output.writeLe(0, 2)
+            output.writeLe(0, 2)
+            output.writeLe(crc, 4)
+            output.writeLe(content.size, 4)
+            output.writeLe(content.size, 4)
+            output.writeLe(nameBytes.size, 2)
+            output.writeLe(0, 2)
+            output.write(nameBytes)
+            output.write(content)
+            central.writeLe(0x02014B50)
+            central.writeLe(20, 2)
+            central.writeLe(20, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(crc, 4)
+            central.writeLe(content.size, 4)
+            central.writeLe(content.size, 4)
+            central.writeLe(nameBytes.size, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 2)
+            central.writeLe(0, 4)
+            central.writeLe(offset, 4)
+            central.write(nameBytes)
+        }
+        val centralOffset = output.size()
+        output.write(central.toByteArray())
+        output.writeLe(0x06054B50)
+        output.writeLe(0, 2)
+        output.writeLe(0, 2)
+        output.writeLe(entries.size, 2)
+        output.writeLe(entries.size, 2)
+        output.writeLe(central.size(), 4)
+        output.writeLe(centralOffset, 4)
+        output.writeLe(0, 2)
+        return output.toByteArray()
+    }
+
+    private fun java.io.ByteArrayOutputStream.writeLe(value: Number, bytes: Int = 4) {
+        repeat(bytes) { index -> write(((value.toLong() ushr (index * 8)) and 0xff).toInt()) }
+    }
+
+    private fun ownerSource(expression: String): String =
+        "public final class GroundsAssetCatalog { public static final GroundsAssetCatalog INSTANCE = new GroundsAssetCatalog(); public Object getCatalog() { return $expression; } }"
+
+    private companion object {
+        const val OWNER_ENTRY = "gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class"
+    }
 }
 
 object CatalogJarLoaderFixtures {
@@ -416,6 +672,15 @@ object CatalogJarLoaderFixtures {
             CatalogId("grounds:assets"),
             "1",
             CatalogVersionRange(CatalogId("grounds:assets"), "1", "1"),
+            emptyMap(),
+        )
+
+    @JvmStatic
+    fun catalogVersionTwo(): AssetCatalog =
+        AssetCatalog(
+            CatalogId("grounds:assets"),
+            "2",
+            CatalogVersionRange(CatalogId("grounds:assets"), "2", "2"),
             emptyMap(),
         )
 }
