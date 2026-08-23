@@ -4,7 +4,11 @@ import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
 import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
+import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DeriveResultRejectedException
+import gg.grounds.domain.DerivedFacts
+import gg.grounds.domain.DerivedFailure
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
@@ -205,6 +209,192 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             }
         }
 
+    override fun claimForDerive(mapId: UUID, version: Int, attempt: UUID): MapVersionRecord? =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                val current =
+                    read(c, mapId, version, forUpdate = true)
+                        ?: throw VersionNotFoundException(mapId, version)
+                if (current.state != VersionState.DRAFT) {
+                    c.commit()
+                    return null
+                }
+                writeDeriveState(
+                    c,
+                    mapId,
+                    version,
+                    VersionState.DERIVING,
+                    attempt,
+                    null,
+                    false,
+                    pendingScene(),
+                )
+                c.commit()
+                requireNotNull(read(c, mapId, version))
+            } catch (e: Exception) {
+                c.rollback()
+                throw e
+            } finally {
+                c.autoCommit = true
+            }
+        }
+
+    override fun acceptSuccess(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): MapVersionRecord =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                val current = lockedIdentity(c, identity)
+                verifyCatalog(identity, facts)
+                if (current.state == VersionState.PUBLISHED) {
+                    if (current.matchesSuccess(identity, facts, bySub)) {
+                        c.commit()
+                        return current
+                    }
+                    throw DeriveResultRejectedException("conflicting duplicate success result")
+                }
+                if (current.state != VersionState.DERIVING) {
+                    throw DeriveResultRejectedException(
+                        "derive result cannot finish ${current.state}"
+                    )
+                }
+                c.prepareStatement(
+                        """
+                        UPDATE map_version
+                           SET state = ?, bundle_sha256 = ?, manifest_sha256 = ?, size_bytes = ?,
+                               present_chunks = ?, est_loaded_mib = ?, published_by_sub = ?,
+                               derive_failure_scope = NULL, derive_retryable = FALSE,
+                               scene_present = ?, scene_schema_version = ?, scene_sha256 = ?,
+                               asset_catalog_id = ?, asset_catalog_version = ?,
+                               action_catalog_id = ?, action_catalog_version = ?
+                         WHERE map = ? AND version = ?
+                        """
+                    )
+                    .use { ps ->
+                        ps.setString(1, VersionState.PUBLISHED.name)
+                        ps.setString(2, facts.bundleSha256)
+                        ps.setString(3, facts.manifestSha256)
+                        ps.setLong(4, facts.sizeBytes)
+                        ps.setObject(5, facts.presentChunks)
+                        ps.setObject(6, facts.estLoadedMib)
+                        ps.setString(7, bySub)
+                        ps.setObject(8, facts.scene.presentValue())
+                        ps.setObject(9, facts.scene.schemaVersion.persistedSchemaVersion())
+                        ps.setString(10, facts.scene.sha256)
+                        ps.setString(11, facts.scene.assetCatalog?.id)
+                        ps.setString(12, facts.scene.assetCatalog?.version)
+                        ps.setString(13, facts.scene.actionCatalog?.id)
+                        ps.setString(14, facts.scene.actionCatalog?.version)
+                        ps.setObject(15, identity.mapId)
+                        ps.setInt(16, identity.version)
+                        ps.executeUpdate()
+                    }
+                replaceSceneCollections(c, identity.mapId, identity.version, facts.scene)
+                recordPublicBlob(c, facts.bundleSha256, facts.sizeBytes)
+                c.commit()
+                requireNotNull(read(c, identity.mapId, identity.version))
+            } catch (e: Exception) {
+                c.rollback()
+                throw e
+            } finally {
+                c.autoCommit = true
+            }
+        }
+
+    override fun acceptFailure(
+        identity: DeriveIdentity,
+        failure: DerivedFailure,
+    ): MapVersionRecord =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                val current = lockedIdentity(c, identity)
+                if (current.state == VersionState.DERIVE_FAILED) {
+                    if (current.matchesFailure(identity, failure)) {
+                        c.commit()
+                        return current
+                    }
+                    throw DeriveResultRejectedException("conflicting duplicate failure result")
+                }
+                if (current.state != VersionState.DERIVING) {
+                    throw DeriveResultRejectedException(
+                        "derive result cannot finish ${current.state}"
+                    )
+                }
+                // A failure can happen before scene discovery. Never expose partially trusted scene
+                // facts.
+                writeDeriveState(
+                    c,
+                    identity.mapId,
+                    identity.version,
+                    VersionState.DERIVE_FAILED,
+                    identity.attempt,
+                    failure.scope,
+                    failure.retryable,
+                    invalidScene(failure.problems),
+                )
+                c.commit()
+                requireNotNull(read(c, identity.mapId, identity.version))
+            } catch (e: Exception) {
+                c.rollback()
+                throw e
+            } finally {
+                c.autoCommit = true
+            }
+        }
+
+    override fun listReconcileCandidates(): List<MapVersionRecord> =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    "$SELECT_COLUMNS WHERE state IN ('DRAFT', 'DERIVING') ORDER BY created_at, map, version"
+                )
+                .use { ps ->
+                    ps.executeQuery().use { rs ->
+                        buildList { while (rs.next()) add(rs.toRecord(c)) }
+                    }
+                }
+        }
+
+    override fun retrySystemFailure(mapId: UUID, version: Int): MapVersionRecord =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                val current =
+                    read(c, mapId, version, forUpdate = true)
+                        ?: throw VersionNotFoundException(mapId, version)
+                if (
+                    current.state != VersionState.DERIVE_FAILED ||
+                        current.deriveFailureScope != DeriveFailureScope.SYSTEM ||
+                        !current.deriveRetryable
+                ) {
+                    throw DeriveResultRejectedException(
+                        "only retryable system failures can be retried"
+                    )
+                }
+                writeDeriveState(
+                    c,
+                    mapId,
+                    version,
+                    VersionState.DERIVING,
+                    UUID.randomUUID(),
+                    null,
+                    false,
+                    pendingScene(),
+                )
+                c.commit()
+                requireNotNull(read(c, mapId, version))
+            } catch (e: Exception) {
+                c.rollback()
+                throw e
+            } finally {
+                c.autoCommit = true
+            }
+        }
+
     override fun find(mapId: UUID, version: Int): MapVersionRecord? =
         dataSource.connection.use { c -> read(c, mapId, version) }
 
@@ -282,6 +472,138 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 ps.executeUpdate()
             }
     }
+
+    private fun lockedIdentity(c: Connection, identity: DeriveIdentity): MapVersionRecord {
+        val current =
+            read(c, identity.mapId, identity.version, forUpdate = true)
+                ?: throw DeriveResultRejectedException("derive result names no such version")
+        if (current.deriveAttempt != identity.attempt) {
+            throw DeriveResultRejectedException("derive result attempt is stale")
+        }
+        if (current.sourceSha256 != identity.sourceSha256) {
+            throw DeriveResultRejectedException(
+                "derive result source does not match the committed version"
+            )
+        }
+        return current
+    }
+
+    private fun verifyCatalog(identity: DeriveIdentity, facts: DerivedFacts) {
+        if (identity.assetCatalog != null && facts.scene.assetCatalog != identity.assetCatalog) {
+            throw DeriveResultRejectedException(
+                "derive result asset catalog does not match the claimed catalog"
+            )
+        }
+    }
+
+    private fun writeDeriveState(
+        c: Connection,
+        mapId: UUID,
+        version: Int,
+        state: VersionState,
+        attempt: UUID,
+        failureScope: DeriveFailureScope?,
+        retryable: Boolean,
+        scene: SceneProjection,
+    ) {
+        c.prepareStatement(
+                """
+                UPDATE map_version
+                   SET state = ?, derive_attempt = ?, derive_failure_scope = ?, derive_retryable = ?,
+                       scene_present = ?, scene_schema_version = ?, scene_sha256 = ?,
+                       asset_catalog_id = ?, asset_catalog_version = ?,
+                       action_catalog_id = ?, action_catalog_version = ?
+                 WHERE map = ? AND version = ?
+                """
+            )
+            .use { ps ->
+                ps.setString(1, state.name)
+                ps.setObject(2, attempt)
+                ps.setString(3, failureScope?.name)
+                ps.setBoolean(4, retryable)
+                ps.setObject(5, scene.presentValue())
+                ps.setObject(6, scene.schemaVersion.persistedSchemaVersion())
+                ps.setString(7, scene.sha256)
+                ps.setString(8, scene.assetCatalog?.id)
+                ps.setString(9, scene.assetCatalog?.version)
+                ps.setString(10, scene.actionCatalog?.id)
+                ps.setString(11, scene.actionCatalog?.version)
+                ps.setObject(12, mapId)
+                ps.setInt(13, version)
+                ps.executeUpdate()
+            }
+        replaceSceneCollections(c, mapId, version, scene)
+    }
+
+    private fun recordPublicBlob(c: Connection, digest: String, size: Long) {
+        c.prepareStatement("SELECT size_bytes FROM map_blob WHERE sha256 = ?").use { ps ->
+            ps.setString(1, digest)
+            ps.executeQuery().use { rs ->
+                if (rs.next() && rs.getLong(1) != size) {
+                    throw BlobSizeMismatchException(digest, rs.getLong(1), size)
+                }
+            }
+        }
+        c.prepareStatement(
+                """
+                INSERT INTO map_blob (sha256, size_bytes, public)
+                VALUES (?, ?, TRUE)
+                ON CONFLICT (sha256) DO UPDATE SET public = TRUE
+                """
+            )
+            .use { ps ->
+                ps.setString(1, digest)
+                ps.setLong(2, size)
+                ps.executeUpdate()
+            }
+    }
+
+    private fun pendingScene() =
+        SceneProjection(SceneStatus.PENDING, null, null, null, null, emptyList(), emptyList())
+
+    private fun invalidScene(problems: List<DeriveProblem>) =
+        SceneProjection(SceneStatus.INVALID, null, null, null, null, emptyList(), problems)
+
+    private fun MapVersionRecord.matchesSuccess(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): Boolean =
+        deriveAttempt == identity.attempt &&
+            sourceSha256 == identity.sourceSha256 &&
+            bundleSha256 == facts.bundleSha256 &&
+            manifestSha256 == facts.manifestSha256 &&
+            sizeBytes == facts.sizeBytes &&
+            presentChunks == facts.presentChunks &&
+            estLoadedMib == facts.estLoadedMib &&
+            scene.matchesPersisted(facts.scene) &&
+            publishedBySub == bySub &&
+            deriveFailureScope == null &&
+            !deriveRetryable
+
+    private fun MapVersionRecord.matchesFailure(
+        identity: DeriveIdentity,
+        failure: DerivedFailure,
+    ): Boolean =
+        deriveAttempt == identity.attempt &&
+            sourceSha256 == identity.sourceSha256 &&
+            deriveFailureScope == failure.scope &&
+            deriveRetryable == failure.retryable &&
+            scene.status == SceneStatus.INVALID &&
+            scene.schemaVersion == null &&
+            scene.sha256 == null &&
+            scene.assetCatalog == null &&
+            scene.actionCatalog == null &&
+            scene.requiredActions.isEmpty() &&
+            scene.problems == failure.problems
+
+    private fun SceneProjection.matchesPersisted(other: SceneProjection): Boolean =
+        schemaVersion == other.schemaVersion &&
+            sha256 == other.sha256 &&
+            assetCatalog == other.assetCatalog &&
+            actionCatalog == other.actionCatalog &&
+            requiredActions == other.requiredActions.distinct().sorted() &&
+            problems == other.problems
 
     private fun read(
         c: Connection,

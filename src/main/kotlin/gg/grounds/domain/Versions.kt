@@ -101,6 +101,29 @@ interface MapVersionRepository {
         scene: SceneProjection,
     ): MapVersionRecord
 
+    /**
+     * Claims a draft version for exactly one derive Job, or returns null when it is not a draft.
+     */
+    fun claimForDerive(mapId: UUID, version: Int, attempt: UUID): MapVersionRecord?
+
+    /**
+     * Accepts one promoted worker result, or returns an identical outcome for a duplicate result.
+     */
+    fun acceptSuccess(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): MapVersionRecord
+
+    /** Persists one terminal worker failure, or returns it for an identical duplicate result. */
+    fun acceptFailure(identity: DeriveIdentity, failure: DerivedFailure): MapVersionRecord
+
+    /** Versions whose derive Jobs need reconciliation. */
+    fun listReconcileCandidates(): List<MapVersionRecord>
+
+    /** Restarts only a retryable system failure with a fresh attempt identity. */
+    fun retrySystemFailure(mapId: UUID, version: Int): MapVersionRecord
+
     fun find(mapId: UUID, version: Int): MapVersionRecord?
 
     fun list(mapId: UUID): List<MapVersionRecord>
