@@ -1,5 +1,6 @@
 package gg.grounds.blob
 
+import gg.grounds.derive.DeriveArtifactStore
 import gg.grounds.domain.MapTrust
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -64,7 +65,7 @@ constructor(
     @ConfigProperty(name = "grounds.maps.cdn.content-base") val contentBaseUrl: String,
     /** Where creator content is read from. A different origin on purpose. */
     @ConfigProperty(name = "grounds.maps.cdn.ugc-base") val ugcBaseUrl: String,
-) {
+) : DeriveArtifactStore {
 
     private val credentials =
         StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey))
@@ -123,7 +124,13 @@ constructor(
             .url()
             .toExternalForm()
 
-    fun headPrivate(key: String): BlobMetadata? = head(privateBucket, key)
+    override fun headPrivate(key: String): BlobMetadata? = head(privateBucket, key)
+
+    /** Completion markers are small, private, and read only after the worker Job succeeds. */
+    override fun getPrivate(key: String): ByteArray =
+        client
+            .getObject(GetObjectRequest.builder().bucket(privateBucket).key(key).build())
+            .readAllBytes()
 
     fun headPublic(key: String, trust: MapTrust): BlobMetadata? = head(publicBucketFor(trust), key)
 

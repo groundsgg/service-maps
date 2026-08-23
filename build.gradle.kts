@@ -68,6 +68,8 @@ dependencies {
     // database is unreachable, which is the failure a tcpSocket probe reports as healthy.
     implementation("io.quarkus:quarkus-smallrye-health")
     implementation("io.quarkus:quarkus-smallrye-openapi")
+    implementation("io.quarkus:quarkus-scheduler")
+    implementation("io.fabric8:kubernetes-client:7.4.0")
     // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
     // UrlConnectionHttpClient rather than the Netty async client: every call here is a
     // presign or a small metadata write, so an event loop buys nothing.
