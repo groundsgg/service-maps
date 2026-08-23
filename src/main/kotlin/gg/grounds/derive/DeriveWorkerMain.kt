@@ -31,6 +31,9 @@ object DeriveWorkerMain {
         transferFactory: (allowLoopbackHttp: Boolean) -> WorkerHttpTransfer,
         environment: (String) -> String?,
         tempRootFactory: () -> Path = { Files.createTempDirectory("derive-worker-") },
+        catalogLoaderFactory: (Path, Boolean) -> CatalogJarLoader = { directory, loopback ->
+            CatalogJarLoader(directory, allowLoopbackHttp = loopback)
+        },
     ): Int {
         val options =
             try {
@@ -59,7 +62,8 @@ object DeriveWorkerMain {
                 val actual = transfer.download(request.sourceUrl, source)
                 if (actual != request.sourceSha256)
                     throw ContentFailure("source digest does not match request")
-                val result = derive(request, source, root, options.allowLoopbackHttp)
+                val result =
+                    derive(request, source, root, options.allowLoopbackHttp, catalogLoaderFactory)
                 when (result) {
                     is SceneDerivationOutcome.Invalid ->
                         return failure(request, result.problems, transfer)
@@ -108,10 +112,11 @@ object DeriveWorkerMain {
         source: Path,
         root: Path,
         loopback: Boolean,
+        catalogLoaderFactory: (Path, Boolean) -> CatalogJarLoader,
     ): SceneDerivationOutcome {
         val catalogDir = root.resolve("catalogs")
         val deriveDirectory = Files.createDirectory(root.resolve("derive"))
-        CatalogJarLoader(catalogDir, allowLoopbackHttp = loopback).use { loader ->
+        catalogLoaderFactory(catalogDir, loopback).use { loader ->
             val resolver = workerResolver(request, loader, DefaultNamespaceCatalogResolver())
             return Files.newInputStream(source).use {
                 SceneDeriver(resolver).derive(it, request.sourceSha256, deriveDirectory)

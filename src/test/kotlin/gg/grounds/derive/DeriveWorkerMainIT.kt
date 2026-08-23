@@ -4,6 +4,7 @@ import com.github.luben.zstd.ZstdInputStream
 import com.github.luben.zstd.ZstdOutputStream
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import gg.grounds.catalog.CatalogJarLoader
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -319,6 +320,18 @@ class DeriveWorkerMainIT {
             }
         }
     }
+
+    @Test
+    fun `catalog abort before response headers is acknowledged as a system marker`() =
+        catalogTransportFailure(catalogAbortBeforeHeaders = true)
+
+    @Test
+    fun `catalog abort mid-stream body is acknowledged as a system marker`() =
+        catalogTransportFailure(catalogAbortMidStream = true)
+
+    @Test
+    fun `catalog whole request deadline is acknowledged as a system marker`() =
+        catalogTransportFailure(catalogResponseDelayMillis = 100)
 
     @Test
     fun `zero duplicate and nonexact catalog selections are nonretryable content`() {
@@ -928,6 +941,9 @@ class DeriveWorkerMainIT {
         catalog: ByteArray,
         catalogStatus: Int = 200,
         catalogChunked: Boolean = false,
+        catalogAbortBeforeHeaders: Boolean = false,
+        catalogAbortMidStream: Boolean = false,
+        catalogResponseDelayMillis: Long = 0,
         block: (HttpServer, MutableList<Pair<String, ByteArray>>, MutableList<String>) -> Unit,
     ) {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
@@ -944,9 +960,18 @@ class DeriveWorkerMainIT {
             }
             server.createContext("/catalog") { exchange ->
                 requests += "/catalog"
-                if (catalogStatus in 300..399)
+                if (catalogAbortBeforeHeaders) {
+                    exchange.close()
+                } else if (catalogStatus in 300..399)
                     exchange.responseHeaders.add("Location", "/redirect-target")
-                if (catalogChunked && catalogStatus == 200) {
+                if (catalogAbortMidStream && catalogStatus == 200) {
+                    exchange.sendResponseHeaders(200, catalog.size.toLong())
+                    exchange.responseBody.write(catalog.copyOf(1))
+                    exchange.responseBody.close()
+                } else if (catalogResponseDelayMillis > 0 && catalogStatus == 200) {
+                    Thread.sleep(catalogResponseDelayMillis)
+                    respond(exchange, 200, catalog)
+                } else if (catalogChunked && catalogStatus == 200) {
                     exchange.sendResponseHeaders(200, 0)
                     exchange.responseBody.use { it.write(catalog) }
                 } else respond(exchange, catalogStatus, catalog)
@@ -970,6 +995,7 @@ class DeriveWorkerMainIT {
         request: DeriveRequest,
         transfer: WorkerHttpTransfer = WorkerHttpTransfer(true),
         expectedExit: Int = 0,
+        catalogRequestDeadlineMillis: Long? = null,
     ): Int {
         val file = Files.createTempFile("derive-request-", ".json")
         try {
@@ -978,11 +1004,64 @@ class DeriveWorkerMainIT {
                 DeriveWorkerMain.run(
                     arrayOf("--request-file", file.toString(), "--allow-loopback-http"),
                     { transfer },
+                    System::getenv,
+                    catalogLoaderFactory = { directory, loopback ->
+                        CatalogJarLoader(
+                            directory,
+                            allowLoopbackHttp = loopback,
+                            requestDeadlineMillis =
+                                catalogRequestDeadlineMillis
+                                    ?: gg.grounds.transfer.RequestDeadline.DEFAULT_TIMEOUT_MILLIS,
+                        )
+                    },
                 )
             assertEquals(expectedExit, exit)
             return exit
         } finally {
             Files.deleteIfExists(file)
+        }
+    }
+
+    private fun catalogTransportFailure(
+        catalogAbortBeforeHeaders: Boolean = false,
+        catalogAbortMidStream: Boolean = false,
+        catalogResponseDelayMillis: Long = 0,
+    ) {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        catalogWorkerServer(
+            source,
+            catalog,
+            catalogAbortBeforeHeaders = catalogAbortBeforeHeaders,
+            catalogAbortMidStream = catalogAbortMidStream,
+            catalogResponseDelayMillis = catalogResponseDelayMillis,
+        ) { server, uploads, requests ->
+            val candidate =
+                AssetCatalogCandidate(
+                    "stable",
+                    "grounds:assets",
+                    "1",
+                    "coord",
+                    "catalog.jar",
+                    URI("http://127.0.0.1:${server.address.port}/catalog"),
+                    digest(catalog),
+                    catalog.size.toLong(),
+                )
+            val request =
+                request(server, digest(source)).copy(catalogCandidates = listOf(candidate))
+            assertEquals(0, run(server, request, catalogRequestDeadlineMillis = 25))
+            assertEquals(
+                listOf("/source") +
+                    List(if (catalogAbortBeforeHeaders || catalogAbortMidStream) 2 else 1) {
+                        "/catalog"
+                    } +
+                    "/result",
+                requests,
+            )
+            assertEquals(listOf("/result"), uploads.map { it.first })
+            val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("SYSTEM", marker.scope.name)
+            assertTrue(marker.retryable)
         }
     }
 
