@@ -258,6 +258,82 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
+    fun `create fails closed when a conflict returns a sidecar`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.add(
+                io.fabric8.kubernetes.api.model
+                    .ContainerBuilder()
+                    .withName("sidecar")
+                    .withImage("registry.example/sidecar@sha256:" + "c".repeat(64))
+                    .build()
+            )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns an init container`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.initContainers =
+                listOf(
+                    io.fabric8.kubernetes.api.model
+                        .ContainerBuilder()
+                        .withName("init")
+                        .withImage("registry.example/init@sha256:" + "c".repeat(64))
+                        .build()
+                )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns a secret volume`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.volumes.add(
+                io.fabric8.kubernetes.api.model
+                    .VolumeBuilder()
+                    .withName("credentials")
+                    .withNewSecret()
+                    .withSecretName("should-not-be-mounted")
+                    .endSecret()
+                    .build()
+            )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict enables host networking`() {
+        assertConflictFails { stored -> stored.spec.template.spec.hostNetwork = true }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds an image pull secret`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.imagePullSecrets =
+                listOf(
+                    io.fabric8.kubernetes.api.model
+                        .LocalObjectReferenceBuilder()
+                        .withName("registry-credential")
+                        .build()
+                )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns an arbitrary label`() {
+        assertConflictFails { stored ->
+            stored.metadata.labels =
+                stored.metadata.labels.toMutableMap().apply { put("evil", "true") }
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns an arbitrary template label`() {
+        assertConflictFails { stored ->
+            stored.spec.template.metadata.labels =
+                stored.spec.template.metadata.labels.toMutableMap().apply { put("evil", "true") }
+        }
+    }
+
+    @Test
     fun `find and readiness use read-only Kubernetes HTTP operations`() {
         val responses = CopyOnWriteArrayList<String>()
         loopback { exchange, _ ->

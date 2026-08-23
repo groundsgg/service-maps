@@ -213,8 +213,13 @@ constructor(
         val expectedContract = ownedContract(expected) ?: return false
         val existingContract = ownedContract(existing) ?: return false
         val expectedFingerprint = fingerprint(expectedContract)
-        return (hasExpectedLabels(existing.metadata?.labels, expected.metadata?.labels) &&
-            hasExpectedLabels(
+        return (hasOnlyExpectedOrControllerLabels(
+            existing,
+            existing.metadata?.labels,
+            expected.metadata?.labels,
+        ) &&
+            hasOnlyExpectedOrControllerLabels(
+                existing,
                 existing.spec?.template?.metadata?.labels,
                 expected.spec?.template?.metadata?.labels,
             ) &&
@@ -233,6 +238,7 @@ constructor(
         val labels = metadata.labels ?: return null
         val spec = job.spec ?: return null
         val pod = spec.template?.spec ?: return null
+        if (!isSafePodShape(pod)) return null
         val worker = pod.containers?.singleOrNull { it.name == "derive-worker" } ?: return null
         val environment = worker.env?.associate { it.name to it.value } ?: return null
         if (
@@ -244,7 +250,8 @@ constructor(
             return null
         val request = environment["DERIVE_REQUEST_JSON"] ?: return null
         val tempDirectory = environment["TMPDIR"] ?: return null
-        val workVolume = pod.volumes?.singleOrNull { it.name == "work" } ?: return null
+        val workVolume = pod.volumes?.singleOrNull() ?: return null
+        if (workVolume.name != "work") return null
         val workMount = worker.volumeMounts?.singleOrNull { it.name == "work" } ?: return null
         if (worker.volumeMounts.size != 1) return null
         return OwnedJobContract(
@@ -284,11 +291,87 @@ constructor(
     ): Map<String, String> =
         quantities.orEmpty().mapValues { (_, value) -> value.amount + value.format }.toSortedMap()
 
-    private fun hasExpectedLabels(
+    private fun isSafePodShape(pod: io.fabric8.kubernetes.api.model.PodSpec): Boolean =
+        podShapeFailures(pod).isEmpty()
+
+    private fun podShapeFailures(pod: io.fabric8.kubernetes.api.model.PodSpec): List<String> =
+        listOf(
+                "containers" to (pod.containers?.size == 1),
+                "initContainers" to pod.initContainers.isNullOrEmpty(),
+                "ephemeralContainers" to pod.ephemeralContainers.isNullOrEmpty(),
+                "volumes" to (pod.volumes?.size == 1),
+                "imagePullSecrets" to pod.imagePullSecrets.isNullOrEmpty(),
+                "hostNetwork" to (pod.hostNetwork != true),
+                "hostPID" to (pod.hostPID != true),
+                "hostIPC" to (pod.hostIPC != true),
+                "hostUsers" to (pod.hostUsers != true),
+                "hostAliases" to pod.hostAliases.isNullOrEmpty(),
+                "nodeName" to (pod.nodeName == null),
+                "nodeSelector" to pod.nodeSelector.isNullOrEmpty(),
+                "affinity" to (pod.affinity == null),
+                "tolerations" to pod.tolerations.isNullOrEmpty(),
+                "topologySpreadConstraints" to pod.topologySpreadConstraints.isNullOrEmpty(),
+                "priorityClassName" to (pod.priorityClassName == null),
+                "runtimeClassName" to (pod.runtimeClassName == null),
+                "preemptionPolicy" to (pod.preemptionPolicy == null),
+                "overhead" to pod.overhead.isNullOrEmpty(),
+                "readinessGates" to pod.readinessGates.isNullOrEmpty(),
+                "resourceClaims" to pod.resourceClaims.isNullOrEmpty(),
+                "schedulingGates" to pod.schedulingGates.isNullOrEmpty(),
+                "hostname" to (pod.hostname == null),
+                "subdomain" to (pod.subdomain == null),
+                "setHostnameAsFQDN" to (pod.setHostnameAsFQDN != true),
+                "dnsPolicy" to (pod.dnsPolicy == null || pod.dnsPolicy == "ClusterFirst"),
+                "schedulerName" to
+                    (pod.schedulerName == null || pod.schedulerName == "default-scheduler"),
+                "terminationGracePeriodSeconds" to
+                    (pod.terminationGracePeriodSeconds == null ||
+                        pod.terminationGracePeriodSeconds == 0L ||
+                        pod.terminationGracePeriodSeconds == 30L),
+            )
+            .filterNot { it.second }
+            .map { it.first }
+
+    private fun hasOnlyExpectedOrControllerLabels(
+        job: Job,
         actual: Map<String, String>?,
         expected: Map<String, String>?,
-    ): Boolean =
-        actual != null && expected != null && expected.all { (key, value) -> actual[key] == value }
+    ): Boolean {
+        if (
+            actual == null ||
+                expected == null ||
+                !expected.all { (key, value) -> actual[key] == value }
+        )
+            return false
+        val selector = job.spec?.selector ?: return actual.size == expected.size
+        val selectorLabels = selector.matchLabels ?: return false
+        if (
+            selector.matchExpressions.isNullOrEmpty().not() ||
+                !controllerSelectorIsSafe(selectorLabels)
+        )
+            return false
+        val controllerUid =
+            selectorLabels["controller-uid"] ?: selectorLabels["batch.kubernetes.io/controller-uid"]
+        val jobName = job.metadata?.name ?: return false
+        return actual
+            .filterKeys { it !in expected }
+            .all { (key, value) ->
+                when (key) {
+                    "controller-uid",
+                    "batch.kubernetes.io/controller-uid" -> value == controllerUid
+                    "job-name",
+                    "batch.kubernetes.io/job-name" -> value == jobName
+                    else -> false
+                }
+            }
+    }
+
+    private fun controllerSelectorIsSafe(labels: Map<String, String>): Boolean {
+        val uid = labels["controller-uid"] ?: labels["batch.kubernetes.io/controller-uid"]
+        return uid != null &&
+            uid.isNotBlank() &&
+            labels.all { (key, value) -> key in CONTROLLER_UID_LABELS && value == uid }
+    }
 
     private fun fingerprint(contract: OwnedJobContract): String =
         MessageDigest.getInstance("SHA-256").digest(CanonicalJson.write(contract)).joinToString(
@@ -317,6 +400,7 @@ constructor(
                 "grounds.gg/version",
                 "grounds.gg/attempt",
             )
+        val CONTROLLER_UID_LABELS = setOf("controller-uid", "batch.kubernetes.io/controller-uid")
     }
 
     private data class OwnedJobContract(
