@@ -1,5 +1,6 @@
 package gg.grounds.derive
 
+import gg.grounds.catalog.CatalogTransferException
 import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
@@ -110,6 +111,8 @@ class SceneDeriver(
         val catalogs =
             try {
                 catalogResolver.resolve(document.catalogs)
+            } catch (failure: CatalogTransferException) {
+                throw failure
             } catch (failure: RuntimeException) {
                 return invalidScene(
                     "scene catalog could not be resolved: ${failure.message}",

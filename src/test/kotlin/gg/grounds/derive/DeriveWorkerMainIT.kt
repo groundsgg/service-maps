@@ -95,6 +95,30 @@ class DeriveWorkerMainIT {
             assertTrue(result.retryable)
         }
 
+    @Test
+    fun `mutation contacting any URL before malformed request validation is rejected`() =
+        workerServer(ByteArray(0)) { server, uploads ->
+            val malformed =
+                "{\"sourceUrl\":\"http://127.0.0.1:${server.address.port}/source\"}"
+                    .encodeToByteArray()
+            assertEquals(2, runRaw(malformed, "--request-file", "--allow-loopback-http"))
+            assertTrue(uploads.isEmpty())
+        }
+
+    @Test
+    fun `mutation accepting production HTTP preflight is rejected before source GET`() =
+        workerServer(ByteArray(0)) { server, uploads ->
+            val request = request(server, "0".repeat(64))
+            val file = Files.createTempFile("derive-request-", ".json")
+            try {
+                Files.write(file, CanonicalJson.write(request))
+                assertEquals(2, DeriveWorkerMain.run(arrayOf("--request-file", file.toString())))
+            } finally {
+                Files.deleteIfExists(file)
+            }
+            assertTrue(uploads.isEmpty())
+        }
+
     private fun workerServer(
         source: ByteArray,
         sourceStatus: Int = 200,
@@ -122,8 +146,27 @@ class DeriveWorkerMainIT {
         val file = Files.createTempFile("derive-request-", ".json")
         try {
             Files.write(file, CanonicalJson.write(request))
-            DeriveWorkerMain.main(
-                arrayOf("--request-file", file.toString(), "--allow-loopback-http")
+            assertEquals(
+                0,
+                DeriveWorkerMain.run(
+                    arrayOf("--request-file", file.toString(), "--allow-loopback-http")
+                ),
+            )
+        } finally {
+            Files.deleteIfExists(file)
+        }
+    }
+
+    private fun runRaw(bytes: ByteArray, vararg flags: String): Int {
+        val file = Files.createTempFile("derive-request-", ".json")
+        try {
+            Files.write(file, bytes)
+            return DeriveWorkerMain.run(
+                arrayOf(
+                    *flags.take(1).toTypedArray(),
+                    file.toString(),
+                    *flags.drop(1).toTypedArray(),
+                )
             )
         } finally {
             Files.deleteIfExists(file)

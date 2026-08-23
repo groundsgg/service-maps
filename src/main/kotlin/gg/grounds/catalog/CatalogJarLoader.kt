@@ -17,6 +17,10 @@ import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 class CatalogContentException(message: String, cause: Throwable? = null) :
     IllegalArgumentException(message, cause)
 
+/** Network availability is retryable; malformed catalog bytes remain content failures. */
+class CatalogTransferException(message: String, cause: Throwable? = null) :
+    RuntimeException(message, cause)
+
 /** Downloads and loads a generated catalog only after treating its JAR as hostile input. */
 class CatalogJarLoader(
     private val cacheDirectory: Path,
@@ -101,25 +105,33 @@ class CatalogJarLoader(
         connection.readTimeout = 5_000
         try {
             if (connection.responseCode !in 200..299)
-                throw CatalogContentException("Catalog download failed.")
+                throw CatalogTransferException(
+                    "Catalog download failed (${connection.responseCode})."
+                )
             if (
                 connection.contentLengthLong >= 0 && connection.contentLengthLong != candidate.size
             ) {
                 throw CatalogContentException("Catalog response size does not match manifest.")
             }
             val bytes = ByteArrayOutputStream(candidate.size.toInt())
-            connection.inputStream.use { input ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var received = 0L
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    received += count
-                    if (received > candidate.size || received > maxCatalogBytes) {
-                        throw CatalogContentException("Catalog response exceeds manifest size.")
+            try {
+                connection.inputStream.use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var received = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        received += count
+                        if (received > candidate.size || received > maxCatalogBytes) {
+                            throw CatalogContentException("Catalog response exceeds manifest size.")
+                        }
+                        bytes.write(buffer, 0, count)
                     }
-                    bytes.write(buffer, 0, count)
                 }
+            } catch (failure: CatalogContentException) {
+                throw failure
+            } catch (failure: Exception) {
+                throw CatalogTransferException("Catalog transfer failed.", failure)
             }
             val result = bytes.toByteArray()
             if (result.size.toLong() != candidate.size) {

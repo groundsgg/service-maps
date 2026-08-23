@@ -98,7 +98,7 @@ class CatalogJarLoaderTest {
     }
 
     @Test
-    fun `rejects redirects and manifest digest mismatches`() {
+    fun `mutation classifying redirect transport as content is rejected while digest mismatch remains content`() {
         val bytes = catalogJar()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/redirect") { exchange ->
@@ -114,7 +114,7 @@ class CatalogJarLoaderTest {
         try {
             CatalogJarLoader(Files.createTempDirectory("catalog-loader"), allowLoopbackHttp = true)
                 .use { loader ->
-                    assertThrows(CatalogContentException::class.java) {
+                    assertThrows(CatalogTransferException::class.java) {
                         loader.load(
                             candidate(
                                 URI("http://127.0.0.1:${server.address.port}/redirect"),

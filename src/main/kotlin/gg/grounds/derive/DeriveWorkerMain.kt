@@ -9,19 +9,36 @@ import gg.grounds.domain.DeriveProblem
 import gg.grounds.scene.format.SceneCatalogReferences
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.system.exitProcess
 
 /** Dependency-free process boundary; it never starts Quarkus. */
 object DeriveWorkerMain {
     @JvmStatic
     fun main(args: Array<String>) {
-        val options = options(args)
+        exitProcess(run(args))
+    }
+
+    internal fun run(args: Array<String>): Int {
+        val options =
+            try {
+                options(args)
+            } catch (failure: Exception) {
+                return 2
+            }
         val request =
             try {
                 CanonicalJson.readRequest(options.request())
             } catch (failure: Exception) {
-                return
+                return 2
             }
         val transfer = WorkerHttpTransfer(options.allowLoopbackHttp)
+        try {
+            listOf(request.sourceUrl, request.bundleUrl, request.manifestUrl, request.resultUrl)
+                .plus(request.catalogCandidates.map { it.uri })
+                .forEach(transfer::preflight)
+        } catch (failure: Exception) {
+            return 2
+        }
         val root = Files.createTempDirectory("derive-worker-")
         try {
             val source = root.resolve("source.tar.zst")
@@ -31,30 +48,36 @@ object DeriveWorkerMain {
                     throw ContentFailure("source digest does not match request")
                 val result = derive(request, source, root, options.allowLoopbackHttp)
                 when (result) {
-                    is SceneDerivationOutcome.Invalid -> failure(request, result.problems, transfer)
+                    is SceneDerivationOutcome.Invalid ->
+                        return failure(request, result.problems, transfer)
                     is SceneDerivationOutcome.Valid -> {
                         try {
-                            transfer.upload(request.bundleUrl, result.bundle.path)
+                            transfer.upload(
+                                request.bundleUrl,
+                                result.bundle.path,
+                                result.bundle.sha256,
+                            )
                             val manifest = root.resolve("manifest.json")
                             Files.write(manifest, result.manifest)
-                            transfer.upload(request.manifestUrl, manifest)
+                            transfer.upload(request.manifestUrl, manifest, digest(result.manifest))
                             transfer.upload(
                                 request.resultUrl,
                                 CanonicalJson.write(success(request, result)),
                             )
+                            return 0
                         } catch (e: Exception) {
-                            systemFailure(request, e, transfer)
+                            return systemFailure(request, e, transfer)
                         }
                     }
                 }
             } catch (e: ContentFailure) {
-                failure(
+                return failure(
                     request,
                     listOf(problem(DeriveFailureScope.CONTENT, "SOURCE", e.message!!)),
                     transfer,
                 )
             } catch (e: Exception) {
-                systemFailure(request, e, transfer)
+                return systemFailure(request, e, transfer)
             }
         } finally {
             root.toFile().deleteRecursively()
@@ -117,47 +140,62 @@ object DeriveWorkerMain {
         request: DeriveRequest,
         problems: List<DeriveProblem>,
         transfer: WorkerHttpTransfer,
-    ) = runCatching {
-        transfer.upload(
-            request.resultUrl,
-            CanonicalJson.write(
-                DeriveFailure(
-                    mapId = request.mapId,
-                    version = request.version,
-                    attempt = request.attempt,
-                    sourceSha256 = request.sourceSha256,
-                    scope = DeriveFailureScope.CONTENT,
-                    retryable = false,
-                    problems = problems,
-                )
-            ),
-        )
-    }
-
-    private fun systemFailure(request: DeriveRequest, e: Exception, transfer: WorkerHttpTransfer) =
-        runCatching {
-            transfer.upload(
-                request.resultUrl,
-                CanonicalJson.write(
-                    DeriveFailure(
-                        mapId = request.mapId,
-                        version = request.version,
-                        attempt = request.attempt,
-                        sourceSha256 = request.sourceSha256,
-                        scope = DeriveFailureScope.SYSTEM,
-                        retryable = true,
-                        problems =
-                            listOf(
-                                problem(
-                                    DeriveFailureScope.SYSTEM,
-                                    "SYSTEM",
-                                    redact(e.message ?: "worker failure"),
-                                )
-                            ),
+    ): Int =
+        if (
+            runCatching {
+                    transfer.upload(
+                        request.resultUrl,
+                        CanonicalJson.write(
+                            DeriveFailure(
+                                mapId = request.mapId,
+                                version = request.version,
+                                attempt = request.attempt,
+                                sourceSha256 = request.sourceSha256,
+                                scope = DeriveFailureScope.CONTENT,
+                                retryable = false,
+                                problems = problems,
+                            )
+                        ),
                     )
-                ),
-            )
-        }
+                }
+                .isSuccess
+        )
+            0
+        else 1
+
+    private fun systemFailure(
+        request: DeriveRequest,
+        e: Exception,
+        transfer: WorkerHttpTransfer,
+    ): Int =
+        if (
+            runCatching {
+                    transfer.upload(
+                        request.resultUrl,
+                        CanonicalJson.write(
+                            DeriveFailure(
+                                mapId = request.mapId,
+                                version = request.version,
+                                attempt = request.attempt,
+                                sourceSha256 = request.sourceSha256,
+                                scope = DeriveFailureScope.SYSTEM,
+                                retryable = true,
+                                problems =
+                                    listOf(
+                                        problem(
+                                            DeriveFailureScope.SYSTEM,
+                                            "SYSTEM",
+                                            redact(e.message ?: "worker failure"),
+                                        )
+                                    ),
+                            )
+                        ),
+                    )
+                }
+                .isSuccess
+        )
+            0
+        else 1
 
     private fun problem(scope: DeriveFailureScope, code: String, message: String) =
         DeriveProblem(scope, null, code, null, redact(message))
@@ -194,6 +232,7 @@ object DeriveWorkerMain {
             else -> error("unknown worker option")
         }
         require((file == null) != (env == null)) { "provide exactly one request source" }
+        require(file == null || loopback) { "--request-file requires --allow-loopback-http" }
         return Options(file, env, loopback)
     }
 }
