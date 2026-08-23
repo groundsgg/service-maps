@@ -476,6 +476,13 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
+    fun `create fails closed when a conflict changes the service account alias`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.serviceAccount = "different-service-account"
+        }
+    }
+
+    @Test
     fun `create fails closed when controller UID is not the stored Job UID`() {
         assertConflictFails { stored -> stored.metadata.uid = "different-controller" }
     }
@@ -513,6 +520,22 @@ class Fabric8DeriveJobGatewayTest {
                 )
             }
         loopback { exchange, _ -> respond(exchange, 200, jobStatusJson(null)) }
+            .use { client ->
+                assertEquals(
+                    DeriveJobStatus.RUNNING,
+                    gateway(client.client).find(request().identity),
+                )
+            }
+        loopback { exchange, _ -> respond(exchange, 200, jobStatusJson("Failed", failed = 0)) }
+            .use { client ->
+                assertEquals(
+                    DeriveJobStatus.FAILED,
+                    gateway(client.client).find(request().identity),
+                )
+            }
+        loopback { exchange, _ ->
+                respond(exchange, 200, jobStatusJson("Failed", conditionStatus = "False"))
+            }
             .use { client ->
                 assertEquals(
                     DeriveJobStatus.RUNNING,
@@ -599,6 +622,7 @@ class Fabric8DeriveJobGatewayTest {
             job.spec.template.spec.schedulerName = "default-scheduler"
             job.spec.template.spec.terminationGracePeriodSeconds = 30
             job.spec.template.spec.enableServiceLinks = true
+            job.spec.template.spec.serviceAccount = job.spec.template.spec.serviceAccountName
             job.spec.template.spec.containers.single().terminationMessagePath =
                 "/dev/termination-log"
             job.spec.template.spec.containers.single().terminationMessagePolicy = "File"
@@ -652,8 +676,13 @@ class Fabric8DeriveJobGatewayTest {
         exchange.responseBody.use { it.write(body.toByteArray()) }
     }
 
-    private fun jobStatusJson(condition: String?, succeeded: Int = 0, failed: Int = 0) =
-        """{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive"},"status":{"succeeded":$succeeded,"failed":$failed,"conditions":${if (condition == null) "[]" else "[{\"type\":\"$condition\",\"status\":\"True\"}]"}}}"""
+    private fun jobStatusJson(
+        condition: String?,
+        succeeded: Int = 0,
+        failed: Int = 0,
+        conditionStatus: String = "True",
+    ) =
+        """{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive"},"status":{"succeeded":$succeeded,"failed":$failed,"conditions":${if (condition == null) "[]" else "[{\"type\":\"$condition\",\"status\":\"$conditionStatus\"}]"}}}"""
 
     private class AutoCloseableClient(
         val client: io.fabric8.kubernetes.client.KubernetesClient,

@@ -75,9 +75,9 @@ constructor(
                 ?: return null
         val status = job.status
         return when {
-            (status?.failed ?: 0) > 0 &&
-                (status.conditions ?: emptyList()).any { it.type == "Failed" } ->
-                DeriveJobStatus.FAILED
+            (status?.conditions ?: emptyList()).any {
+                it.type == "Failed" && it.status == "True"
+            } -> DeriveJobStatus.FAILED
             (status?.succeeded ?: 0) > 0 -> DeriveJobStatus.SUCCEEDED
             else -> DeriveJobStatus.RUNNING
         }
@@ -289,6 +289,11 @@ constructor(
     }
 
     private fun normalizePodDefaults(pod: ObjectNode) {
+        if (
+            pod.path("serviceAccount").isTextual &&
+                pod.path("serviceAccount").asText() == pod.path("serviceAccountName").asText()
+        )
+            pod.remove("serviceAccount")
         pod.removeIfExact("dnsPolicy", "ClusterFirst")
         pod.removeIfExact("schedulerName", "default-scheduler")
         pod.removeIfExact("terminationGracePeriodSeconds", 30)
