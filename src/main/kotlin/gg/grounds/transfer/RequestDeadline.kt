@@ -1,10 +1,12 @@
 package gg.grounds.transfer
 
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class RequestDeadlineExceeded : RuntimeException("request deadline exceeded")
 
@@ -14,30 +16,70 @@ internal object RequestDeadlineScheduler {
                 Thread(runnable, "grounds-http-deadline").apply { isDaemon = true }
             }
             .apply { removeOnCancelPolicy = true }
+
+    val callbacks: Executor =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "grounds-http-timeout-callback").apply { isDaemon = true }
+        }
 }
 
-/** A cancellable request-wide deadline backed by one daemon scheduler per process. */
+/** A cancellable request-wide deadline backed by shared daemon infrastructure. */
 class RequestDeadline(
     timeoutMillis: Long,
-    scheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
-    onExpire: () -> Unit,
+    private val scheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
+    private val onExpire: () -> Unit,
+    private val nanoTime: () -> Long = System::nanoTime,
+    private val callbackExecutor: Executor = RequestDeadlineScheduler.callbacks,
 ) : AutoCloseable {
-    private val expired = AtomicBoolean(false)
-    private val task: ScheduledFuture<*> =
-        scheduler.schedule(
-            {
-                expired.set(true)
-                onExpire()
-            },
-            timeoutMillis,
-            TimeUnit.MILLISECONDS,
-        )
+    private val timeoutMillis = timeoutMillis.also { require(it > 0) }
+    private val deadlineNanos = nanoTime() + TimeUnit.MILLISECONDS.toNanos(this.timeoutMillis)
+    private val state = AtomicReference(State.ACTIVE)
+    private val task = AtomicReference<ScheduledFuture<*>?>()
+
+    init {
+        val scheduled = scheduler.schedule(::expire, this.timeoutMillis, TimeUnit.MILLISECONDS)
+        task.set(scheduled)
+        if (state.get() == State.EXPIRED) scheduled.cancel(false)
+    }
 
     fun check() {
-        if (expired.get()) throw RequestDeadlineExceeded()
+        expireIfDue()
+        if (state.get() == State.EXPIRED) throw RequestDeadlineExceeded()
     }
 
     override fun close() {
-        task.cancel(false)
+        while (true) {
+            expireIfDue()
+            when (state.get()) {
+                State.COMPLETED -> return
+                State.EXPIRED -> throw RequestDeadlineExceeded()
+                State.ACTIVE ->
+                    if (state.compareAndSet(State.ACTIVE, State.COMPLETED)) {
+                        task.get()?.cancel(false)
+                        return
+                    }
+            }
+        }
+    }
+
+    private fun expireIfDue() {
+        if (nanoTime() >= deadlineNanos) expire()
+    }
+
+    private fun expire() {
+        if (state.compareAndSet(State.ACTIVE, State.EXPIRED)) {
+            task.get()?.cancel(false)
+            callbackExecutor.execute(onExpire)
+        }
+    }
+
+    private enum class State {
+        ACTIVE,
+        COMPLETED,
+        EXPIRED,
+    }
+
+    companion object {
+        const val DEFAULT_TIMEOUT_MILLIS = 10 * 60 * 1_000L
     }
 }

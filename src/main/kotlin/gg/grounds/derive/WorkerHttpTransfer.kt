@@ -22,7 +22,7 @@ internal class WorkerSourceLimitException :
 internal class WorkerHttpTransfer(
     private val allowLoopbackHttp: Boolean,
     private val maxSourceBytes: Long = 1L shl 30,
-    private val requestDeadlineMillis: Long = REQUEST_DEADLINE_MS,
+    private val requestDeadlineMillis: Long = RequestDeadline.DEFAULT_TIMEOUT_MILLIS,
     private val deadlineScheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
 ) {
     init {
@@ -170,6 +170,5 @@ internal class WorkerHttpTransfer(
 
     private companion object {
         const val TIMEOUT_MS = 5_000
-        const val REQUEST_DEADLINE_MS = 10 * 60 * 1_000L
     }
 }

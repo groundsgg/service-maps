@@ -33,7 +33,7 @@ class CatalogJarLoader(
     private val maxEntries: Int = MAX_ENTRIES,
     private val maxEntryExpandedBytes: Long = MAX_ENTRY_EXPANDED_BYTES,
     private val maxExpandedBytes: Long = MAX_EXPANDED_BYTES,
-    private val requestDeadlineMillis: Long = REQUEST_DEADLINE_MS,
+    private val requestDeadlineMillis: Long = RequestDeadline.DEFAULT_TIMEOUT_MILLIS,
     private val deadlineScheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
     internal val deleteJar: (Path) -> Unit = { Files.deleteIfExists(it) },
     internal val beforeLoad: () -> Unit = {},
@@ -305,6 +305,5 @@ class CatalogJarLoader(
         const val UNIX_REGULAR = 0x8000
         const val UNIX_DIRECTORY = 0x4000
         const val TIMEOUT_MS = 5_000
-        const val REQUEST_DEADLINE_MS = 10 * 60 * 1_000L
     }
 }
