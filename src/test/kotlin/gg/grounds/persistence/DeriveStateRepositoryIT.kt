@@ -217,7 +217,7 @@ class DeriveStateRepositoryIT {
         setCreatedAt(nonRetryableSystem.id, 1, 10)
         setCreatedAt(retryableMap.id, 1, 10)
         setCreatedAt(beyondLimitMap.id, beyondLimit.version, 10)
-        setCreatedAt(published.id, 1, 11)
+        setCreatedAt(published.id, 1, 0)
 
         val candidates = versions.listReconcileCandidates()
         assertEquals(
