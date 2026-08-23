@@ -18,11 +18,19 @@ object DeriveWorkerMain {
         exitProcess(run(args))
     }
 
-    internal fun run(args: Array<String>): Int = run(args) { WorkerHttpTransfer(it) }
+    internal fun run(args: Array<String>): Int =
+        run(args, { WorkerHttpTransfer(it) }, System::getenv)
 
     internal fun run(
         args: Array<String>,
         transferFactory: (allowLoopbackHttp: Boolean) -> WorkerHttpTransfer,
+    ): Int = run(args, transferFactory, System::getenv)
+
+    internal fun run(
+        args: Array<String>,
+        transferFactory: (allowLoopbackHttp: Boolean) -> WorkerHttpTransfer,
+        environment: (String) -> String?,
+        tempRootFactory: () -> Path = { Files.createTempDirectory("derive-worker-") },
     ): Int {
         val options =
             try {
@@ -32,7 +40,7 @@ object DeriveWorkerMain {
             }
         val request =
             try {
-                CanonicalJson.readRequest(options.request())
+                CanonicalJson.readRequest(options.request(environment))
             } catch (failure: Exception) {
                 return 2
             }
@@ -44,7 +52,7 @@ object DeriveWorkerMain {
         } catch (failure: Exception) {
             return 2
         }
-        val root = Files.createTempDirectory("derive-worker-")
+        val root = tempRootFactory()
         try {
             val source = root.resolve("source.tar.zst")
             try {
@@ -212,7 +220,7 @@ object DeriveWorkerMain {
         DeriveProblem(scope, null, code, null, redact(message))
 
     private fun redact(message: String) =
-        message.replace(Regex("https?://[^\\s?]+\\?[^\\s]+"), "<redacted-url>")
+        message.replace(Regex("(https?://[^\\s?]+)\\?[^\\s]+"), "$1?<redacted-query>")
 
     private fun digest(bytes: ByteArray) =
         java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
@@ -226,9 +234,9 @@ object DeriveWorkerMain {
         val requestEnv: String?,
         val allowLoopbackHttp: Boolean,
     ) {
-        fun request(): ByteArray =
+        fun request(environment: (String) -> String?): ByteArray =
             requestFile?.let(Files::readAllBytes)
-                ?: System.getenv(requireNotNull(requestEnv)).encodeToByteArray()
+                ?: requireNotNull(environment(requireNotNull(requestEnv))).encodeToByteArray()
     }
 
     private fun options(args: Array<String>): Options {

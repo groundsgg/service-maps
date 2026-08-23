@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -216,6 +217,7 @@ class RequestDeadlineTest {
         val callers = Executors.newFixedThreadPool(2)
         val clockReads = AtomicInteger()
         val expired = AtomicInteger()
+        val expiryStarted = CountDownLatch(1)
         val completionEntered = CountDownLatch(1)
         val releaseCompletion = CountDownLatch(1)
         val observerCoordinating = CountDownLatch(1)
@@ -224,7 +226,10 @@ class RequestDeadlineTest {
                 RequestDeadline(
                     timeoutMillis = 1,
                     scheduler = scheduler,
-                    onExpire = expired::incrementAndGet,
+                    onExpire = {
+                        expired.incrementAndGet()
+                        expiryStarted.countDown()
+                    },
                     nanoTime = {
                         when (clockReads.incrementAndGet()) {
                             3 -> {
@@ -252,6 +257,112 @@ class RequestDeadlineTest {
             assertEquals(1, expired.get())
         } finally {
             releaseCompletion.countDown()
+            callers.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `interrupting a provisional closer expires once wakes observers and preserves its flag`() {
+        val scheduler = ScheduledThreadPoolExecutor(1)
+        val callers = Executors.newFixedThreadPool(2)
+        val clockReads = AtomicInteger()
+        val expired = AtomicInteger()
+        val closerEntered = CountDownLatch(1)
+        val observerCoordinating = CountDownLatch(1)
+        val closerThread = AtomicReference<Thread>()
+        try {
+            val deadline =
+                RequestDeadline(
+                    timeoutMillis = 1,
+                    scheduler = scheduler,
+                    onExpire = expired::incrementAndGet,
+                    nanoTime = {
+                        if (clockReads.incrementAndGet() == 3) {
+                            closerEntered.countDown()
+                            CountDownLatch(1).await()
+                        }
+                        0
+                    },
+                    callbackExecutor = Executor { it.run() },
+                    onAwaitingCompletion = { observerCoordinating.countDown() },
+                )
+            val closer =
+                callers.submit<Boolean> {
+                    closerThread.set(Thread.currentThread())
+                    try {
+                        deadline.close()
+                        false
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().isInterrupted
+                    }
+                }
+            assertTrue(closerEntered.await(1, TimeUnit.SECONDS))
+            val observer = callers.submit<Unit> { deadline.check() }
+            assertTrue(observerCoordinating.await(1, TimeUnit.SECONDS))
+            requireNotNull(closerThread.get()).interrupt()
+
+            assertTrue(closer.get(1, TimeUnit.SECONDS))
+            assertDeadlineExceeded(observer)
+            assertEquals(1, expired.get())
+        } finally {
+            callers.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `interrupting a waiting observer expires once wakes closer and preserves its flag`() {
+        val scheduler = ScheduledThreadPoolExecutor(1)
+        val callers = Executors.newFixedThreadPool(2)
+        val clockReads = AtomicInteger()
+        val expired = AtomicInteger()
+        val expiryStarted = CountDownLatch(1)
+        val closerEntered = CountDownLatch(1)
+        val releaseCloser = CountDownLatch(1)
+        val observerCoordinating = CountDownLatch(1)
+        val observerThread = AtomicReference<Thread>()
+        try {
+            val deadline =
+                RequestDeadline(
+                    timeoutMillis = 1,
+                    scheduler = scheduler,
+                    onExpire = {
+                        expired.incrementAndGet()
+                        expiryStarted.countDown()
+                    },
+                    nanoTime = {
+                        if (clockReads.incrementAndGet() == 3) {
+                            closerEntered.countDown()
+                            releaseCloser.await()
+                        }
+                        0
+                    },
+                    callbackExecutor = Executor { it.run() },
+                    onAwaitingCompletion = { observerCoordinating.countDown() },
+                )
+            val closer = callers.submit<Unit> { deadline.close() }
+            assertTrue(closerEntered.await(1, TimeUnit.SECONDS))
+            val observer =
+                callers.submit<Boolean> {
+                    observerThread.set(Thread.currentThread())
+                    try {
+                        deadline.check()
+                        false
+                    } catch (_: RequestDeadlineExceeded) {
+                        Thread.currentThread().isInterrupted
+                    }
+                }
+            assertTrue(observerCoordinating.await(1, TimeUnit.SECONDS))
+            requireNotNull(observerThread.get()).interrupt()
+            assertTrue(expiryStarted.await(1, TimeUnit.SECONDS))
+            releaseCloser.countDown()
+
+            assertTrue(observer.get(1, TimeUnit.SECONDS))
+            assertDeadlineExceeded(closer)
+            assertEquals(1, expired.get())
+        } finally {
+            releaseCloser.countDown()
             callers.shutdownNow()
             scheduler.shutdownNow()
         }

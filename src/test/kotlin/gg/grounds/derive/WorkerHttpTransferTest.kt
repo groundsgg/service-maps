@@ -16,6 +16,62 @@ import org.junit.jupiter.api.Test
 
 class WorkerHttpTransferTest {
     @Test
+    fun `removes its owned temporary result file after upload`() {
+        val result = Files.createTempFile("derive-result-test-", ".json")
+        Files.delete(result)
+        server { server ->
+            server.createContext("/result") { exchange ->
+                exchange.requestBody.readAllBytes()
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.close()
+            }
+            server.start()
+            WorkerHttpTransfer(true, resultTempFileFactory = { result })
+                .upload(uri(server, "/result"), "{}".encodeToByteArray())
+            assertFalse(Files.exists(result))
+        }
+    }
+
+    @Test
+    fun `streams a generated multi-megabyte artifact with its exact digest`() {
+        val source = Files.createTempFile("worker-large-", ".bin")
+        val expected = MessageDigest.getInstance("SHA-256")
+        try {
+            Files.newOutputStream(source).use { output ->
+                repeat(2_048) {
+                    val chunk = ByteArray(1_024) { (it + 17).toByte() }
+                    expected.update(chunk)
+                    output.write(chunk)
+                }
+            }
+            val expectedDigest = expected.digest().joinToString("") { "%02x".format(it) }
+            server { server ->
+                server.createContext("/artifact") { exchange ->
+                    val actual = MessageDigest.getInstance("SHA-256")
+                    exchange.requestBody.use { input ->
+                        val buffer = ByteArray(8_192)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            actual.update(buffer, 0, count)
+                        }
+                    }
+                    assertEquals(
+                        expectedDigest,
+                        actual.digest().joinToString("") { "%02x".format(it) },
+                    )
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.close()
+                }
+                server.start()
+                WorkerHttpTransfer(true).upload(uri(server, "/artifact"), source, expectedDigest)
+            }
+        } finally {
+            Files.deleteIfExists(source)
+        }
+    }
+
+    @Test
     fun `preserves a pre-existing destination when create-new rejects it`() {
         server { server ->
             server.createContext("/source") { exchange ->

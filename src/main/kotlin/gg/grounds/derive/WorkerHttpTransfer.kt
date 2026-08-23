@@ -19,11 +19,14 @@ internal open class WorkerTransferException(message: String, cause: Throwable? =
 internal class WorkerSourceLimitException :
     WorkerTransferException("source exceeds compressed limit")
 
-internal class WorkerHttpTransfer(
+internal open class WorkerHttpTransfer(
     private val allowLoopbackHttp: Boolean,
     private val maxSourceBytes: Long = 1L shl 30,
     private val requestDeadlineMillis: Long = RequestDeadline.DEFAULT_TIMEOUT_MILLIS,
     private val deadlineScheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
+    private val resultTempFileFactory: () -> Path = {
+        Files.createTempFile("derive-result-", ".json")
+    },
 ) {
     init {
         require(maxSourceBytes > 0 && requestDeadlineMillis > 0)
@@ -31,7 +34,7 @@ internal class WorkerHttpTransfer(
 
     fun preflight(uri: URI) = requireAllowed(uri)
 
-    fun download(uri: URI, destination: Path): String {
+    open fun download(uri: URI, destination: Path): String {
         var connection: HttpURLConnection? = null
         var destinationCreated = false
         var completed = false
@@ -70,7 +73,7 @@ internal class WorkerHttpTransfer(
         }
     }
 
-    fun upload(uri: URI, source: Path, expectedDigest: String? = null) {
+    open fun upload(uri: URI, source: Path, expectedDigest: String? = null) {
         var connection: HttpURLConnection? = null
         try {
             connection = connection(uri)
@@ -105,7 +108,7 @@ internal class WorkerHttpTransfer(
     }
 
     fun upload(uri: URI, bytes: ByteArray) {
-        val temporary = Files.createTempFile("derive-result-", ".json")
+        val temporary = resultTempFileFactory()
         try {
             Files.write(temporary, bytes)
             upload(uri, temporary, bytes.digest())

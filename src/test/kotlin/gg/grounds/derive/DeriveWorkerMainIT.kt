@@ -105,6 +105,27 @@ class DeriveWorkerMainIT {
         }
 
     @Test
+    fun `failed fallback marker after bundle failure returns nonzero with no later success`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            bundleStatus = 500,
+            resultStatuses = listOf(500),
+        ) { server, uploads ->
+            assertEquals(
+                1,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                    expectedExit = 1,
+                ),
+            )
+            assertEquals(listOf("/bundle", "/result"), uploads.map { it.first })
+        }
+
+    @Test
     fun `failed manifest upload sends only the acknowledged system fallback marker`() =
         workerServer(
             archive(mapOf("level.dat" to "world".encodeToByteArray())),
@@ -125,6 +146,27 @@ class DeriveWorkerMainIT {
             val fallback = CanonicalJson.readResult(uploads.last().second) as DeriveFailure
             assertEquals("SYSTEM", fallback.scope.name)
             assertTrue(fallback.retryable)
+        }
+
+    @Test
+    fun `failed fallback marker after manifest failure returns nonzero with no later success`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            manifestStatus = 500,
+            resultStatuses = listOf(500),
+        ) { server, uploads ->
+            assertEquals(
+                1,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                    expectedExit = 1,
+                ),
+            )
+            assertEquals(listOf("/bundle", "/manifest", "/result"), uploads.map { it.first })
         }
 
     @Test
@@ -207,6 +249,15 @@ class DeriveWorkerMainIT {
         }
 
     @Test
+    fun `failed result upload after source system failure returns nonzero without artifacts`() =
+        workerServer(ByteArray(0), sourceStatus = 503, resultStatuses = listOf(500)) {
+            server,
+            uploads ->
+            assertEquals(1, run(server, request(server, "0".repeat(64)), expectedExit = 1))
+            assertEquals(listOf("/result"), uploads.map { it.first })
+        }
+
+    @Test
     fun `reports expired source URL as retryable system failure`() =
         workerServer(ByteArray(0), sourceStatus = 403) { server, uploads ->
             run(server, request(server, "0".repeat(64)))
@@ -218,6 +269,56 @@ class DeriveWorkerMainIT {
         }
 
     @Test
+    fun `source failure redacts a signed URL while retaining its endpoint`() =
+        workerServer(ByteArray(0)) { server, uploads ->
+            val signed = "http://127.0.0.1:${server.address.port}/source?token=source-secret"
+            val transfer =
+                object : WorkerHttpTransfer(true) {
+                    override fun download(uri: URI, destination: java.nio.file.Path): String {
+                        throw WorkerTransferException("source failed at $signed")
+                    }
+                }
+            assertEquals(0, run(server, request(server, "0".repeat(64)), transfer))
+            val marker = uploads.single().second.decodeToString()
+            assertFalse(marker.contains("source-secret"))
+            assertTrue(marker.contains("/source?<redacted-query>"))
+        }
+
+    @Test
+    fun `artifact failure redacts a signed URL while retaining its endpoint`() =
+        workerServer(archive(mapOf("level.dat" to "world".encodeToByteArray()))) { server, uploads
+            ->
+            val signed = "http://127.0.0.1:${server.address.port}/bundle?token=artifact-secret"
+            var uploadsAttempted = 0
+            val transfer =
+                object : WorkerHttpTransfer(true) {
+                    override fun upload(
+                        uri: URI,
+                        source: java.nio.file.Path,
+                        expectedDigest: String?,
+                    ) {
+                        if (uploadsAttempted++ == 0)
+                            throw WorkerTransferException("artifact failed at $signed")
+                        super.upload(uri, source, expectedDigest)
+                    }
+                }
+            assertEquals(
+                0,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                    transfer,
+                ),
+            )
+            val marker = uploads.last().second.decodeToString()
+            assertFalse(marker.contains("artifact-secret"))
+            assertTrue(marker.contains("/bundle?<redacted-query>"))
+        }
+
+    @Test
     fun `source redirect is rejected and produces only a system marker`() =
         workerServer(ByteArray(0), sourceStatus = 302) { server, uploads ->
             assertEquals(0, run(server, request(server, "0".repeat(64))))
@@ -226,6 +327,7 @@ class DeriveWorkerMainIT {
                 "SYSTEM",
                 (CanonicalJson.readResult(uploads.single().second) as DeriveFailure).scope.name,
             )
+            assertFalse(uploads.any { it.first == "/redirect-target" })
         }
 
     @Test
@@ -245,6 +347,7 @@ class DeriveWorkerMainIT {
                 ),
             )
             assertEquals(listOf("/bundle", "/result"), uploads.map { it.first })
+            assertFalse(uploads.any { it.first == "/redirect-target" })
         }
 
     @Test
@@ -271,6 +374,7 @@ class DeriveWorkerMainIT {
                 "SYSTEM",
                 (CanonicalJson.readResult(uploads.last().second) as DeriveFailure).scope.name,
             )
+            assertFalse(uploads.any { it.first == "/redirect-target" })
         }
 
     @Test
@@ -295,6 +399,37 @@ class DeriveWorkerMainIT {
                 Files.deleteIfExists(file)
             }
             assertTrue(uploads.isEmpty())
+        }
+
+    @Test
+    fun `production request-env rejects HTTP before any request`() =
+        workerServer(ByteArray(0)) { server, uploads ->
+            assertEquals(
+                2,
+                DeriveWorkerMain.run(
+                    arrayOf("--request-env", "DERIVE_REQUEST_JSON"),
+                    { WorkerHttpTransfer(it) },
+                    { CanonicalJson.write(request(server, "0".repeat(64))).decodeToString() },
+                ),
+            )
+            assertTrue(uploads.isEmpty())
+        }
+
+    @Test
+    fun `worker removes its owned workspace after a terminal source failure`() =
+        workerServer(ByteArray(0), sourceStatus = 503) { server, uploads ->
+            val root = Files.createTempDirectory("derive-worker-owned-")
+            assertEquals(
+                0,
+                DeriveWorkerMain.run(
+                    arrayOf("--request-env", "DERIVE_REQUEST_JSON"),
+                    { WorkerHttpTransfer(true) },
+                    { CanonicalJson.write(request(server, "0".repeat(64))).decodeToString() },
+                    { root },
+                ),
+            )
+            assertFalse(Files.exists(root))
+            assertEquals(listOf("/result"), uploads.map { it.first })
         }
 
     @Test
@@ -333,6 +468,10 @@ class DeriveWorkerMainIT {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         try {
+            server.createContext("/redirect-target") { exchange ->
+                uploads += "/redirect-target" to exchange.requestBody.readBytes()
+                respond(exchange, 200, ByteArray(0))
+            }
             server.createContext("/source") { exchange ->
                 if (sourceChunked && sourceStatus == 200) {
                     exchange.sendResponseHeaders(200, 0)
@@ -352,6 +491,8 @@ class DeriveWorkerMainIT {
                             else ->
                                 resultStatuses.getOrElse(resultAttempt++) { resultStatuses.last() }
                         }
+                    if (status in 300..399)
+                        exchange.responseHeaders.add("Location", "/redirect-target")
                     respond(exchange, status, ByteArray(0))
                 }
             }
