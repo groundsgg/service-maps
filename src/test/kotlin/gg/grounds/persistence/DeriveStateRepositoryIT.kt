@@ -1,6 +1,7 @@
 package gg.grounds.persistence
 
 import gg.grounds.PostgresResource
+import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
@@ -20,15 +21,18 @@ import gg.grounds.domain.VersionState
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
+import java.sql.Connection
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -50,12 +54,13 @@ class DeriveStateRepositoryIT {
 
     @Test
     @Order(2)
-    fun `concurrent claims assign exactly one attempt to a draft`() {
+    fun `competing claims block behind the version lock and assign exactly one attempt`() {
         val map = committed("concurrent-claim")
         val attempts = listOf(UUID.randomUUID(), UUID.randomUUID())
         val ready = CountDownLatch(attempts.size)
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(attempts.size)
+        val lock = lockVersion(map.id, 1)
         try {
             val claimed: List<Future<gg.grounds.domain.MapVersionRecord?>> =
                 attempts.map { attempt ->
@@ -68,12 +73,249 @@ class DeriveStateRepositoryIT {
             assertTrue(ready.await(5, TimeUnit.SECONDS))
             start.countDown()
 
+            // This is deliberately more than a simultaneous start: both repository calls must
+            // wait on a PostgreSQL row lock held by this test transaction. Removing FOR UPDATE
+            // from claimForDerive makes a caller complete before the lock is released.
+            assertTrue(waitForAllToWaitOnVersionLock(claimed))
+            lock.commit()
+
             val winners = claimed.map { it.get(10, TimeUnit.SECONDS) }.filterNotNull()
             assertEquals(1, winners.size)
             assertEquals(VersionState.DERIVING, winners.single().state)
             assertEquals(winners.single().deriveAttempt, versions.find(map.id, 1)?.deriveAttempt)
         } finally {
+            lock.close()
             executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `concurrent duplicate successes serialize and both return the committed publication`() {
+        val map = committed("duplicate-success-overlap")
+        val attempt = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
+        val identity = identity(map.id, attempt)
+        val executor = Executors.newFixedThreadPool(2)
+        val lock = lockVersion(map.id, 1)
+        try {
+            val calls =
+                List(2) {
+                    executor.submit<gg.grounds.domain.MapVersionRecord> {
+                        versions.acceptSuccess(identity, facts(), "derive-worker")
+                    }
+                }
+            assertTrue(waitForAllToWaitOnVersionLock(calls))
+            lock.commit()
+
+            val records = calls.map { it.get(10, TimeUnit.SECONDS) }
+            assertEquals(
+                listOf(VersionState.PUBLISHED, VersionState.PUBLISHED),
+                records.map { it.state },
+            )
+            assertEquals(records.first(), records.last())
+            assertEquals(records.first(), versions.find(map.id, 1))
+        } finally {
+            lock.close()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `concurrent duplicate failures serialize and both return the committed failure`() {
+        val map = committed("duplicate-failure-overlap")
+        val attempt = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
+        val identity = identity(map.id, attempt)
+        val failure = systemFailure("TEMPORARY")
+        val executor = Executors.newFixedThreadPool(2)
+        val lock = lockVersion(map.id, 1)
+        try {
+            val calls =
+                List(2) {
+                    executor.submit<gg.grounds.domain.MapVersionRecord> {
+                        versions.acceptFailure(identity, failure)
+                    }
+                }
+            assertTrue(waitForAllToWaitOnVersionLock(calls))
+            lock.commit()
+
+            val records = calls.map { it.get(10, TimeUnit.SECONDS) }
+            assertEquals(
+                listOf(VersionState.DERIVE_FAILED, VersionState.DERIVE_FAILED),
+                records.map { it.state },
+            )
+            assertEquals(records.first(), records.last())
+            assertEquals(records.first(), versions.find(map.id, 1))
+        } finally {
+            lock.close()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `queued acceptance finishes before retry and its returned record stays immutable`() {
+        val map = committed("accept-retry-overlap")
+        val first = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(map.id, 1, first))
+        val executor = Executors.newFixedThreadPool(2)
+        val lock = lockVersion(map.id, 1)
+        try {
+            val accepted =
+                executor.submit<gg.grounds.domain.MapVersionRecord> {
+                    versions.acceptFailure(identity(map.id, first), systemFailure("TRANSIENT"))
+                }
+            assertTrue(waitForAllToWaitOnVersionLock(listOf(accepted)))
+            val retried =
+                executor.submit<gg.grounds.domain.MapVersionRecord> {
+                    versions.retrySystemFailure(map.id, 1)
+                }
+            assertTrue(waitForAllToWaitOnVersionLock(listOf(accepted, retried)))
+            lock.commit()
+
+            val failed = accepted.get(10, TimeUnit.SECONDS)
+            val retry = retried.get(10, TimeUnit.SECONDS)
+            assertEquals(VersionState.DERIVE_FAILED, failed.state)
+            assertEquals(first, failed.deriveAttempt)
+            assertEquals(VersionState.DERIVING, retry.state)
+            assertNotEquals(first, retry.deriveAttempt)
+            // A caller holding the prior return value must not observe the post-commit retry.
+            assertEquals(VersionState.DERIVE_FAILED, failed.state)
+            assertEquals(first, failed.deriveAttempt)
+            assertEquals(retry, versions.find(map.id, 1))
+        } finally {
+            lock.close()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `stale acceptance queued ahead of current acceptance cannot finish the retried attempt`() {
+        val map = committed("stale-accept-overlap")
+        val first = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(map.id, 1, first))
+        versions.acceptFailure(identity(map.id, first), systemFailure("TRANSIENT"))
+        val retried = versions.retrySystemFailure(map.id, 1)
+        val second = requireNotNull(retried.deriveAttempt)
+        val executor = Executors.newFixedThreadPool(2)
+        val lock = lockVersion(map.id, 1)
+        try {
+            val stale =
+                executor.submit<gg.grounds.domain.MapVersionRecord> {
+                    versions.acceptSuccess(identity(map.id, first), facts(), "derive-worker")
+                }
+            val current =
+                executor.submit<gg.grounds.domain.MapVersionRecord> {
+                    versions.acceptSuccess(identity(map.id, second), facts(), "derive-worker")
+                }
+            assertTrue(waitForAllToWaitOnVersionLock(listOf(stale, current)))
+            lock.commit()
+
+            val staleError = assertThrows<ExecutionException> { stale.get(10, TimeUnit.SECONDS) }
+            assertTrue(staleError.cause is DeriveResultRejectedException)
+            assertEquals(VersionState.PUBLISHED, current.get(10, TimeUnit.SECONDS).state)
+            assertEquals(second, versions.find(map.id, 1)?.deriveAttempt)
+        } finally {
+            lock.close()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `two versions publish the same digest and size concurrently`() {
+        val firstMap = committed("same-digest-first")
+        val secondMap = committed("same-digest-second")
+        val firstAttempt = UUID.randomUUID()
+        val secondAttempt = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
+        assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
+        val executor = Executors.newFixedThreadPool(2)
+        val locks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        try {
+            val calls =
+                listOf(
+                    executor.submit<gg.grounds.domain.MapVersionRecord> {
+                        versions.acceptSuccess(
+                            identity(firstMap.id, firstAttempt),
+                            facts(),
+                            "derive",
+                        )
+                    },
+                    executor.submit<gg.grounds.domain.MapVersionRecord> {
+                        versions.acceptSuccess(
+                            identity(secondMap.id, secondAttempt),
+                            facts(),
+                            "derive",
+                        )
+                    },
+                )
+            assertTrue(waitForAllToWaitOnVersionLock(calls))
+            locks.forEach(Connection::commit)
+
+            val records = calls.map { it.get(10, TimeUnit.SECONDS) }
+            assertEquals(
+                listOf(VersionState.PUBLISHED, VersionState.PUBLISHED),
+                records.map { it.state },
+            )
+            assertEquals(digest(3), records.first().bundleSha256)
+            assertEquals(records.first().sizeBytes, records.last().sizeBytes)
+        } finally {
+            locks.forEach(Connection::close)
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun `two versions racing to publish one digest at different sizes leave exactly one publication`() {
+        val firstMap = committed("conflicting-digest-first")
+        val secondMap = committed("conflicting-digest-second")
+        val firstAttempt = UUID.randomUUID()
+        val secondAttempt = UUID.randomUUID()
+        assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
+        assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
+        val executor = Executors.newFixedThreadPool(2)
+        val locks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        try {
+            val calls =
+                listOf(
+                    executor.submit<Result<gg.grounds.domain.MapVersionRecord>> {
+                        runCatching {
+                            versions.acceptSuccess(
+                                identity(firstMap.id, firstAttempt),
+                                facts(123),
+                                "derive",
+                            )
+                        }
+                    },
+                    executor.submit<Result<gg.grounds.domain.MapVersionRecord>> {
+                        runCatching {
+                            versions.acceptSuccess(
+                                identity(secondMap.id, secondAttempt),
+                                facts(124),
+                                "derive",
+                            )
+                        }
+                    },
+                )
+            assertTrue(waitForAllToWaitOnVersionLock(calls))
+            locks.forEach(Connection::commit)
+
+            val results = calls.map { it.get(10, TimeUnit.SECONDS) }
+            assertEquals(1, results.count { it.isSuccess })
+            assertEquals(1, results.count { it.exceptionOrNull() is BlobSizeMismatchException })
+            val persisted =
+                listOf(firstMap, secondMap).map { requireNotNull(versions.find(it.id, 1)) }
+            assertEquals(1, persisted.count { it.state == VersionState.PUBLISHED })
+            assertEquals(1, persisted.count { it.state == VersionState.DERIVING })
+        } finally {
+            locks.forEach(Connection::close)
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
     }
 
@@ -252,6 +494,15 @@ class DeriveStateRepositoryIT {
     @Test
     fun `acceptance rejects wrong source catalog map or version`() {
         val map = committed("identity-rejection")
+        val competingMap = committed("identity-rejection-competing-map")
+        versions.commit(
+            map.id,
+            digest(1),
+            "tmp/uploads/identity-rejection-v2.tar.zst",
+            null,
+            null,
+            "builder",
+        )
         val attempt = UUID.randomUUID()
         versions.claimForDerive(map.id, 1, attempt)
         val expected = identity(map.id, attempt)
@@ -259,7 +510,7 @@ class DeriveStateRepositoryIT {
             listOf(
                 expected.copy(sourceSha256 = digest(2)),
                 expected.copy(assetCatalog = CatalogReference("assets", "unexpected")),
-                expected.copy(mapId = UUID.randomUUID()),
+                expected.copy(mapId = competingMap.id),
                 expected.copy(version = 2),
             )
 
@@ -380,6 +631,51 @@ class DeriveStateRepositoryIT {
                     "builder",
                 )
             }
+
+    /** Holds the exact version row lock that repository state transitions must respect. */
+    private fun lockVersion(mapId: UUID, version: Int): Connection =
+        dataSource.connection.also { connection ->
+            connection.autoCommit = false
+            connection
+                .prepareStatement(
+                    "SELECT 1 FROM map_version WHERE map = ? AND version = ? FOR UPDATE"
+                )
+                .use { statement ->
+                    statement.setObject(1, mapId)
+                    statement.setInt(2, version)
+                    statement.executeQuery().use { result -> check(result.next()) }
+                }
+        }
+
+    private fun waitForAllToWaitOnVersionLock(futures: List<Future<*>>): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            if (futures.all { !it.isDone } && versionLockWaiters() >= futures.size) return true
+            Thread.sleep(10)
+        }
+        return futures.all { !it.isDone } && versionLockWaiters() >= futures.size
+    }
+
+    private fun versionLockWaiters(): Int =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    """
+                    SELECT COUNT(*)
+                      FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND wait_event_type = 'Lock'
+                       AND query LIKE '%map_version%'
+                    """
+                        .trimIndent()
+                )
+                .use { statement ->
+                    statement.executeQuery().use { result ->
+                        check(result.next())
+                        result.getInt(1)
+                    }
+                }
+        }
 
     private fun setCreatedAt(mapId: UUID, version: Int, offsetSeconds: Long) {
         dataSource.connection.use { connection ->
