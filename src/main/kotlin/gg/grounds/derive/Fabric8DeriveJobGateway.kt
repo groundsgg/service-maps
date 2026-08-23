@@ -179,6 +179,7 @@ constructor(
         val jobMeta =
             ObjectMeta().also {
                 it.name = name
+                it.namespace = namespace
                 it.labels = labels
             }
         val template = PodTemplateSpecBuilder().withMetadata(templateMeta).withSpec(pod).build()

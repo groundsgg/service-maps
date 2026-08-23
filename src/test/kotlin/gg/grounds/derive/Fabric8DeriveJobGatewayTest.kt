@@ -59,6 +59,7 @@ class Fabric8DeriveJobGatewayTest {
                     )
                 )
         assertEquals(2, job.spec.backoffLimit)
+        assertEquals("maps", job.metadata.namespace)
         assertEquals(1200, job.spec.activeDeadlineSeconds)
         assertEquals(3600, job.spec.ttlSecondsAfterFinished)
         val pod = job.spec.template.spec
@@ -334,20 +335,39 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
-    fun `create fails closed when worker container gains privileged process settings`() {
+    fun `create fails closed when worker container becomes privileged`() {
         assertConflictFails { stored ->
             val security = stored.spec.template.spec.containers.single().securityContext
             security.privileged = true
-            security.procMount = "Unmasked"
-            security.runAsUser = 0
         }
     }
 
     @Test
-    fun `create fails closed when worker container gains args or envFrom`() {
+    fun `create fails closed when worker container gains an unmasked proc mount`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.single().securityContext.procMount = "Unmasked"
+        }
+    }
+
+    @Test
+    fun `create fails closed when worker container gains a run as user`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.single().securityContext.runAsUser = 0
+        }
+    }
+
+    @Test
+    fun `create fails closed when worker container gains args`() {
         assertConflictFails { stored ->
             val worker = stored.spec.template.spec.containers.single()
             worker.args = listOf("unexpected")
+        }
+    }
+
+    @Test
+    fun `create fails closed when worker container gains envFrom`() {
+        assertConflictFails { stored ->
+            val worker = stored.spec.template.spec.containers.single()
             worker.envFrom =
                 listOf(
                     io.fabric8.kubernetes.api.model
@@ -361,14 +381,98 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
-    fun `create fails closed when a conflict changes Job completion controls`() {
+    fun `create fails closed when a conflict changes Job parallelism`() {
+        assertConflictFails { stored -> stored.spec.parallelism = 2 }
+    }
+
+    @Test
+    fun `create fails closed when a conflict changes Job completions`() {
+        assertConflictFails { stored -> stored.spec.completions = 2 }
+    }
+
+    @Test
+    fun `create fails closed when a conflict suspends the Job`() {
+        assertConflictFails { stored -> stored.spec.suspend = true }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds a Job pod failure policy`() {
         assertConflictFails { stored ->
-            stored.spec.parallelism = 2
-            stored.spec.completions = 2
-            stored.spec.suspend = true
             stored.spec.podFailurePolicy =
                 io.fabric8.kubernetes.api.model.batch.v1.PodFailurePolicyBuilder().build()
         }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds an ephemeral container`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.ephemeralContainers =
+                listOf(
+                    io.fabric8.kubernetes.api.model
+                        .EphemeralContainerBuilder()
+                        .withName("debug")
+                        .withImage("registry.example/debug@sha256:" + "c".repeat(64))
+                        .build()
+                )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds node scheduling`() {
+        assertConflictFails { stored -> stored.spec.template.spec.nodeName = "node-a" }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds a node selector`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.nodeSelector =
+                mapOf("node-role.kubernetes.io/worker" to "true")
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict changes the scheduler`() {
+        assertConflictFails { stored -> stored.spec.template.spec.schedulerName = "unexpected" }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds affinity`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.affinity =
+                io.fabric8.kubernetes.api.model.AffinityBuilder().build()
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds a toleration`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.tolerations =
+                listOf(io.fabric8.kubernetes.api.model.TolerationBuilder().withKey("taint").build())
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds SELinux options`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.single().securityContext.seLinuxOptions =
+                io.fabric8.kubernetes.api.model.SELinuxOptionsBuilder().withLevel("s0").build()
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict adds an AppArmor profile`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.single().securityContext.appArmorProfile =
+                io.fabric8.kubernetes.api.model
+                    .AppArmorProfileBuilder()
+                    .withType("Unconfined")
+                    .build()
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict retains an unknown Job JSON field`() {
+        assertConflictFails { stored -> stored.additionalProperties["unexpected"] = "value" }
     }
 
     @Test
@@ -472,6 +576,7 @@ class Fabric8DeriveJobGatewayTest {
 
     private fun kubernetesStoredJob(json: String): Job =
         Serialization.unmarshal(json, Job::class.java).also { job ->
+            job.metadata.namespace = "maps"
             job.metadata.uid = "generated-controller"
             job.spec.completions = 1
             job.spec.parallelism = 1
