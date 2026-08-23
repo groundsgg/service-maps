@@ -106,19 +106,23 @@ class RequestDeadlineTest {
     }
 
     @Test
-    fun `close converts completion to expiry when the monotonic clock crosses after its transition`() {
+    fun `close converts completion to expiry when the monotonic clock crosses after provisional completion`() {
         val scheduler = ScheduledThreadPoolExecutor(1)
         val clock = AtomicLong(0)
         val expired = AtomicInteger()
+        val clockReads = AtomicInteger()
         try {
             val deadline =
                 RequestDeadline(
                     timeoutMillis = 1,
                     scheduler = scheduler,
                     onExpire = expired::incrementAndGet,
-                    nanoTime = clock::get,
+                    nanoTime = {
+                        if (clockReads.incrementAndGet() == 3)
+                            clock.set(TimeUnit.MILLISECONDS.toNanos(1))
+                        clock.get()
+                    },
                     callbackExecutor = Executor { it.run() },
-                    afterCompletionTransition = { clock.set(TimeUnit.MILLISECONDS.toNanos(1)) },
                 )
 
             assertThrows(RequestDeadlineExceeded::class.java) { deadline.close() }
@@ -138,8 +142,9 @@ class RequestDeadlineTest {
         val releaseScheduler = CountDownLatch(1)
         val completionEntered = CountDownLatch(1)
         val releaseCompletion = CountDownLatch(1)
-        val checkStarted = CountDownLatch(1)
-        val secondCloseStarted = CountDownLatch(1)
+        val checkCoordinating = CountDownLatch(1)
+        val secondCloseCoordinating = CountDownLatch(1)
+        val clockReads = AtomicInteger()
         try {
             scheduler.execute {
                 schedulerOccupied.countDown()
@@ -151,30 +156,44 @@ class RequestDeadlineTest {
                     timeoutMillis = 1,
                     scheduler = scheduler,
                     onExpire = expired::incrementAndGet,
-                    nanoTime = clock::get,
+                    nanoTime = {
+                        when (clockReads.incrementAndGet()) {
+                            3 -> {
+                                completionEntered.countDown()
+                                releaseCompletion.await()
+                            }
+                        }
+                        clock.get()
+                    },
                     callbackExecutor = Executor { it.run() },
-                    afterCompletionTransition = {
-                        completionEntered.countDown()
-                        releaseCompletion.await()
+                    onAwaitingCompletion = {
+                        when (Thread.currentThread().name) {
+                            "deadline-check" -> checkCoordinating.countDown()
+                            "deadline-close" -> secondCloseCoordinating.countDown()
+                        }
                     },
                 )
-            val firstClose = callers.submit<Unit> { deadline.close() }
+            val firstClose =
+                callers.submit<Unit> {
+                    Thread.currentThread().name = "deadline-first-close"
+                    deadline.close()
+                }
 
             assertTrue(completionEntered.await(1, TimeUnit.SECONDS))
             clock.set(TimeUnit.MILLISECONDS.toNanos(1))
             val concurrentCheck =
                 callers.submit<Unit> {
-                    checkStarted.countDown()
+                    Thread.currentThread().name = "deadline-check"
                     deadline.check()
                 }
             val secondClose =
                 callers.submit<Unit> {
-                    secondCloseStarted.countDown()
+                    Thread.currentThread().name = "deadline-close"
                     deadline.close()
                 }
 
-            assertTrue(checkStarted.await(1, TimeUnit.SECONDS))
-            assertTrue(secondCloseStarted.await(1, TimeUnit.SECONDS))
+            assertTrue(checkCoordinating.await(1, TimeUnit.SECONDS))
+            assertTrue(secondCloseCoordinating.await(1, TimeUnit.SECONDS))
             assertTrue(!concurrentCheck.isDone)
             assertTrue(!secondClose.isDone)
             releaseCompletion.countDown()
@@ -186,6 +205,53 @@ class RequestDeadlineTest {
         } finally {
             releaseCompletion.countDown()
             releaseScheduler.countDown()
+            callers.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `a clock exception during provisional close expires once and wakes observers`() {
+        val scheduler = ScheduledThreadPoolExecutor(1)
+        val callers = Executors.newFixedThreadPool(2)
+        val clockReads = AtomicInteger()
+        val expired = AtomicInteger()
+        val completionEntered = CountDownLatch(1)
+        val releaseCompletion = CountDownLatch(1)
+        val observerCoordinating = CountDownLatch(1)
+        try {
+            val deadline =
+                RequestDeadline(
+                    timeoutMillis = 1,
+                    scheduler = scheduler,
+                    onExpire = expired::incrementAndGet,
+                    nanoTime = {
+                        when (clockReads.incrementAndGet()) {
+                            3 -> {
+                                completionEntered.countDown()
+                                releaseCompletion.await()
+                                throw IllegalStateException("injected clock failure")
+                            }
+                        }
+                        0
+                    },
+                    callbackExecutor = Executor { it.run() },
+                    onAwaitingCompletion = { observerCoordinating.countDown() },
+                )
+            val closer = callers.submit<Unit> { deadline.close() }
+            assertTrue(completionEntered.await(1, TimeUnit.SECONDS))
+            val observer = callers.submit<Unit> { deadline.check() }
+            assertTrue(observerCoordinating.await(1, TimeUnit.SECONDS))
+            releaseCompletion.countDown()
+
+            assertTrue(
+                assertThrows(ExecutionException::class.java) { closer.get(1, TimeUnit.SECONDS) }
+                    .cause is IllegalStateException
+            )
+            assertDeadlineExceeded(observer)
+            assertEquals(1, expired.get())
+        } finally {
+            releaseCompletion.countDown()
             callers.shutdownNow()
             scheduler.shutdownNow()
         }

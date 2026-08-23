@@ -57,8 +57,10 @@ class DeriveWorkerMainIT {
             assertEquals(listOf("/bundle", "/manifest", "/result"), uploads.map { it.first })
             val result = CanonicalJson.readResult(uploads.last().second) as DeriveSuccess
             assertEquals(DeriveResultKind.SUCCESS, result.kind)
-            assertTrue(uploads[0].second.isNotEmpty())
-            assertTrue(uploads[1].second.isNotEmpty())
+            assertEquals(digest(uploads[0].second), result.bundleSha256)
+            assertEquals(uploads[0].second.size.toLong(), result.bundleSize)
+            assertEquals(digest(uploads[1].second), result.manifestSha256)
+            assertEquals(uploads[1].second.size.toLong(), result.manifestSize)
         }
 
     @Test
@@ -99,7 +101,99 @@ class DeriveWorkerMainIT {
             val result = CanonicalJson.readResult(uploads.last().second) as DeriveFailure
             assertEquals("SYSTEM", result.scope.name)
             assertTrue(result.retryable)
+            assertFalse(uploads.last().second.decodeToString().contains("secret=redact"))
         }
+
+    @Test
+    fun `failed manifest upload sends only the acknowledged system fallback marker`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            manifestStatus = 500,
+        ) { server, uploads ->
+            assertEquals(
+                0,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                ),
+            )
+
+            assertEquals(listOf("/bundle", "/manifest", "/result"), uploads.map { it.first })
+            val fallback = CanonicalJson.readResult(uploads.last().second) as DeriveFailure
+            assertEquals("SYSTEM", fallback.scope.name)
+            assertTrue(fallback.retryable)
+        }
+
+    @Test
+    fun `failed result upload followed by failed fallback returns nonzero with no later artifact`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            resultStatuses = listOf(500, 500),
+        ) { server, uploads ->
+            assertEquals(
+                1,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                    expectedExit = 1,
+                ),
+            )
+
+            assertEquals(
+                listOf("/bundle", "/manifest", "/result", "/result"),
+                uploads.map { it.first },
+            )
+        }
+
+    @Test
+    fun `content marker upload failure returns nonzero and never uploads artifacts`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            resultStatuses = listOf(500),
+        ) { server, uploads ->
+            assertEquals(1, run(server, request(server, "0".repeat(64)), expectedExit = 1))
+
+            assertEquals(listOf("/result"), uploads.map { it.first })
+        }
+
+    @Test
+    fun `preflight rejects every unsigned request URL and unused catalog without HTTP`() {
+        workerServer(ByteArray(0)) { server, uploads ->
+            val valid = request(server, "0".repeat(64))
+            val invalid =
+                listOf<DeriveRequest.() -> DeriveRequest>(
+                    { copy(sourceUrl = URI("http://example.invalid/source")) },
+                    { copy(bundleUrl = URI("http://example.invalid/bundle")) },
+                    { copy(manifestUrl = URI("http://example.invalid/manifest")) },
+                    { copy(resultUrl = URI("http://example.invalid/result")) },
+                    {
+                        copy(
+                            catalogCandidates =
+                                listOf(
+                                    AssetCatalogCandidate(
+                                        "stable",
+                                        "unused",
+                                        "1",
+                                        "unused:1",
+                                        "unused.jar",
+                                        URI("http://example.invalid/catalog"),
+                                        "0".repeat(64),
+                                        1,
+                                    )
+                                )
+                        )
+                    },
+                )
+            invalid.forEach { mutate -> assertEquals(2, runRequest(mutate(valid))) }
+            assertTrue(uploads.isEmpty())
+        }
+    }
 
     @Test
     fun `reports transient source failure as retryable system failure`() =
@@ -121,6 +215,62 @@ class DeriveWorkerMainIT {
             val result = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
             assertEquals("SYSTEM", result.scope.name)
             assertTrue(result.retryable)
+        }
+
+    @Test
+    fun `source redirect is rejected and produces only a system marker`() =
+        workerServer(ByteArray(0), sourceStatus = 302) { server, uploads ->
+            assertEquals(0, run(server, request(server, "0".repeat(64))))
+            assertEquals(listOf("/result"), uploads.map { it.first })
+            assertEquals(
+                "SYSTEM",
+                (CanonicalJson.readResult(uploads.single().second) as DeriveFailure).scope.name,
+            )
+        }
+
+    @Test
+    fun `artifact redirect stops the pipeline before manifest and success`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            bundleStatus = 302,
+        ) { server, uploads ->
+            assertEquals(
+                0,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                ),
+            )
+            assertEquals(listOf("/bundle", "/result"), uploads.map { it.first })
+        }
+
+    @Test
+    fun `result redirect is rejected then replaced by a final system fallback marker`() =
+        workerServer(
+            archive(mapOf("level.dat" to "world".encodeToByteArray())),
+            resultStatuses = listOf(302, 200),
+        ) { server, uploads ->
+            assertEquals(
+                0,
+                run(
+                    server,
+                    request(
+                        server,
+                        digest(archive(mapOf("level.dat" to "world".encodeToByteArray()))),
+                    ),
+                ),
+            )
+            assertEquals(
+                listOf("/bundle", "/manifest", "/result", "/result"),
+                uploads.map { it.first },
+            )
+            assertEquals(
+                "SYSTEM",
+                (CanonicalJson.readResult(uploads.last().second) as DeriveFailure).scope.name,
+            )
         }
 
     @Test
@@ -147,11 +297,37 @@ class DeriveWorkerMainIT {
             assertTrue(uploads.isEmpty())
         }
 
+    @Test
+    fun `invalid CLI invocations return nonzero before any HTTP request`() =
+        workerServer(ByteArray(0)) { server, uploads ->
+            val file = Files.createTempFile("derive-request-", ".json")
+            try {
+                Files.write(file, CanonicalJson.write(request(server, "0".repeat(64))))
+                listOf(
+                        arrayOf("--unknown"),
+                        arrayOf("--request-file"),
+                        arrayOf(
+                            "--request-env",
+                            "DERIVE_REQUEST_JSON",
+                            "--request-file",
+                            file.toString(),
+                        ),
+                        arrayOf("--request-file", file.toString()),
+                    )
+                    .forEach { args -> assertEquals(2, DeriveWorkerMain.run(args)) }
+            } finally {
+                Files.deleteIfExists(file)
+            }
+            assertTrue(uploads.isEmpty())
+        }
+
     private fun workerServer(
         source: ByteArray,
         sourceStatus: Int = 200,
         sourceChunked: Boolean = false,
         bundleStatus: Int = 200,
+        manifestStatus: Int = 200,
+        resultStatuses: List<Int> = listOf(200),
         block: (HttpServer, MutableList<Pair<String, ByteArray>>) -> Unit,
     ) {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
@@ -165,10 +341,18 @@ class DeriveWorkerMainIT {
                     respond(exchange, sourceStatus, source)
                 }
             }
+            var resultAttempt = 0
             listOf("/bundle", "/manifest", "/result").forEach { path ->
                 server.createContext(path) { exchange ->
                     uploads += path to exchange.requestBody.readBytes()
-                    respond(exchange, if (path == "/bundle") bundleStatus else 200, ByteArray(0))
+                    val status =
+                        when (path) {
+                            "/bundle" -> bundleStatus
+                            "/manifest" -> manifestStatus
+                            else ->
+                                resultStatuses.getOrElse(resultAttempt++) { resultStatuses.last() }
+                        }
+                    respond(exchange, status, ByteArray(0))
                 }
             }
             server.start()
@@ -182,16 +366,29 @@ class DeriveWorkerMainIT {
         server: HttpServer,
         request: DeriveRequest,
         transfer: WorkerHttpTransfer = WorkerHttpTransfer(true),
-    ) {
+        expectedExit: Int = 0,
+    ): Int {
         val file = Files.createTempFile("derive-request-", ".json")
         try {
             Files.write(file, CanonicalJson.write(request))
-            assertEquals(
-                0,
+            val exit =
                 DeriveWorkerMain.run(
                     arrayOf("--request-file", file.toString(), "--allow-loopback-http"),
                     { transfer },
-                ),
+                )
+            assertEquals(expectedExit, exit)
+            return exit
+        } finally {
+            Files.deleteIfExists(file)
+        }
+    }
+
+    private fun runRequest(request: DeriveRequest): Int {
+        val file = Files.createTempFile("derive-request-", ".json")
+        try {
+            Files.write(file, CanonicalJson.write(request))
+            return DeriveWorkerMain.run(
+                arrayOf("--request-file", file.toString(), "--allow-loopback-http")
             )
         } finally {
             Files.deleteIfExists(file)

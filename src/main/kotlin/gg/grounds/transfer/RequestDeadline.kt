@@ -5,6 +5,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 class RequestDeadlineExceeded : RuntimeException("request deadline exceeded")
@@ -26,12 +27,15 @@ class RequestDeadline(
     private val onExpire: () -> Unit,
     private val nanoTime: () -> Long = System::nanoTime,
     private val callbackExecutor: Executor = RequestDeadlineScheduler.callbacks,
-    private val afterCompletionTransition: () -> Unit = {},
+    /** Test seam: invoked only after an observer has entered completion coordination. */
+    private val onAwaitingCompletion: () -> Unit = {},
 ) : AutoCloseable {
     private val timeoutMillis = timeoutMillis.also { require(it > 0) }
     private val deadlineNanos = nanoTime() + TimeUnit.MILLISECONDS.toNanos(this.timeoutMillis)
     private val state = AtomicReference(State.ACTIVE)
     private val task = AtomicReference<ScheduledFuture<*>?>()
+    private val completionMonitor = Object()
+    private val expiryDispatched = AtomicBoolean()
 
     init {
         val scheduled = scheduler.schedule(::expireIfDue, this.timeoutMillis, TimeUnit.MILLISECONDS)
@@ -52,13 +56,19 @@ class RequestDeadline(
                 State.EXPIRED -> throw RequestDeadlineExceeded()
                 State.ACTIVE ->
                     if (state.compareAndSet(State.ACTIVE, State.COMPLETING)) {
-                        afterCompletionTransition()
-                        if (nanoTime() >= deadlineNanos) {
+                        try {
+                            if (nanoTime() >= deadlineNanos) {
+                                publishFinalState(State.EXPIRED)
+                                throw RequestDeadlineExceeded()
+                            }
+                            publishFinalState(State.COMPLETED)
+                            if (awaitFinalState() == State.EXPIRED) throw RequestDeadlineExceeded()
+                            return
+                        } catch (failure: Throwable) {
+                            if (failure is InterruptedException) Thread.currentThread().interrupt()
                             publishFinalState(State.EXPIRED)
-                            throw RequestDeadlineExceeded()
+                            throw failure
                         }
-                        publishFinalState(State.COMPLETED)
-                        return
                     }
 
                 State.COMPLETING -> error("awaitFinalState returned a provisional state")
@@ -89,7 +99,10 @@ class RequestDeadline(
 
     private fun publishFinalState(finalState: State) {
         check(finalState == State.COMPLETED || finalState == State.EXPIRED)
-        check(state.compareAndSet(State.COMPLETING, finalState))
+        synchronized(completionMonitor) {
+            if (!state.compareAndSet(State.COMPLETING, finalState)) return
+            completionMonitor.notifyAll()
+        }
         if (finalState == State.EXPIRED) {
             dispatchExpiry()
         } else {
@@ -100,15 +113,29 @@ class RequestDeadline(
     private fun awaitFinalState(): State {
         var observed = state.get()
         while (observed == State.COMPLETING) {
-            Thread.onSpinWait()
-            observed = state.get()
+            try {
+                onAwaitingCompletion()
+                synchronized(completionMonitor) {
+                    while (state.get() == State.COMPLETING) completionMonitor.wait()
+                    observed = state.get()
+                }
+            } catch (failure: InterruptedException) {
+                Thread.currentThread().interrupt()
+                publishFinalState(State.EXPIRED)
+                return State.EXPIRED
+            } catch (failure: Throwable) {
+                publishFinalState(State.EXPIRED)
+                throw failure
+            }
         }
         return observed
     }
 
     private fun dispatchExpiry() {
-        task.get()?.cancel(false)
-        callbackExecutor.execute(onExpire)
+        if (expiryDispatched.compareAndSet(false, true)) {
+            task.get()?.cancel(false)
+            callbackExecutor.execute(onExpire)
+        }
     }
 
     private enum class State {
