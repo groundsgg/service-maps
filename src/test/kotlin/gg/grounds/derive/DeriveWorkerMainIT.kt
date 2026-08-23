@@ -441,6 +441,7 @@ class DeriveWorkerMainIT {
                 listOf(
                         arrayOf("--unknown"),
                         arrayOf("--request-file"),
+                        arrayOf("--request-env"),
                         arrayOf(
                             "--request-env",
                             "DERIVE_REQUEST_JSON",

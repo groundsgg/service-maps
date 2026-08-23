@@ -268,10 +268,17 @@ class RequestDeadlineTest {
         val callers = Executors.newFixedThreadPool(2)
         val clockReads = AtomicInteger()
         val expired = AtomicInteger()
+        val schedulerOccupied = CountDownLatch(1)
+        val releaseScheduler = CountDownLatch(1)
         val closerEntered = CountDownLatch(1)
         val observerCoordinating = CountDownLatch(1)
         val closerThread = AtomicReference<Thread>()
         try {
+            scheduler.execute {
+                schedulerOccupied.countDown()
+                releaseScheduler.await()
+            }
+            assertTrue(schedulerOccupied.await(1, TimeUnit.SECONDS))
             val deadline =
                 RequestDeadline(
                     timeoutMillis = 1,
@@ -306,6 +313,7 @@ class RequestDeadlineTest {
             assertDeadlineExceeded(observer)
             assertEquals(1, expired.get())
         } finally {
+            releaseScheduler.countDown()
             callers.shutdownNow()
             scheduler.shutdownNow()
         }
@@ -317,12 +325,19 @@ class RequestDeadlineTest {
         val callers = Executors.newFixedThreadPool(2)
         val clockReads = AtomicInteger()
         val expired = AtomicInteger()
+        val schedulerOccupied = CountDownLatch(1)
+        val releaseScheduler = CountDownLatch(1)
         val expiryStarted = CountDownLatch(1)
         val closerEntered = CountDownLatch(1)
         val releaseCloser = CountDownLatch(1)
         val observerCoordinating = CountDownLatch(1)
         val observerThread = AtomicReference<Thread>()
         try {
+            scheduler.execute {
+                schedulerOccupied.countDown()
+                releaseScheduler.await()
+            }
+            assertTrue(schedulerOccupied.await(1, TimeUnit.SECONDS))
             val deadline =
                 RequestDeadline(
                     timeoutMillis = 1,
@@ -363,6 +378,7 @@ class RequestDeadlineTest {
             assertEquals(1, expired.get())
         } finally {
             releaseCloser.countDown()
+            releaseScheduler.countDown()
             callers.shutdownNow()
             scheduler.shutdownNow()
         }

@@ -33,6 +33,25 @@ class WorkerHttpTransferTest {
     }
 
     @Test
+    fun `removes its owned temporary result file after a failed PUT`() {
+        val result = Files.createTempFile("derive-result-test-", ".json")
+        Files.delete(result)
+        server { server ->
+            server.createContext("/result") { exchange ->
+                exchange.requestBody.readAllBytes()
+                exchange.sendResponseHeaders(500, 0)
+                exchange.responseBody.close()
+            }
+            server.start()
+            assertThrows(WorkerTransferException::class.java) {
+                WorkerHttpTransfer(true, resultTempFileFactory = { result })
+                    .upload(uri(server, "/result"), "{}".encodeToByteArray())
+            }
+            assertFalse(Files.exists(result))
+        }
+    }
+
+    @Test
     fun `streams a generated multi-megabyte artifact with its exact digest`() {
         val source = Files.createTempFile("worker-large-", ".bin")
         val expected = MessageDigest.getInstance("SHA-256")
