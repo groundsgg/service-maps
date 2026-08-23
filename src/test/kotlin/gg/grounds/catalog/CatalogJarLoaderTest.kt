@@ -778,13 +778,15 @@ private class InjectedVirtualMachineError(message: String) : VirtualMachineError
 
 object CatalogJarLoaderFixtures {
     @JvmStatic
-    fun catalog(): AssetCatalog =
-        AssetCatalog(
+    fun catalog(): AssetCatalog {
+        val version = System.getProperty("grounds.catalog.fixture.version", "1")
+        return AssetCatalog(
             CatalogId("grounds:assets"),
-            "1",
-            CatalogVersionRange(CatalogId("grounds:assets"), "1", "1"),
+            version,
+            CatalogVersionRange(CatalogId("grounds:assets"), version, version),
             emptyMap(),
         )
+    }
 
     @JvmStatic
     fun catalogVersionTwo(): AssetCatalog =

@@ -1,5 +1,6 @@
 package gg.grounds.derive
 
+import com.github.luben.zstd.ZstdInputStream
 import com.github.luben.zstd.ZstdOutputStream
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -13,6 +14,7 @@ import java.util.UUID
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -50,11 +52,16 @@ class DeriveWorkerMainIT {
     @Test
     fun `valid generated catalog resolves grounds actions and uploads canonical scene artifacts`() {
         val catalog = generatedCatalogJar()
+        val version = "37"
         val source =
             archive(
                 mapOf(
                     "scene.json" to
-                        """{"schemaVersion":1,"id":"grounds:scene","metadata":{"name":"Scene","description":null,"tags":[]},"catalogs":{"assets":{"id":"grounds:assets","version":"1"},"actions":{"id":"grounds:actions","version":"1"}},"groups":[],"elements":[]}"""
+                        validGroundsScene
+                            .replace(
+                                "\"id\":\"grounds:assets\",\"version\":\"1\"",
+                                "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                            )
                             .encodeToByteArray()
                 )
             )
@@ -78,16 +85,126 @@ class DeriveWorkerMainIT {
                             )
                     )
 
-            run(server, request)
+            System.setProperty("grounds.catalog.fixture.version", version)
+            try {
+                run(
+                    server,
+                    request.copy(
+                        catalogCandidates =
+                            request.catalogCandidates.map { it.copy(version = version) }
+                    ),
+                )
+            } finally {
+                System.clearProperty("grounds.catalog.fixture.version")
+            }
 
             assertEquals(listOf("/source", "/catalog", "/bundle", "/manifest", "/result"), requests)
             assertEquals(listOf("/bundle", "/manifest", "/result"), uploads.map { it.first })
             val result = CanonicalJson.readResult(uploads.last().second) as DeriveSuccess
             assertEquals("grounds:assets", result.scene.assetCatalog?.id)
-            assertEquals("1", result.scene.assetCatalog?.version)
+            assertEquals(version, result.scene.assetCatalog?.version)
             assertEquals("grounds:actions", result.scene.actionCatalog?.id)
             assertEquals("1", result.scene.actionCatalog?.version)
             assertTrue(result.scene.present)
+            assertEquals("1", result.scene.schemaVersion)
+            assertEquals(emptyList<String>(), result.scene.requiredActions)
+            val authoredScene =
+                validGroundsScene
+                    .replace(
+                        "\"id\":\"grounds:assets\",\"version\":\"1\"",
+                        "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                    )
+                    .encodeToByteArray()
+            val manifest = CanonicalJson.readManifest(uploads[1].second)
+            assertEquals(result.scene, manifest.scene)
+            assertEquals(digest(source), manifest.sourceSha256)
+            val bundle = bundleEntries(uploads[0].second)
+            val canonicalScene = bundle.getValue("scene.json")
+            assertEquals(digest(canonicalScene), result.scene.sha256)
+            assertFalse(authoredScene.contentEquals(canonicalScene))
+            assertEquals(
+                "grounds:assets",
+                CanonicalJson.readManifest(uploads[1].second).scene.assetCatalog?.id,
+            )
+            assertEquals(
+                uploads[1].second.toList(),
+                bundle.getValue("grounds/derived-manifest.json").toList(),
+            )
+        }
+    }
+
+    @Test
+    fun `structurally valid hostile catalog jar and loaded identity mismatch are content markers`() {
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        listOf(generatedCatalogJar("../hostile") to "1", generatedCatalogJar() to "2").forEach {
+            (catalog, version) ->
+            val scene =
+                archive(
+                    mapOf(
+                        "scene.json" to
+                            validGroundsScene
+                                .replace(
+                                    "\"id\":\"grounds:assets\",\"version\":\"1\"",
+                                    "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                                )
+                                .encodeToByteArray()
+                    )
+                )
+            catalogWorkerServer(scene, catalog) { server, uploads, _ ->
+                run(
+                    server,
+                    request(server, digest(scene))
+                        .copy(
+                            catalogCandidates =
+                                listOf(
+                                    AssetCatalogCandidate(
+                                        "stable",
+                                        "grounds:assets",
+                                        version,
+                                        "coord",
+                                        "catalog.jar",
+                                        URI("http://127.0.0.1:${server.address.port}/catalog"),
+                                        digest(catalog),
+                                        catalog.size.toLong(),
+                                    )
+                                )
+                        ),
+                )
+                assertEquals(listOf("/result"), uploads.map { it.first })
+                val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                assertEquals("CONTENT", marker.scope.name)
+                assertFalse(marker.retryable)
+            }
+        }
+    }
+
+    @Test
+    fun `chunked catalog declared size mismatch is a nonretryable content marker`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        catalogWorkerServer(source, catalog, catalogChunked = true) { server, uploads, _ ->
+            run(
+                server,
+                request(server, digest(source))
+                    .copy(
+                        catalogCandidates =
+                            listOf(
+                                AssetCatalogCandidate(
+                                    "stable",
+                                    "grounds:assets",
+                                    "1",
+                                    "coord",
+                                    "catalog.jar",
+                                    URI("http://127.0.0.1:${server.address.port}/catalog"),
+                                    digest(catalog),
+                                    catalog.size.toLong() + 1,
+                                )
+                            )
+                    ),
+            )
+            val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("CONTENT", marker.scope.name)
+            assertFalse(marker.retryable)
         }
     }
 
@@ -195,6 +312,7 @@ class DeriveWorkerMainIT {
                 )
 
                 assertEquals(listOf("/source", "/catalog", "/result"), requests)
+                assertFalse(requests.contains("/redirect-target"))
                 val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
                 assertEquals("SYSTEM", marker.scope.name)
                 assertTrue(marker.retryable)
@@ -303,6 +421,34 @@ class DeriveWorkerMainIT {
             assertEquals("CONTENT", result.scope.name)
             assertFalse(result.retryable)
         }
+
+    @Test
+    fun `source header failure and whole request deadline are acknowledged system markers`() {
+        listOf(
+                { server: HttpServer -> run(server, request(server, "0".repeat(64))) },
+                { server: HttpServer ->
+                    run(
+                        server,
+                        request(server, "0".repeat(64)),
+                        WorkerHttpTransfer(true, requestDeadlineMillis = 25),
+                    )
+                },
+            )
+            .forEachIndexed { index, invoke ->
+                val source = byteArrayOf(1)
+                workerServer(
+                    source,
+                    sourceAbortBeforeHeaders = index == 0,
+                    sourceDelayMillis = if (index == 1) 100 else 0,
+                ) { server, uploads ->
+                    invoke(server)
+                    assertEquals(listOf("/result"), uploads.map { it.first })
+                    val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                    assertEquals("SYSTEM", marker.scope.name)
+                    assertTrue(marker.retryable)
+                }
+            }
+    }
 
     @Test
     fun `uploads bundle then manifest then success result for a valid loopback request`() =
@@ -465,7 +611,8 @@ class DeriveWorkerMainIT {
 
     @Test
     fun `preflight rejects every unsigned request URL and unused catalog without HTTP`() {
-        workerServer(ByteArray(0)) { server, uploads ->
+        var sourceGets = 0
+        workerServer(ByteArray(0), onSourceRequest = { sourceGets++ }) { server, uploads ->
             val valid = request(server, "0".repeat(64))
             val invalid =
                 listOf<DeriveRequest.() -> DeriveRequest>(
@@ -493,6 +640,7 @@ class DeriveWorkerMainIT {
                 )
             invalid.forEach { mutate -> assertEquals(2, runRequest(mutate(valid))) }
             assertTrue(uploads.isEmpty())
+            assertEquals(0, sourceGets)
         }
     }
 
@@ -720,9 +868,12 @@ class DeriveWorkerMainIT {
         source: ByteArray,
         sourceStatus: Int = 200,
         sourceChunked: Boolean = false,
+        sourceAbortBeforeHeaders: Boolean = false,
+        sourceDelayMillis: Long = 0,
         bundleStatus: Int = 200,
         manifestStatus: Int = 200,
         resultStatuses: List<Int> = listOf(200),
+        onSourceRequest: () -> Unit = {},
         block: (HttpServer, MutableList<Pair<String, ByteArray>>) -> Unit,
     ) {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
@@ -733,7 +884,16 @@ class DeriveWorkerMainIT {
                 respond(exchange, 200, ByteArray(0))
             }
             server.createContext("/source") { exchange ->
-                if (sourceChunked && sourceStatus == 200) {
+                onSourceRequest()
+                if (sourceAbortBeforeHeaders) {
+                    exchange.close()
+                } else if (sourceDelayMillis > 0 && sourceStatus == 200) {
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.write(source.copyOf(1))
+                    exchange.responseBody.flush()
+                    Thread.sleep(sourceDelayMillis)
+                    exchange.responseBody.close()
+                } else if (sourceChunked && sourceStatus == 200) {
                     exchange.sendResponseHeaders(200, 0)
                     exchange.responseBody.use { it.write(source) }
                 } else {
@@ -767,12 +927,17 @@ class DeriveWorkerMainIT {
         source: ByteArray,
         catalog: ByteArray,
         catalogStatus: Int = 200,
+        catalogChunked: Boolean = false,
         block: (HttpServer, MutableList<Pair<String, ByteArray>>, MutableList<String>) -> Unit,
     ) {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
         val requests = mutableListOf<String>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         try {
+            server.createContext("/redirect-target") { exchange ->
+                requests += "/redirect-target"
+                respond(exchange, 200, ByteArray(0))
+            }
             server.createContext("/source") { exchange ->
                 requests += "/source"
                 respond(exchange, 200, source)
@@ -781,7 +946,10 @@ class DeriveWorkerMainIT {
                 requests += "/catalog"
                 if (catalogStatus in 300..399)
                     exchange.responseHeaders.add("Location", "/redirect-target")
-                respond(exchange, catalogStatus, catalog)
+                if (catalogChunked && catalogStatus == 200) {
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.use { it.write(catalog) }
+                } else respond(exchange, catalogStatus, catalog)
             }
             listOf("/bundle", "/manifest", "/result").forEach { path ->
                 server.createContext(path) { exchange ->
@@ -878,7 +1046,7 @@ class DeriveWorkerMainIT {
     private fun digest(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private fun generatedCatalogJar(): ByteArray {
+    private fun generatedCatalogJar(extraEntry: String? = null): ByteArray {
         val owner =
             requireNotNull(
                     javaClass.classLoader.getResourceAsStream(
@@ -893,6 +1061,11 @@ class DeriveWorkerMainIT {
                 )
                 jar.write(owner)
                 jar.closeEntry()
+                extraEntry?.let { name ->
+                    jar.putNextEntry(JarEntry(name))
+                    jar.write(byteArrayOf(1))
+                    jar.closeEntry()
+                }
             }
             output.toByteArray()
         }
@@ -907,4 +1080,16 @@ class DeriveWorkerMainIT {
         exchange.sendResponseHeaders(status, body.size.toLong())
         exchange.responseBody.use { it.write(body) }
     }
+
+    private fun bundleEntries(bytes: ByteArray): Map<String, ByteArray> =
+        ZstdInputStream(bytes.inputStream()).use { compressed ->
+            TarArchiveInputStream(compressed).use { tar ->
+                buildMap {
+                    while (true) {
+                        val entry = tar.nextEntry ?: break
+                        if (!entry.isDirectory) put(entry.name, tar.readBytes())
+                    }
+                }
+            }
+        }
 }
