@@ -1,7 +1,9 @@
 package gg.grounds.transfer
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -124,6 +126,76 @@ class RequestDeadlineTest {
         } finally {
             scheduler.shutdownNow()
         }
+    }
+
+    @Test
+    fun `observers wait for a provisional close and share its expired deadline decision`() {
+        val scheduler = ScheduledThreadPoolExecutor(1)
+        val callers = Executors.newFixedThreadPool(3)
+        val clock = AtomicLong(0)
+        val expired = AtomicInteger()
+        val schedulerOccupied = CountDownLatch(1)
+        val releaseScheduler = CountDownLatch(1)
+        val completionEntered = CountDownLatch(1)
+        val releaseCompletion = CountDownLatch(1)
+        val checkStarted = CountDownLatch(1)
+        val secondCloseStarted = CountDownLatch(1)
+        try {
+            scheduler.execute {
+                schedulerOccupied.countDown()
+                releaseScheduler.await()
+            }
+            assertTrue(schedulerOccupied.await(1, TimeUnit.SECONDS))
+            val deadline =
+                RequestDeadline(
+                    timeoutMillis = 1,
+                    scheduler = scheduler,
+                    onExpire = expired::incrementAndGet,
+                    nanoTime = clock::get,
+                    callbackExecutor = Executor { it.run() },
+                    afterCompletionTransition = {
+                        completionEntered.countDown()
+                        releaseCompletion.await()
+                    },
+                )
+            val firstClose = callers.submit<Unit> { deadline.close() }
+
+            assertTrue(completionEntered.await(1, TimeUnit.SECONDS))
+            clock.set(TimeUnit.MILLISECONDS.toNanos(1))
+            val concurrentCheck =
+                callers.submit<Unit> {
+                    checkStarted.countDown()
+                    deadline.check()
+                }
+            val secondClose =
+                callers.submit<Unit> {
+                    secondCloseStarted.countDown()
+                    deadline.close()
+                }
+
+            assertTrue(checkStarted.await(1, TimeUnit.SECONDS))
+            assertTrue(secondCloseStarted.await(1, TimeUnit.SECONDS))
+            assertTrue(!concurrentCheck.isDone)
+            assertTrue(!secondClose.isDone)
+            releaseCompletion.countDown()
+
+            assertDeadlineExceeded(firstClose)
+            assertDeadlineExceeded(concurrentCheck)
+            assertDeadlineExceeded(secondClose)
+            assertEquals(1, expired.get())
+        } finally {
+            releaseCompletion.countDown()
+            releaseScheduler.countDown()
+            callers.shutdownNow()
+            scheduler.shutdownNow()
+        }
+    }
+
+    private fun assertDeadlineExceeded(future: java.util.concurrent.Future<*>) {
+        assertTrue(
+            assertThrows(ExecutionException::class.java) { future.get(1, TimeUnit.SECONDS) }.cause
+                is RequestDeadlineExceeded
+        )
     }
 
     @Test

@@ -34,32 +34,34 @@ class RequestDeadline(
     private val task = AtomicReference<ScheduledFuture<*>?>()
 
     init {
-        val scheduled = scheduler.schedule(::expire, this.timeoutMillis, TimeUnit.MILLISECONDS)
+        val scheduled = scheduler.schedule(::expireIfDue, this.timeoutMillis, TimeUnit.MILLISECONDS)
         task.set(scheduled)
-        if (state.get() == State.EXPIRED) scheduled.cancel(false)
+        if (state.get() != State.ACTIVE) scheduled.cancel(false)
     }
 
     fun check() {
         expireIfDue()
-        if (state.get() == State.EXPIRED) throw RequestDeadlineExceeded()
+        if (awaitFinalState() == State.EXPIRED) throw RequestDeadlineExceeded()
     }
 
     override fun close() {
         while (true) {
             expireIfDue()
-            when (state.get()) {
+            when (awaitFinalState()) {
                 State.COMPLETED -> return
                 State.EXPIRED -> throw RequestDeadlineExceeded()
                 State.ACTIVE ->
-                    if (state.compareAndSet(State.ACTIVE, State.COMPLETED)) {
+                    if (state.compareAndSet(State.ACTIVE, State.COMPLETING)) {
                         afterCompletionTransition()
                         if (nanoTime() >= deadlineNanos) {
-                            expireCompleted()
+                            publishFinalState(State.EXPIRED)
                             throw RequestDeadlineExceeded()
                         }
-                        task.get()?.cancel(false)
+                        publishFinalState(State.COMPLETED)
                         return
                     }
+
+                State.COMPLETING -> error("awaitFinalState returned a provisional state")
             }
         }
     }
@@ -69,15 +71,39 @@ class RequestDeadline(
     }
 
     private fun expire() {
-        if (state.compareAndSet(State.ACTIVE, State.EXPIRED)) {
-            dispatchExpiry()
+        while (true) {
+            when (awaitFinalState()) {
+                State.ACTIVE ->
+                    if (state.compareAndSet(State.ACTIVE, State.EXPIRED)) {
+                        dispatchExpiry()
+                        return
+                    }
+
+                State.COMPLETED,
+                State.EXPIRED -> return
+
+                State.COMPLETING -> error("awaitFinalState returned a provisional state")
+            }
         }
     }
 
-    private fun expireCompleted() {
-        if (state.compareAndSet(State.COMPLETED, State.EXPIRED)) {
+    private fun publishFinalState(finalState: State) {
+        check(finalState == State.COMPLETED || finalState == State.EXPIRED)
+        check(state.compareAndSet(State.COMPLETING, finalState))
+        if (finalState == State.EXPIRED) {
             dispatchExpiry()
+        } else {
+            task.get()?.cancel(false)
         }
+    }
+
+    private fun awaitFinalState(): State {
+        var observed = state.get()
+        while (observed == State.COMPLETING) {
+            Thread.onSpinWait()
+            observed = state.get()
+        }
+        return observed
     }
 
     private fun dispatchExpiry() {
@@ -87,6 +113,7 @@ class RequestDeadline(
 
     private enum class State {
         ACTIVE,
+        COMPLETING,
         COMPLETED,
         EXPIRED,
     }
