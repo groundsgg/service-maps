@@ -334,6 +334,49 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
+    fun `create fails closed when worker container gains privileged process settings`() {
+        assertConflictFails { stored ->
+            val security = stored.spec.template.spec.containers.single().securityContext
+            security.privileged = true
+            security.procMount = "Unmasked"
+            security.runAsUser = 0
+        }
+    }
+
+    @Test
+    fun `create fails closed when worker container gains args or envFrom`() {
+        assertConflictFails { stored ->
+            val worker = stored.spec.template.spec.containers.single()
+            worker.args = listOf("unexpected")
+            worker.envFrom =
+                listOf(
+                    io.fabric8.kubernetes.api.model
+                        .EnvFromSourceBuilder()
+                        .withNewConfigMapRef()
+                        .withName("unexpected")
+                        .endConfigMapRef()
+                        .build()
+                )
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict changes Job completion controls`() {
+        assertConflictFails { stored ->
+            stored.spec.parallelism = 2
+            stored.spec.completions = 2
+            stored.spec.suspend = true
+            stored.spec.podFailurePolicy =
+                io.fabric8.kubernetes.api.model.batch.v1.PodFailurePolicyBuilder().build()
+        }
+    }
+
+    @Test
+    fun `create fails closed when controller UID is not the stored Job UID`() {
+        assertConflictFails { stored -> stored.metadata.uid = "different-controller" }
+    }
+
+    @Test
     fun `find and readiness use read-only Kubernetes HTTP operations`() {
         val responses = CopyOnWriteArrayList<String>()
         loopback { exchange, _ ->
@@ -429,6 +472,13 @@ class Fabric8DeriveJobGatewayTest {
 
     private fun kubernetesStoredJob(json: String): Job =
         Serialization.unmarshal(json, Job::class.java).also { job ->
+            job.metadata.uid = "generated-controller"
+            job.spec.completions = 1
+            job.spec.parallelism = 1
+            job.spec.completionMode = "NonIndexed"
+            job.spec.suspend = false
+            job.spec.manualSelector = false
+            job.spec.podReplacementPolicy = "TerminatingOrFailed"
             job.spec.selector =
                 io.fabric8.kubernetes.api.model.LabelSelector().also {
                     it.matchLabels = mapOf("controller-uid" to "generated-controller")
@@ -438,9 +488,15 @@ class Fabric8DeriveJobGatewayTest {
                     put("controller-uid", "generated-controller")
                     put("job-name", job.metadata.name)
                     put("batch.kubernetes.io/controller-uid", "generated-controller")
+                    put("batch.kubernetes.io/job-name", job.metadata.name)
                 }
             job.spec.template.spec.dnsPolicy = "ClusterFirst"
             job.spec.template.spec.schedulerName = "default-scheduler"
+            job.spec.template.spec.terminationGracePeriodSeconds = 30
+            job.spec.template.spec.enableServiceLinks = true
+            job.spec.template.spec.containers.single().terminationMessagePath =
+                "/dev/termination-log"
+            job.spec.template.spec.containers.single().terminationMessagePolicy = "File"
         }
 
     private fun coordinator(urlTtl: Duration) =

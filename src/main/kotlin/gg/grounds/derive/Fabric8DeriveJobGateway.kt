@@ -1,5 +1,8 @@
 package gg.grounds.derive
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.fabric8.kubernetes.api.model.ContainerBuilder
 import io.fabric8.kubernetes.api.model.EmptyDirVolumeSourceBuilder
 import io.fabric8.kubernetes.api.model.ObjectMeta
@@ -14,11 +17,11 @@ import io.fabric8.kubernetes.api.model.batch.v1.Job
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientException
+import io.fabric8.kubernetes.client.utils.Serialization
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.math.BigInteger
 import java.nio.ByteBuffer
-import java.security.MessageDigest
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
@@ -189,8 +192,7 @@ constructor(
                 .withTemplate(template)
                 .endSpec()
                 .build()
-        val contract = requireNotNull(ownedContract(job)) { "derive Job contract is incomplete" }
-        job.metadata.annotations = mapOf(CONTRACT_FINGERPRINT to fingerprint(contract))
+        job.metadata.annotations = mapOf(CONTRACT_FINGERPRINT to fingerprint(job))
         return job
     }
 
@@ -210,175 +212,107 @@ constructor(
         "d-${base36(identity.mapId)}-${Integer.toUnsignedString(identity.version, 36)}-${base36(identity.attempt)}"
 
     private fun sameImmutableJob(existing: Job, expected: Job): Boolean {
-        val expectedContract = ownedContract(expected) ?: return false
-        val existingContract = ownedContract(existing) ?: return false
-        val expectedFingerprint = fingerprint(expectedContract)
-        return (hasOnlyExpectedOrControllerLabels(
-            existing,
-            existing.metadata?.labels,
-            expected.metadata?.labels,
-        ) &&
-            hasOnlyExpectedOrControllerLabels(
-                existing,
-                existing.spec?.template?.metadata?.labels,
-                expected.spec?.template?.metadata?.labels,
-            ) &&
-            existing.metadata?.annotations?.get(CONTRACT_FINGERPRINT) == expectedFingerprint &&
-            fingerprint(existingContract) == expectedFingerprint &&
-            existingContract == expectedContract)
+        val expectedFingerprint = fingerprint(expected)
+        if (existing.metadata?.annotations?.get(CONTRACT_FINGERPRINT) != expectedFingerprint)
+            return false
+        val stored = normalizedJob(existing, stored = true) ?: return false
+        val desired = normalizedJob(expected, stored = false) ?: return false
+        return stored == desired
     }
 
-    /**
-     * Kubernetes may default a selector and add controller labels to a persisted Job. This records
-     * only the fields this gateway owns, so generated fields neither make a valid recovery fail nor
-     * weaken the comparison of the request, image, execution environment, and isolation settings.
-     */
-    private fun ownedContract(job: Job): OwnedJobContract? {
-        val metadata = job.metadata ?: return null
-        val labels = metadata.labels ?: return null
-        val spec = job.spec ?: return null
-        val pod = spec.template?.spec ?: return null
-        if (!isSafePodShape(pod)) return null
-        val worker = pod.containers?.singleOrNull { it.name == "derive-worker" } ?: return null
-        val environment = worker.env?.associate { it.name to it.value } ?: return null
-        if (
-            environment.size != worker.env.size ||
-                worker.env.any {
-                    it.name.isNullOrBlank() || it.value == null || it.valueFrom != null
+    private fun fingerprint(job: Job): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(CanonicalJson.write(requireNotNull(normalizedJob(job, stored = false))))
+            .joinToString("") { "%02x".format(it) }
+
+    private fun normalizedJob(job: Job, stored: Boolean): JsonNode? =
+        runCatching {
+                val root = mapper.readTree(Serialization.asJson(job)) as ObjectNode
+                val metadata = root.objectNode("metadata") ?: return null
+                metadata.remove(SERVER_METADATA)
+                metadata.objectNode("annotations")?.let { annotations ->
+                    annotations.remove(CONTRACT_FINGERPRINT)
+                    if (annotations.isEmpty) metadata.remove("annotations")
                 }
+                root.remove("status")
+                val spec = root.objectNode("spec") ?: return null
+                if (stored) {
+                    verifyAndRemoveControllerFields(job, spec) ?: return null
+                    normalizeJobDefaults(spec)
+                }
+                val pod = spec.objectNode("template")?.objectNode("spec") ?: return null
+                if (stored) normalizePodDefaults(pod)
+                root
+            }
+            .getOrNull()
+
+    private fun verifyAndRemoveControllerFields(job: Job, spec: ObjectNode): Unit? {
+        val uid = job.metadata?.uid?.takeIf { it.isNotBlank() } ?: return null
+        val name = job.metadata?.name?.takeIf { it.isNotBlank() } ?: return null
+        val selector = spec.objectNode("selector") ?: return null
+        val matchLabels = selector.objectNode("matchLabels") ?: return null
+        if (
+            selector.path("matchExpressions").size() != 0 ||
+                !controllerUidLabelsMatch(matchLabels, uid)
         )
             return null
-        val request = environment["DERIVE_REQUEST_JSON"] ?: return null
-        val tempDirectory = environment["TMPDIR"] ?: return null
-        val workVolume = pod.volumes?.singleOrNull() ?: return null
-        if (workVolume.name != "work") return null
-        val workMount = worker.volumeMounts?.singleOrNull { it.name == "work" } ?: return null
-        if (worker.volumeMounts.size != 1) return null
-        return OwnedJobContract(
-            metadata.name ?: return null,
-            IDENTITY_LABELS.associateWith { labels[it] ?: return null },
-            request,
-            worker.image ?: return null,
-            worker.imagePullPolicy,
-            worker.command ?: return null,
-            environment,
-            tempDirectory,
-            spec.backoffLimit,
-            spec.activeDeadlineSeconds,
-            spec.ttlSecondsAfterFinished,
-            pod.restartPolicy,
-            pod.serviceAccountName,
-            pod.automountServiceAccountToken,
-            pod.securityContext?.runAsNonRoot,
-            pod.securityContext?.seccompProfile?.type,
-            workVolume.emptyDir != null,
-            workVolume.emptyDir?.medium,
-            workVolume.emptyDir?.sizeLimit?.amount + workVolume.emptyDir?.sizeLimit?.format,
-            workMount.mountPath,
-            workMount.readOnly,
-            quantities(worker.resources?.requests),
-            quantities(worker.resources?.limits),
-            worker.securityContext?.runAsNonRoot,
-            worker.securityContext?.readOnlyRootFilesystem,
-            worker.securityContext?.allowPrivilegeEscalation,
-            worker.securityContext?.capabilities?.drop?.toSortedSet() ?: emptySet(),
-            worker.securityContext?.capabilities?.add?.toSortedSet() ?: emptySet(),
-        )
+        val labels =
+            spec.objectNode("template")?.objectNode("metadata")?.objectNode("labels") ?: return null
+        if (!controllerTemplateLabelsMatch(labels, uid, name)) return null
+        spec.remove("selector")
+        CONTROLLER_LABELS.forEach(labels::remove)
+        return Unit
     }
 
-    private fun quantities(
-        quantities: Map<String, io.fabric8.kubernetes.api.model.Quantity>?
-    ): Map<String, String> =
-        quantities.orEmpty().mapValues { (_, value) -> value.amount + value.format }.toSortedMap()
-
-    private fun isSafePodShape(pod: io.fabric8.kubernetes.api.model.PodSpec): Boolean =
-        podShapeFailures(pod).isEmpty()
-
-    private fun podShapeFailures(pod: io.fabric8.kubernetes.api.model.PodSpec): List<String> =
-        listOf(
-                "containers" to (pod.containers?.size == 1),
-                "initContainers" to pod.initContainers.isNullOrEmpty(),
-                "ephemeralContainers" to pod.ephemeralContainers.isNullOrEmpty(),
-                "volumes" to (pod.volumes?.size == 1),
-                "imagePullSecrets" to pod.imagePullSecrets.isNullOrEmpty(),
-                "hostNetwork" to (pod.hostNetwork != true),
-                "hostPID" to (pod.hostPID != true),
-                "hostIPC" to (pod.hostIPC != true),
-                "hostUsers" to (pod.hostUsers != true),
-                "hostAliases" to pod.hostAliases.isNullOrEmpty(),
-                "nodeName" to (pod.nodeName == null),
-                "nodeSelector" to pod.nodeSelector.isNullOrEmpty(),
-                "affinity" to (pod.affinity == null),
-                "tolerations" to pod.tolerations.isNullOrEmpty(),
-                "topologySpreadConstraints" to pod.topologySpreadConstraints.isNullOrEmpty(),
-                "priorityClassName" to (pod.priorityClassName == null),
-                "runtimeClassName" to (pod.runtimeClassName == null),
-                "preemptionPolicy" to (pod.preemptionPolicy == null),
-                "overhead" to pod.overhead.isNullOrEmpty(),
-                "readinessGates" to pod.readinessGates.isNullOrEmpty(),
-                "resourceClaims" to pod.resourceClaims.isNullOrEmpty(),
-                "schedulingGates" to pod.schedulingGates.isNullOrEmpty(),
-                "hostname" to (pod.hostname == null),
-                "subdomain" to (pod.subdomain == null),
-                "setHostnameAsFQDN" to (pod.setHostnameAsFQDN != true),
-                "dnsPolicy" to (pod.dnsPolicy == null || pod.dnsPolicy == "ClusterFirst"),
-                "schedulerName" to
-                    (pod.schedulerName == null || pod.schedulerName == "default-scheduler"),
-                "terminationGracePeriodSeconds" to
-                    (pod.terminationGracePeriodSeconds == null ||
-                        pod.terminationGracePeriodSeconds == 0L ||
-                        pod.terminationGracePeriodSeconds == 30L),
-            )
-            .filterNot { it.second }
-            .map { it.first }
-
-    private fun hasOnlyExpectedOrControllerLabels(
-        job: Job,
-        actual: Map<String, String>?,
-        expected: Map<String, String>?,
-    ): Boolean {
-        if (
-            actual == null ||
-                expected == null ||
-                !expected.all { (key, value) -> actual[key] == value }
-        )
-            return false
-        val selector = job.spec?.selector ?: return actual.size == expected.size
-        val selectorLabels = selector.matchLabels ?: return false
-        if (
-            selector.matchExpressions.isNullOrEmpty().not() ||
-                !controllerSelectorIsSafe(selectorLabels)
-        )
-            return false
-        val controllerUid =
-            selectorLabels["controller-uid"] ?: selectorLabels["batch.kubernetes.io/controller-uid"]
-        val jobName = job.metadata?.name ?: return false
-        return actual
-            .filterKeys { it !in expected }
-            .all { (key, value) ->
-                when (key) {
-                    "controller-uid",
-                    "batch.kubernetes.io/controller-uid" -> value == controllerUid
-                    "job-name",
-                    "batch.kubernetes.io/job-name" -> value == jobName
-                    else -> false
-                }
+    private fun controllerUidLabelsMatch(labels: ObjectNode, uid: String): Boolean =
+        labels.size() in 1..2 &&
+            labels.fields().asSequence().all { (key, value) ->
+                key in CONTROLLER_UID_LABELS && value.asText() == uid
             }
+
+    private fun controllerTemplateLabelsMatch(
+        labels: ObjectNode,
+        uid: String,
+        name: String,
+    ): Boolean =
+        CONTROLLER_UID_LABELS.all { key -> labels.path(key).asText() == uid } &&
+            CONTROLLER_NAME_LABELS.all { key -> labels.path(key).asText() == name }
+
+    private fun normalizeJobDefaults(spec: ObjectNode) {
+        spec.removeIfExact("completions", 1)
+        spec.removeIfExact("parallelism", 1)
+        spec.removeIfExact("completionMode", "NonIndexed")
+        spec.removeIfExact("suspend", false)
+        spec.removeIfExact("manualSelector", false)
+        spec.removeIfExact("podReplacementPolicy", "TerminatingOrFailed")
     }
 
-    private fun controllerSelectorIsSafe(labels: Map<String, String>): Boolean {
-        val uid = labels["controller-uid"] ?: labels["batch.kubernetes.io/controller-uid"]
-        return uid != null &&
-            uid.isNotBlank() &&
-            labels.all { (key, value) -> key in CONTROLLER_UID_LABELS && value == uid }
-    }
-
-    private fun fingerprint(contract: OwnedJobContract): String =
-        MessageDigest.getInstance("SHA-256").digest(CanonicalJson.write(contract)).joinToString(
-            ""
-        ) {
-            "%02x".format(it)
+    private fun normalizePodDefaults(pod: ObjectNode) {
+        pod.removeIfExact("dnsPolicy", "ClusterFirst")
+        pod.removeIfExact("schedulerName", "default-scheduler")
+        pod.removeIfExact("terminationGracePeriodSeconds", 30)
+        pod.removeIfExact("enableServiceLinks", true)
+        pod.path("containers").forEach { container ->
+            (container as? ObjectNode)?.apply {
+                removeIfExact("terminationMessagePath", "/dev/termination-log")
+                removeIfExact("terminationMessagePolicy", "File")
+            }
         }
+    }
+
+    private fun ObjectNode.objectNode(name: String): ObjectNode? = get(name) as? ObjectNode
+
+    private fun ObjectNode.removeIfExact(name: String, value: String) {
+        if (path(name).asText() == value) remove(name)
+    }
+
+    private fun ObjectNode.removeIfExact(name: String, value: Int) {
+        if (path(name).asInt() == value) remove(name)
+    }
+
+    private fun ObjectNode.removeIfExact(name: String, value: Boolean) {
+        if (path(name).asBoolean() == value) remove(name)
+    }
 
     private fun base36(value: java.util.UUID): String {
         val bytes =
@@ -393,44 +327,20 @@ constructor(
         val DIGEST_IMAGE = Regex(".+@sha256:[a-f0-9]{64}")
         const val UUID_BASE36_WIDTH = 25
         const val CONTRACT_FINGERPRINT = "grounds.gg/derive-contract-sha256"
-        val IDENTITY_LABELS =
-            setOf(
-                "app.kubernetes.io/name",
-                "grounds.gg/map",
-                "grounds.gg/version",
-                "grounds.gg/attempt",
-            )
         val CONTROLLER_UID_LABELS = setOf("controller-uid", "batch.kubernetes.io/controller-uid")
+        val CONTROLLER_NAME_LABELS = setOf("job-name", "batch.kubernetes.io/job-name")
+        val CONTROLLER_LABELS = CONTROLLER_UID_LABELS + CONTROLLER_NAME_LABELS
+        val SERVER_METADATA =
+            listOf(
+                "uid",
+                "resourceVersion",
+                "generation",
+                "creationTimestamp",
+                "deletionTimestamp",
+                "deletionGracePeriodSeconds",
+                "managedFields",
+                "selfLink",
+            )
+        val mapper = ObjectMapper()
     }
-
-    private data class OwnedJobContract(
-        val name: String,
-        val identityLabels: Map<String, String>,
-        val request: String,
-        val image: String,
-        val imagePullPolicy: String?,
-        val command: List<String>,
-        val environment: Map<String, String>,
-        val tempDirectory: String,
-        val backoffLimit: Int?,
-        val activeDeadlineSeconds: Long?,
-        val ttlSecondsAfterFinished: Int?,
-        val restartPolicy: String?,
-        val serviceAccountName: String?,
-        val automountServiceAccountToken: Boolean?,
-        val podRunAsNonRoot: Boolean?,
-        val seccompProfile: String?,
-        val workEmptyDir: Boolean,
-        val workEmptyDirMedium: String?,
-        val workEmptyDirSizeLimit: String?,
-        val workMountPath: String?,
-        val workMountReadOnly: Boolean?,
-        val requests: Map<String, String>,
-        val limits: Map<String, String>,
-        val runAsNonRoot: Boolean?,
-        val readOnlyRootFilesystem: Boolean?,
-        val allowPrivilegeEscalation: Boolean?,
-        val droppedCapabilities: Set<String>,
-        val addedCapabilities: Set<String>,
-    )
 }
