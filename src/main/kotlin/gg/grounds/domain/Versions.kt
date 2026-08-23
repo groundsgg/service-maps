@@ -87,21 +87,6 @@ interface MapVersionRepository {
     fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord
 
     /**
-     * Atomically transitions a non-terminal version while replacing all persisted derive facts.
-     * Claim and acceptance semantics remain owned by the derive state machine.
-     */
-    fun transitionSceneProjection(
-        mapId: UUID,
-        version: Int,
-        expectedState: VersionState,
-        nextState: VersionState,
-        deriveAttempt: UUID?,
-        deriveFailureScope: DeriveFailureScope?,
-        deriveRetryable: Boolean,
-        scene: SceneProjection,
-    ): MapVersionRecord
-
-    /**
      * Claims a draft version for exactly one derive Job, or returns null when it is not a draft.
      */
     fun claimForDerive(mapId: UUID, version: Int, attempt: UUID): MapVersionRecord?

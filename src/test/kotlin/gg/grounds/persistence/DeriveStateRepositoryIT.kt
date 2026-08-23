@@ -5,6 +5,7 @@ import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
@@ -88,24 +89,7 @@ class DeriveStateRepositoryIT {
     fun `matching duplicate success is idempotent and clears prior projection collections`() {
         val map = committed("idempotent-success")
         val attempt = UUID.randomUUID()
-        versions.transitionSceneProjection(
-            map.id,
-            1,
-            VersionState.DRAFT,
-            VersionState.DERIVING,
-            attempt,
-            null,
-            false,
-            SceneProjection(
-                SceneStatus.VALID,
-                "1",
-                digest(6),
-                CatalogReference("assets", "2026.08"),
-                CatalogReference("actions", "1"),
-                listOf("obsolete.action"),
-                listOf(problem(DeriveFailureScope.SYSTEM, "OBSOLETE")),
-            ),
-        )
+        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
         val identity = identity(map.id, attempt)
         val accepted = versions.acceptSuccess(identity, facts(), "derive-worker")
         val repeated = versions.acceptSuccess(identity, facts(), "derive-worker")
@@ -114,16 +98,27 @@ class DeriveStateRepositoryIT {
         assertEquals(VersionState.PUBLISHED, repeated.state)
         assertEquals(listOf("a.action", "z.action"), repeated.scene.requiredActions)
         assertEquals(emptyList<DeriveProblem>(), repeated.scene.problems)
-        assertThrows<DeriveResultRejectedException> {
+        assertThrows<DeriveResultIntegrityException> {
             versions.acceptSuccess(identity, facts(sizeBytes = 124), "derive-worker")
         }
     }
 
     @Test
-    fun `reconciliation lists only drafts and active attempts`() {
+    fun `reconciliation returns a bounded set of claimable sources active attempts and retryable failures`() {
         val draft = committed("reconcile-draft")
         val deriving = committed("reconcile-deriving")
         val published = committed("reconcile-published")
+        val retryable = committed("reconcile-retryable")
+        val noSource =
+            maps.create(
+                MapAddress("derive", "reconcile-no-source-${UUID.randomUUID()}"),
+                "reconcile-no-source",
+                MapKind.ARENA,
+                false,
+                MapTrust.FIRST_PARTY,
+                "builder",
+            )
+        versions.commit(noSource.id, null, null, null, null, "builder")
         val attempt = UUID.randomUUID()
         versions.claimForDerive(deriving.id, 1, attempt)
         versions.claimForDerive(published.id, 1, UUID.randomUUID())
@@ -132,12 +127,17 @@ class DeriveStateRepositoryIT {
             facts(),
             "derive",
         )
+        val retryAttempt = UUID.randomUUID()
+        versions.claimForDerive(retryable.id, 1, retryAttempt)
+        versions.acceptFailure(identity(retryable.id, retryAttempt), systemFailure("TEMPORARY"))
 
         val candidates =
             versions.listReconcileCandidates().filter {
-                it.mapId in setOf(draft.id, deriving.id, published.id)
+                it.mapId in setOf(draft.id, deriving.id, published.id, retryable.id, noSource.id)
             }
-        assertEquals(setOf(draft.id, deriving.id), candidates.map { it.mapId }.toSet())
+        assertTrue(candidates.size <= 3)
+        assertFalse(candidates.any { it.mapId == noSource.id })
+        assertNull(versions.claimForDerive(noSource.id, 1, UUID.randomUUID()))
     }
 
     @Test
@@ -191,6 +191,16 @@ class DeriveStateRepositoryIT {
                 ),
             ),
         )
+        assertThrows<DeriveResultIntegrityException> {
+            versions.acceptFailure(
+                identity(contentMap.id, contentAttempt),
+                DerivedFailure(
+                    DeriveFailureScope.CONTENT,
+                    false,
+                    listOf(problem(DeriveFailureScope.CONTENT, "OTHER")),
+                ),
+            )
+        }
         assertThrows<DeriveResultRejectedException> {
             versions.retrySystemFailure(contentMap.id, 1)
         }
@@ -224,6 +234,21 @@ class DeriveStateRepositoryIT {
                 systemFailure("NEW"),
             )
         assertEquals(listOf("NEW"), failed.scene.problems.map { it.code })
+    }
+
+    @Test
+    fun `valid success requires the claimed non-null asset catalog`() {
+        val map = committed("catalog-identity")
+        val attempt = UUID.randomUUID()
+        versions.claimForDerive(map.id, 1, attempt)
+
+        assertThrows<DeriveResultRejectedException> {
+            versions.acceptSuccess(
+                identity(map.id, attempt).copy(assetCatalog = null),
+                facts(),
+                "derive",
+            )
+        }
     }
 
     private fun committed(name: String) =
@@ -264,7 +289,13 @@ class DeriveStateRepositoryIT {
                     digest(5),
                     CatalogReference("assets", "2026.08"),
                     CatalogReference("actions", "1"),
-                    listOf("z.action", "a.action", "z.action"),
+                    listOf(
+                        "z.action",
+                        "a.action",
+                        "z.action",
+                        "\uE000.action",
+                        "\uD800\uDC00.action",
+                    ),
                     emptyList(),
                 ),
         )

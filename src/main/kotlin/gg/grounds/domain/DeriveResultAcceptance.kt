@@ -39,6 +39,28 @@ data class DerivedFacts(
             "successful derivation requires a valid or absent scene"
         }
         require(scene.problems.isEmpty()) { "successful derivation cannot retain problems" }
+        when (scene.status) {
+            SceneStatus.NONE ->
+                require(
+                    scene.schemaVersion == null &&
+                        scene.sha256 == null &&
+                        scene.assetCatalog == null &&
+                        scene.actionCatalog == null &&
+                        scene.requiredActions.isEmpty()
+                ) {
+                    "an absent scene cannot retain scene facts"
+                }
+            SceneStatus.VALID ->
+                require(
+                    scene.schemaVersion != null &&
+                        scene.sha256 != null &&
+                        SHA_256.matches(scene.sha256) &&
+                        scene.assetCatalog != null &&
+                        scene.actionCatalog != null
+                ) {
+                    "a valid scene requires complete digest and catalog facts"
+                }
+        }
     }
 }
 
@@ -60,6 +82,9 @@ data class DerivedFailure(
 }
 
 /** The result cannot be applied to the current immutable derive input or terminal state. */
-class DeriveResultRejectedException(message: String) : RuntimeException(message)
+open class DeriveResultRejectedException(message: String) : RuntimeException(message)
+
+/** A repeated terminal result contradicts the immutable facts accepted for its attempt. */
+class DeriveResultIntegrityException(message: String) : DeriveResultRejectedException(message)
 
 private val SHA_256 = Regex("[0-9a-f]{64}")

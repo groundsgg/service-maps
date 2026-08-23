@@ -6,6 +6,7 @@ import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
@@ -22,10 +23,16 @@ import java.sql.Connection
 import java.sql.ResultSet
 import java.util.UUID
 import javax.sql.DataSource
+import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
-class PostgresMapVersionRepository @Inject constructor(private val dataSource: DataSource) :
-    MapVersionRepository {
+class PostgresMapVersionRepository
+@Inject
+constructor(
+    private val dataSource: DataSource,
+    @param:ConfigProperty(name = "grounds.maps.derive.reconcile-batch-size", defaultValue = "100")
+    private val reconcileBatchSize: Int,
+) : MapVersionRepository {
 
     override fun commit(
         mapId: UUID,
@@ -50,8 +57,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     note = note,
                     bySub = bySub,
                 )
+                val result = requireNotNull(read(c, mapId, next))
                 c.commit()
-                requireNotNull(read(c, mapId, next))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -110,97 +118,10 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 // Compatibility publishing produces a successful no-scene version. A previous
                 // derive attempt must not leave action requirements or diagnostics attached to it.
                 clearSceneCollections(c, mapId, version)
-                // Recording the blob is not bookkeeping for its own sake: orphan collection
-                // needs to know a digest was seen before it can decide nothing references it.
-                // A digest names exactly one byte string, so it has exactly one size. Two
-                // different sizes for one digest means somebody supplied a number that is not
-                // true of the object; keep the first and refuse the contradiction rather than
-                // silently overwrite it.
-                c.prepareStatement("SELECT size_bytes FROM map_blob WHERE sha256 = ?").use { ps ->
-                    ps.setString(1, facts.bundleSha256)
-                    ps.executeQuery().use { rs ->
-                        if (rs.next() && rs.getLong(1) != facts.sizeBytes) {
-                            throw BlobSizeMismatchException(
-                                facts.bundleSha256,
-                                rs.getLong(1),
-                                facts.sizeBytes,
-                            )
-                        }
-                    }
-                }
-                c.prepareStatement(
-                        """
-                        INSERT INTO map_blob (sha256, size_bytes, public)
-                        VALUES (?, ?, TRUE)
-                        ON CONFLICT (sha256) DO UPDATE SET public = TRUE
-                        """
-                    )
-                    .use { ps ->
-                        ps.setString(1, facts.bundleSha256)
-                        ps.setLong(2, facts.sizeBytes)
-                        ps.executeUpdate()
-                    }
+                recordPublicBlob(c, facts.bundleSha256, facts.sizeBytes)
+                val result = requireNotNull(read(c, mapId, version))
                 c.commit()
-                requireNotNull(read(c, mapId, version))
-            } catch (e: Exception) {
-                c.rollback()
-                throw e
-            } finally {
-                c.autoCommit = true
-            }
-        }
-
-    override fun transitionSceneProjection(
-        mapId: UUID,
-        version: Int,
-        expectedState: VersionState,
-        nextState: VersionState,
-        deriveAttempt: UUID?,
-        deriveFailureScope: DeriveFailureScope?,
-        deriveRetryable: Boolean,
-        scene: SceneProjection,
-    ): MapVersionRecord =
-        dataSource.connection.use { c ->
-            c.autoCommit = false
-            try {
-                val current =
-                    read(c, mapId, version, forUpdate = true)
-                        ?: throw VersionNotFoundException(mapId, version)
-                if (current.state in TERMINAL_STATES || current.state != expectedState) {
-                    throw VersionNotPublishableException(current.state)
-                }
-                require(nextState !in FORBIDDEN_TARGET_STATES) {
-                    "a scene projection cannot transition to $nextState"
-                }
-                c.prepareStatement(
-                        """
-                        UPDATE map_version
-                           SET state = ?, derive_attempt = ?, derive_failure_scope = ?, derive_retryable = ?,
-                               scene_present = ?, scene_schema_version = ?, scene_sha256 = ?,
-                               asset_catalog_id = ?, asset_catalog_version = ?,
-                               action_catalog_id = ?, action_catalog_version = ?
-                         WHERE map = ? AND version = ?
-                        """
-                    )
-                    .use { ps ->
-                        ps.setString(1, nextState.name)
-                        ps.setObject(2, deriveAttempt)
-                        ps.setString(3, deriveFailureScope?.name)
-                        ps.setBoolean(4, deriveRetryable)
-                        ps.setObject(5, scene.presentValue())
-                        ps.setObject(6, scene.schemaVersion.persistedSchemaVersion())
-                        ps.setString(7, scene.sha256)
-                        ps.setString(8, scene.assetCatalog?.id)
-                        ps.setString(9, scene.assetCatalog?.version)
-                        ps.setString(10, scene.actionCatalog?.id)
-                        ps.setString(11, scene.actionCatalog?.version)
-                        ps.setObject(12, mapId)
-                        ps.setInt(13, version)
-                        ps.executeUpdate()
-                    }
-                replaceSceneCollections(c, mapId, version, scene)
-                c.commit()
-                requireNotNull(read(c, mapId, version))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -216,7 +137,11 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 val current =
                     read(c, mapId, version, forUpdate = true)
                         ?: throw VersionNotFoundException(mapId, version)
-                if (current.state != VersionState.DRAFT) {
+                if (
+                    current.state != VersionState.DRAFT ||
+                        current.sourceSha256 == null ||
+                        current.sourceKey == null
+                ) {
                     c.commit()
                     return null
                 }
@@ -230,8 +155,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     false,
                     pendingScene(),
                 )
+                val result = requireNotNull(read(c, mapId, version))
                 c.commit()
-                requireNotNull(read(c, mapId, version))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -255,7 +181,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         c.commit()
                         return current
                     }
-                    throw DeriveResultRejectedException("conflicting duplicate success result")
+                    throw DeriveResultIntegrityException("conflicting duplicate success result")
                 }
                 if (current.state != VersionState.DERIVING) {
                     throw DeriveResultRejectedException(
@@ -295,8 +221,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     }
                 replaceSceneCollections(c, identity.mapId, identity.version, facts.scene)
                 recordPublicBlob(c, facts.bundleSha256, facts.sizeBytes)
+                val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
-                requireNotNull(read(c, identity.mapId, identity.version))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -318,7 +245,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                         c.commit()
                         return current
                     }
-                    throw DeriveResultRejectedException("conflicting duplicate failure result")
+                    throw DeriveResultIntegrityException("conflicting duplicate failure result")
                 }
                 if (current.state != VersionState.DERIVING) {
                     throw DeriveResultRejectedException(
@@ -337,8 +264,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     failure.retryable,
                     invalidScene(failure.problems),
                 )
+                val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
-                requireNotNull(read(c, identity.mapId, identity.version))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -350,9 +278,18 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
     override fun listReconcileCandidates(): List<MapVersionRecord> =
         dataSource.connection.use { c ->
             c.prepareStatement(
-                    "$SELECT_COLUMNS WHERE state IN ('DRAFT', 'DERIVING') ORDER BY created_at, map, version"
+                    """
+                    $SELECT_COLUMNS
+                    WHERE (state = 'DRAFT' AND source_sha256 IS NOT NULL AND source_key IS NOT NULL)
+                       OR (state = 'DERIVING' AND derive_attempt IS NOT NULL)
+                       OR (state = 'DERIVE_FAILED' AND derive_failure_scope = 'SYSTEM' AND derive_retryable)
+                    ORDER BY created_at, map, version
+                    LIMIT ?
+                    """
+                        .trimIndent()
                 )
                 .use { ps ->
+                    ps.setInt(1, reconcileBatchSize)
                     ps.executeQuery().use { rs ->
                         buildList { while (rs.next()) add(rs.toRecord(c)) }
                     }
@@ -385,8 +322,9 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                     false,
                     pendingScene(),
                 )
+                val result = requireNotNull(read(c, mapId, version))
                 c.commit()
-                requireNotNull(read(c, mapId, version))
+                result
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -489,7 +427,10 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
     }
 
     private fun verifyCatalog(identity: DeriveIdentity, facts: DerivedFacts) {
-        if (identity.assetCatalog != null && facts.scene.assetCatalog != identity.assetCatalog) {
+        if (
+            facts.scene.status == SceneStatus.VALID &&
+                (identity.assetCatalog == null || facts.scene.assetCatalog != identity.assetCatalog)
+        ) {
             throw DeriveResultRejectedException(
                 "derive result asset catalog does not match the claimed catalog"
             )
@@ -536,26 +477,27 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
     }
 
     private fun recordPublicBlob(c: Connection, digest: String, size: Long) {
-        c.prepareStatement("SELECT size_bytes FROM map_blob WHERE sha256 = ?").use { ps ->
-            ps.setString(1, digest)
-            ps.executeQuery().use { rs ->
-                if (rs.next() && rs.getLong(1) != size) {
-                    throw BlobSizeMismatchException(digest, rs.getLong(1), size)
-                }
-            }
-        }
         c.prepareStatement(
                 """
                 INSERT INTO map_blob (sha256, size_bytes, public)
                 VALUES (?, ?, TRUE)
                 ON CONFLICT (sha256) DO UPDATE SET public = TRUE
+                  WHERE map_blob.size_bytes = EXCLUDED.size_bytes
+                RETURNING size_bytes
                 """
             )
             .use { ps ->
                 ps.setString(1, digest)
                 ps.setLong(2, size)
-                ps.executeUpdate()
+                ps.executeQuery().use { rs -> if (rs.next()) return }
             }
+        c.prepareStatement("SELECT size_bytes FROM map_blob WHERE sha256 = ?").use { ps ->
+            ps.setString(1, digest)
+            ps.executeQuery().use { rs ->
+                check(rs.next()) { "conflicting blob insert did not leave a row" }
+                throw BlobSizeMismatchException(digest, rs.getLong(1), size)
+            }
+        }
     }
 
     private fun pendingScene() =
@@ -602,7 +544,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             sha256 == other.sha256 &&
             assetCatalog == other.assetCatalog &&
             actionCatalog == other.actionCatalog &&
-            requiredActions == other.requiredActions.distinct().sorted() &&
+            requiredActions == other.requiredActions.distinct().sortedWith(CODE_POINT_ORDER) &&
             problems == other.problems
 
     private fun read(
@@ -678,7 +620,10 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
             .use { ps ->
                 ps.setObject(1, mapId)
                 ps.setInt(2, version)
-                ps.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+                ps.executeQuery().use { rs ->
+                    buildList { while (rs.next()) add(rs.getString(1)) }
+                        .sortedWith(CODE_POINT_ORDER)
+                }
             }
 
     private fun deriveProblems(c: Connection, mapId: UUID, version: Int): List<DeriveProblem> =
@@ -740,7 +685,7 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
                 """
             )
             .use { ps ->
-                scene.requiredActions.distinct().sorted().forEach { actionId ->
+                scene.requiredActions.distinct().sortedWith(CODE_POINT_ORDER).forEach { actionId ->
                     ps.setObject(1, mapId)
                     ps.setInt(2, version)
                     ps.setString(3, actionId)
@@ -792,15 +737,20 @@ class PostgresMapVersionRepository @Inject constructor(private val dataSource: D
         }
 
     private companion object {
-        val TERMINAL_STATES =
-            setOf(
-                VersionState.DERIVE_FAILED,
-                VersionState.PUBLISHED,
-                VersionState.REJECTED,
-                VersionState.TAKEN_DOWN,
-            )
-        val FORBIDDEN_TARGET_STATES =
-            setOf(VersionState.DRAFT, VersionState.REJECTED, VersionState.TAKEN_DOWN)
+        val CODE_POINT_ORDER =
+            Comparator<String> { left, right ->
+                var leftIndex = 0
+                var rightIndex = 0
+                while (leftIndex < left.length && rightIndex < right.length) {
+                    val leftCodePoint = left.codePointAt(leftIndex)
+                    val rightCodePoint = right.codePointAt(rightIndex)
+                    if (leftCodePoint != rightCodePoint)
+                        return@Comparator leftCodePoint.compareTo(rightCodePoint)
+                    leftIndex += Character.charCount(leftCodePoint)
+                    rightIndex += Character.charCount(rightCodePoint)
+                }
+                (left.length - leftIndex).compareTo(right.length - rightIndex)
+            }
 
         const val SELECT_COLUMNS =
             """

@@ -3,7 +3,9 @@ package gg.grounds.persistence
 import gg.grounds.PostgresResource
 import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
+import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.MapAddress
 import gg.grounds.domain.MapKind
 import gg.grounds.domain.MapRepository
@@ -11,7 +13,6 @@ import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
-import gg.grounds.domain.VersionNotPublishableException
 import gg.grounds.domain.VersionState
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
@@ -20,7 +21,6 @@ import java.time.Instant
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
 
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
@@ -58,61 +58,31 @@ class SceneProjectionRepositoryIT {
     }
 
     @Test
-    fun `replacing a projection sorts unique actions and preserves problem ordinal`() {
+    fun `accepted scene facts sort unique actions by Unicode code point`() {
         val map = createMap("projection-replacement")
-        versions.commit(map.id, null, null, null, null, "builder-sub")
-        versions.transitionSceneProjection(
-            mapId = map.id,
-            version = 1,
-            expectedState = VersionState.DRAFT,
-            nextState = VersionState.DERIVING,
-            deriveAttempt = UUID.randomUUID(),
-            deriveFailureScope = DeriveFailureScope.CONTENT,
-            deriveRetryable = true,
-            scene =
-                validScene(
-                    schemaVersion = "1",
-                    sha256 = "%064x".format(44),
-                    assetCatalog = CatalogReference("assets-a", "2026.07"),
-                    actionCatalog = CatalogReference("actions-a", "1"),
-                    requiredActions = listOf("obsolete.action"),
-                    problems =
-                        listOf(
-                            DeriveProblem(
-                                DeriveFailureScope.CONTENT,
-                                null,
-                                "OBSOLETE",
-                                null,
-                                "obsolete",
-                            )
-                        ),
-                ),
-        )
-        val problems =
-            listOf(
-                DeriveProblem(DeriveFailureScope.CONTENT, "scene.json", "BAD_SCENE", null, "bad"),
-                DeriveProblem(DeriveFailureScope.SYSTEM, null, "IO", "grounds:io", "retry"),
-            )
-
-        val finalAttempt = UUID.randomUUID()
+        versions.commit(map.id, "%064x".format(1), "tmp/source", null, null, "builder-sub")
+        val attempt = UUID.randomUUID()
+        versions.claimForDerive(map.id, 1, attempt)
         val finalScene =
             validScene(
                 schemaVersion = "2",
                 sha256 = "%064x".format(45),
                 assetCatalog = CatalogReference("assets-b", "2026.08"),
                 actionCatalog = CatalogReference("actions-b", "2"),
-                requiredActions = listOf("z.action", "a.action", "z.action"),
-                problems = problems,
+                requiredActions =
+                    listOf(
+                        "z.action",
+                        "a.action",
+                        "z.action",
+                        "\uE000.action",
+                        "\uD800\uDC00.action",
+                    ),
+                problems = emptyList(),
             )
-        versions.transitionSceneProjection(
-            mapId = map.id,
-            version = 1,
-            expectedState = VersionState.DERIVING,
-            nextState = VersionState.PUBLISHED,
-            deriveAttempt = finalAttempt,
-            deriveFailureScope = null,
-            deriveRetryable = false,
-            scene = finalScene,
+        versions.acceptSuccess(
+            DeriveIdentity(map.id, 1, attempt, "%064x".format(1), finalScene.assetCatalog),
+            DerivedFacts("%064x".format(46), null, 46, null, null, finalScene),
+            "derive",
         )
 
         val stored = requireNotNull(versions.find(map.id, 1))
@@ -121,40 +91,28 @@ class SceneProjectionRepositoryIT {
         assertEquals(finalScene.sha256, stored.scene.sha256)
         assertEquals(finalScene.assetCatalog, stored.scene.assetCatalog)
         assertEquals(finalScene.actionCatalog, stored.scene.actionCatalog)
-        assertEquals(finalAttempt, stored.deriveAttempt)
+        assertEquals(attempt, stored.deriveAttempt)
         assertEquals(null, stored.deriveFailureScope)
         assertEquals(false, stored.deriveRetryable)
-        assertEquals(listOf("a.action", "z.action"), stored.scene.requiredActions)
-        assertEquals(problems, stored.scene.problems)
+        assertEquals(
+            listOf("a.action", "z.action", "\uE000.action", "\uD800\uDC00.action"),
+            stored.scene.requiredActions,
+        )
+        assertEquals(emptyList<DeriveProblem>(), stored.scene.problems)
     }
 
     @Test
-    fun `a terminal version cannot transition its scene projection`() {
+    fun `a published version cannot be claimed again`() {
         val map = createMap("terminal-projection")
         versions.commit(map.id, null, null, null, null, "builder-sub")
-        versions.transitionSceneProjection(
+        versions.publish(
             map.id,
             1,
-            VersionState.DRAFT,
-            VersionState.PUBLISHED,
-            UUID.randomUUID(),
-            null,
-            false,
-            validScene(emptyList(), emptyList()),
+            gg.grounds.domain.BundleFacts("%064x".format(43), null, 43, null, null),
+            "publisher",
         )
 
-        assertThrows<VersionNotPublishableException> {
-            versions.transitionSceneProjection(
-                map.id,
-                1,
-                VersionState.PUBLISHED,
-                VersionState.PUBLISHED,
-                UUID.randomUUID(),
-                null,
-                false,
-                validScene(emptyList(), emptyList()),
-            )
-        }
+        assertEquals(null, versions.claimForDerive(map.id, 1, UUID.randomUUID()))
     }
 
     @Test
