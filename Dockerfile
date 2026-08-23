@@ -31,4 +31,6 @@ USER nonroot:nonroot
 COPY --from=build --chown=nonroot:nonroot /workspace/build/quarkus-app/ ./
 
 EXPOSE 9000
-ENTRYPOINT ["java", "-jar", "quarkus-run.jar"]
+# The default remains the service; callers can override CMD with the standalone worker command.
+ENTRYPOINT ["java"]
+CMD ["-jar", "quarkus-run.jar"]
