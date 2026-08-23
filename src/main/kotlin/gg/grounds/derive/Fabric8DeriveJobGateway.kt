@@ -13,8 +13,11 @@ import io.fabric8.kubernetes.api.model.VolumeMountBuilder
 import io.fabric8.kubernetes.api.model.batch.v1.Job
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
+import io.fabric8.kubernetes.client.KubernetesClientException
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.math.BigInteger
+import java.nio.ByteBuffer
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
@@ -36,6 +39,9 @@ constructor(
         require(!enabled || image.isNotBlank()) {
             "derive image is required when derive is enabled"
         }
+        require(!enabled || DIGEST_IMAGE.matches(image)) {
+            "derive image must be pinned to an immutable sha256 digest when derive is enabled"
+        }
         require(!enabled || serviceAccount.isNotBlank()) {
             "derive worker service account is required when derive is enabled"
         }
@@ -44,12 +50,16 @@ constructor(
     override fun create(request: DeriveJobRequest) {
         val name = name(request)
         val jobs = client.batch().v1().jobs().inNamespace(namespace)
-        val existing = jobs.withName(name).get()
-        if (existing == null) jobs.resource(job(name, request)).create()
-        else
-            require(existing.metadata.labels == labels(request)) {
-                "derive Job $name labels do not match its attempt"
+        val expected = job(name, request)
+        try {
+            jobs.resource(expected).create()
+        } catch (failure: KubernetesClientException) {
+            if (failure.code != 409) throw failure
+            val existing = jobs.withName(name).get()
+            require(existing != null && sameImmutableJob(existing, expected)) {
+                "derive Job $name conflicts with a different or incomplete immutable attempt"
             }
+        }
     }
 
     /** Pure manifest seam for regression tests; it performs no client operation. */
@@ -107,8 +117,9 @@ constructor(
                         .withImagePullPolicy("IfNotPresent")
                         .withCommand(
                             "java",
+                            "-Djava.io.tmpdir=/work",
                             "-cp",
-                            "/deployments/quarkus-app/app/*:/deployments/quarkus-app/lib/*:/deployments/quarkus-app/quarkus/*",
+                            "/deployments/quarkus-app/app/*:/deployments/quarkus-app/lib/boot/*:/deployments/quarkus-app/lib/main/*",
                             "gg.grounds.derive.DeriveWorkerMain",
                             "--request-env",
                             "DERIVE_REQUEST_JSON",
@@ -116,6 +127,10 @@ constructor(
                         .addNewEnv()
                         .withName("DERIVE_REQUEST_JSON")
                         .withValue(request.requestJson)
+                        .endEnv()
+                        .addNewEnv()
+                        .withName("TMPDIR")
+                        .withValue("/work")
                         .endEnv()
                         .withResources(
                             ResourceRequirementsBuilder()
@@ -187,5 +202,22 @@ constructor(
     private fun name(request: DeriveJobRequest) = name(request.identity)
 
     private fun name(identity: gg.grounds.domain.DeriveIdentity) =
-        "derive-${identity.mapId.toString().take(8)}-${identity.version}-${identity.attempt.toString().take(8)}"
+        "d-${base36(identity.mapId)}-${Integer.toUnsignedString(identity.version, 36)}-${base36(identity.attempt)}"
+
+    private fun sameImmutableJob(existing: Job, expected: Job): Boolean =
+        existing.metadata?.labels == expected.metadata?.labels && existing.spec == expected.spec
+
+    private fun base36(value: java.util.UUID): String {
+        val bytes =
+            ByteBuffer.allocate(16)
+                .putLong(value.mostSignificantBits)
+                .putLong(value.leastSignificantBits)
+                .array()
+        return BigInteger(1, bytes).toString(36).padStart(UUID_BASE36_WIDTH, '0')
+    }
+
+    private companion object {
+        val DIGEST_IMAGE = Regex(".+@sha256:[a-f0-9]{64}")
+        const val UUID_BASE36_WIDTH = 25
+    }
 }

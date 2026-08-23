@@ -69,7 +69,9 @@ dependencies {
     implementation("io.quarkus:quarkus-smallrye-health")
     implementation("io.quarkus:quarkus-smallrye-openapi")
     implementation("io.quarkus:quarkus-scheduler")
-    implementation("io.fabric8:kubernetes-client:7.4.0")
+    // Produces the application-scoped KubernetesClient used by the Job gateway. Depending on the
+    // raw Fabric8 client alone leaves CDI with no producer in the packaged Quarkus application.
+    implementation("io.quarkus:quarkus-kubernetes-client")
     // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
     // UrlConnectionHttpClient rather than the Netty async client: every call here is a
     // presign or a small metadata write, so an event loop buys nothing.
