@@ -20,6 +20,8 @@ import gg.grounds.domain.VersionState
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
+import java.sql.Timestamp
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -30,17 +32,24 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.MethodOrderer.OrderAnnotation
+import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertThrows
 
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
+@TestMethodOrder(OrderAnnotation::class)
 class DeriveStateRepositoryIT {
 
     @Inject lateinit var maps: MapRepository
     @Inject lateinit var versions: MapVersionRepository
 
+    @Inject lateinit var dataSource: javax.sql.DataSource
+
     @Test
+    @Order(2)
     fun `concurrent claims assign exactly one attempt to a draft`() {
         val map = committed("concurrent-claim")
         val attempts = listOf(UUID.randomUUID(), UUID.randomUUID())
@@ -69,6 +78,7 @@ class DeriveStateRepositoryIT {
     }
 
     @Test
+    @Order(3)
     fun `a stale attempt cannot finish after a system retry`() {
         val map = committed("stale-attempt")
         val first = UUID.randomUUID()
@@ -86,7 +96,7 @@ class DeriveStateRepositoryIT {
     }
 
     @Test
-    fun `matching duplicate success is idempotent and clears prior projection collections`() {
+    fun `matching duplicate success preserves every code-point-ordered action`() {
         val map = committed("idempotent-success")
         val attempt = UUID.randomUUID()
         assertNotNull(versions.claimForDerive(map.id, 1, attempt))
@@ -96,7 +106,11 @@ class DeriveStateRepositoryIT {
 
         assertEquals(accepted, repeated)
         assertEquals(VersionState.PUBLISHED, repeated.state)
-        assertEquals(listOf("a.action", "z.action"), repeated.scene.requiredActions)
+        assertEquals(
+            listOf("a.action", "z.action", "\uE000.action", "\uD800\uDC00.action"),
+            accepted.scene.requiredActions,
+        )
+        assertEquals(accepted.scene.requiredActions, repeated.scene.requiredActions)
         assertEquals(emptyList<DeriveProblem>(), repeated.scene.problems)
         assertThrows<DeriveResultIntegrityException> {
             versions.acceptSuccess(identity, facts(sizeBytes = 124), "derive-worker")
@@ -104,11 +118,12 @@ class DeriveStateRepositoryIT {
     }
 
     @Test
-    fun `reconciliation returns a bounded set of claimable sources active attempts and retryable failures`() {
+    @Order(1)
+    fun `reconciliation returns ordered claimable and retryable candidates within its configured batch`() {
         val draft = committed("reconcile-draft")
         val deriving = committed("reconcile-deriving")
-        val published = committed("reconcile-published")
         val retryable = committed("reconcile-retryable")
+        val beyondLimit = committed("reconcile-beyond-limit")
         val noSource =
             maps.create(
                 MapAddress("derive", "reconcile-no-source-${UUID.randomUUID()}"),
@@ -119,6 +134,8 @@ class DeriveStateRepositoryIT {
                 "builder",
             )
         versions.commit(noSource.id, null, null, null, null, "builder")
+        val published = committed("reconcile-published")
+        val contentFailure = committed("reconcile-content-failure")
         val attempt = UUID.randomUUID()
         versions.claimForDerive(deriving.id, 1, attempt)
         versions.claimForDerive(published.id, 1, UUID.randomUUID())
@@ -130,13 +147,30 @@ class DeriveStateRepositoryIT {
         val retryAttempt = UUID.randomUUID()
         versions.claimForDerive(retryable.id, 1, retryAttempt)
         versions.acceptFailure(identity(retryable.id, retryAttempt), systemFailure("TEMPORARY"))
+        val contentAttempt = UUID.randomUUID()
+        versions.claimForDerive(contentFailure.id, 1, contentAttempt)
+        versions.acceptFailure(
+            identity(contentFailure.id, contentAttempt),
+            DerivedFailure(
+                DeriveFailureScope.CONTENT,
+                false,
+                listOf(problem(DeriveFailureScope.CONTENT, "BAD_ARCHIVE")),
+            ),
+        )
+        listOf(draft, deriving, retryable, beyondLimit, noSource, published, contentFailure)
+            .forEachIndexed { index, map -> setCreatedAt(map.id, index.toLong()) }
 
-        val candidates =
-            versions.listReconcileCandidates().filter {
-                it.mapId in setOf(draft.id, deriving.id, published.id, retryable.id, noSource.id)
+        val candidates = versions.listReconcileCandidates()
+        assertEquals(listOf(draft.id, deriving.id, retryable.id), candidates.map { it.mapId })
+        assertEquals(
+            listOf(VersionState.DRAFT, VersionState.DERIVING, VersionState.DERIVE_FAILED),
+            candidates.map { it.state },
+        )
+        assertFalse(
+            candidates.any {
+                it.mapId in setOf(beyondLimit.id, noSource.id, published.id, contentFailure.id)
             }
-        assertTrue(candidates.size <= 3)
-        assertFalse(candidates.any { it.mapId == noSource.id })
+        )
         assertNull(versions.claimForDerive(noSource.id, 1, UUID.randomUUID()))
     }
 
@@ -271,6 +305,23 @@ class DeriveStateRepositoryIT {
                     "builder",
                 )
             }
+
+    private fun setCreatedAt(mapId: UUID, offsetSeconds: Long) {
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement("UPDATE map_version SET created_at = ? WHERE map = ?")
+                .use { statement ->
+                    statement.setTimestamp(
+                        1,
+                        Timestamp.from(
+                            Instant.parse("2020-01-01T00:00:00Z").plusSeconds(offsetSeconds)
+                        ),
+                    )
+                    statement.setObject(2, mapId)
+                    statement.executeUpdate()
+                }
+        }
+    }
 
     private fun identity(mapId: UUID, attempt: UUID) =
         DeriveIdentity(mapId, 1, attempt, digest(1), CatalogReference("assets", "2026.08"))

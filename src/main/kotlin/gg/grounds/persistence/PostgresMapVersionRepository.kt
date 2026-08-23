@@ -34,6 +34,10 @@ constructor(
     private val reconcileBatchSize: Int,
 ) : MapVersionRepository {
 
+    init {
+        require(reconcileBatchSize > 0) { "reconciliation batch size must be positive" }
+    }
+
     override fun commit(
         mapId: UUID,
         sourceSha256: String?,
