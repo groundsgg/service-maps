@@ -7,6 +7,7 @@ import io.fabric8.kubernetes.api.model.batch.v1.Job
 import io.fabric8.kubernetes.client.KubernetesClientBuilder
 import io.fabric8.kubernetes.client.utils.Serialization
 import java.net.InetSocketAddress
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -100,7 +101,17 @@ class Fabric8DeriveJobGatewayTest {
         assertFalse(
             job.metadata.labels.values.any { it.contains("token") || it.contains("signed.example") }
         )
-        assertTrue(job.metadata.annotations.isNullOrEmpty())
+        assertEquals(setOf("grounds.gg/derive-contract-sha256"), job.metadata.annotations.keys)
+        assertTrue(
+            job.metadata.annotations
+                .getValue("grounds.gg/derive-contract-sha256")
+                .matches(Regex("[a-f0-9]{64}"))
+        )
+        assertFalse(
+            job.metadata.annotations.values.any {
+                it.contains("signed.example") || it.contains("token")
+            }
+        )
         assertEquals(listOf("work"), pod.volumes.map { it.name })
         assertEquals(listOf("/work"), c.volumeMounts.map { it.mountPath })
     }
@@ -161,7 +172,10 @@ class Fabric8DeriveJobGatewayTest {
                             "{\"kind\":\"Status\",\"apiVersion\":\"v1\",\"reason\":\"AlreadyExists\",\"code\":409}",
                         )
                     }
-                    "GET" -> respond(exchange, 200, requireNotNull(created))
+                    "GET" -> {
+                        val stored = kubernetesStoredJob(requireNotNull(created))
+                        respond(exchange, 200, Serialization.asJson(stored))
+                    }
                     else -> respond(exchange, 405, "")
                 }
             }
@@ -183,8 +197,7 @@ class Fabric8DeriveJobGatewayTest {
                         )
                     }
                     "GET" -> {
-                        val mismatched =
-                            Serialization.unmarshal(requireNotNull(created), Job::class.java)
+                        val mismatched = kubernetesStoredJob(requireNotNull(created))
                         mismatched.spec.template.spec.containers
                             .single()
                             .env
@@ -214,8 +227,7 @@ class Fabric8DeriveJobGatewayTest {
                         )
                     }
                     "GET" -> {
-                        val incomplete =
-                            Serialization.unmarshal(requireNotNull(created), Job::class.java)
+                        val incomplete = kubernetesStoredJob(requireNotNull(created))
                         incomplete.metadata.labels.remove("grounds.gg/attempt")
                         respond(exchange, 200, Serialization.asJson(incomplete))
                     }
@@ -225,6 +237,24 @@ class Fabric8DeriveJobGatewayTest {
             .use { client ->
                 assertThrows<IllegalArgumentException> { gateway(client.client).create(request()) }
             }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns a job with a mutated image`() {
+        assertConflictFails { stored ->
+            stored.spec.template.spec.containers.single().image =
+                "registry.example/service-maps@sha256:" + "b".repeat(64)
+        }
+    }
+
+    @Test
+    fun `create fails closed when a conflict returns a job with a mutated fingerprint`() {
+        assertConflictFails { stored ->
+            stored.metadata.annotations =
+                stored.metadata.annotations.orEmpty().toMutableMap().apply {
+                    put("grounds.gg/derive-contract-sha256", "b".repeat(64))
+                }
+        }
     }
 
     @Test
@@ -268,6 +298,16 @@ class Fabric8DeriveJobGatewayTest {
             }
     }
 
+    @Test
+    fun `coordinator rejects URL TTL shorter than thirty minutes`() {
+        assertThrows<IllegalArgumentException> { coordinator(Duration.ofSeconds(1799)) }
+    }
+
+    @Test
+    fun `coordinator accepts a thirty minute URL TTL`() {
+        coordinator(Duration.ofSeconds(1800))
+    }
+
     private fun gateway(client: io.fabric8.kubernetes.client.KubernetesClient = client()) =
         Fabric8DeriveJobGateway(client, "maps", image(), "worker", true)
 
@@ -281,6 +321,54 @@ class Fabric8DeriveJobGatewayTest {
             DeriveIdentity(UUID.fromString(mapId), 7, UUID.fromString(attempt), "a".repeat(64)),
             "{\"sourceUrl\":\"https://signed.example/?token=hidden\"}",
         )
+
+    private fun assertConflictFails(mutate: (Job) -> Unit) {
+        var created: String? = null
+        loopback { exchange, received ->
+                when (exchange.requestMethod) {
+                    "POST" -> {
+                        created = received
+                        respond(
+                            exchange,
+                            409,
+                            "{\"kind\":\"Status\",\"apiVersion\":\"v1\",\"reason\":\"AlreadyExists\",\"code\":409}",
+                        )
+                    }
+                    "GET" -> {
+                        val stored = kubernetesStoredJob(requireNotNull(created))
+                        mutate(stored)
+                        respond(exchange, 200, Serialization.asJson(stored))
+                    }
+                    else -> respond(exchange, 405, "")
+                }
+            }
+            .use { client ->
+                val failure =
+                    assertThrows<IllegalArgumentException> {
+                        gateway(client.client).create(request())
+                    }
+                assertFalse(failure.message.orEmpty().contains("signed.example"))
+            }
+    }
+
+    private fun kubernetesStoredJob(json: String): Job =
+        Serialization.unmarshal(json, Job::class.java).also { job ->
+            job.spec.selector =
+                io.fabric8.kubernetes.api.model.LabelSelector().also {
+                    it.matchLabels = mapOf("controller-uid" to "generated-controller")
+                }
+            job.spec.template.metadata.labels =
+                job.spec.template.metadata.labels.toMutableMap().apply {
+                    put("controller-uid", "generated-controller")
+                    put("job-name", job.metadata.name)
+                    put("batch.kubernetes.io/controller-uid", "generated-controller")
+                }
+            job.spec.template.spec.dnsPolicy = "ClusterFirst"
+            job.spec.template.spec.schedulerName = "default-scheduler"
+        }
+
+    private fun coordinator(urlTtl: Duration) =
+        DeriveCoordinator(unsupportedVersions(), RecordingGateway(), null, null, true, urlTtl)
 
     private fun assertQuantity(
         values: Map<String, io.fabric8.kubernetes.api.model.Quantity>,
@@ -339,4 +427,52 @@ class Fabric8DeriveJobGatewayTest {
             server.stop(0)
         }
     }
+
+    private class RecordingGateway : DeriveJobGateway {
+        override fun create(request: DeriveJobRequest) = error("unused")
+
+        override fun find(identity: DeriveIdentity): DeriveJobStatus? = error("unused")
+    }
 }
+
+private fun unsupportedVersions(): gg.grounds.domain.MapVersionRepository =
+    object : gg.grounds.domain.MapVersionRepository {
+        override fun commit(
+            mapId: UUID,
+            sourceSha256: String?,
+            sourceKey: String?,
+            parentVersion: Int?,
+            note: String?,
+            bySub: String,
+        ) = error("unused")
+
+        override fun publish(
+            mapId: UUID,
+            version: Int,
+            facts: gg.grounds.domain.BundleFacts,
+            bySub: String,
+        ) = error("unused")
+
+        override fun claimForDerive(mapId: UUID, version: Int, attempt: UUID) = error("unused")
+
+        override fun acceptSuccess(
+            identity: DeriveIdentity,
+            facts: gg.grounds.domain.DerivedFacts,
+            bySub: String,
+        ) = error("unused")
+
+        override fun acceptFailure(
+            identity: DeriveIdentity,
+            failure: gg.grounds.domain.DerivedFailure,
+        ) = error("unused")
+
+        override fun listReconcileCandidates() = error("unused")
+
+        override fun retrySystemFailure(mapId: UUID, version: Int) = error("unused")
+
+        override fun find(mapId: UUID, version: Int) = error("unused")
+
+        override fun list(mapId: UUID) = error("unused")
+
+        override fun latestPublished(mapId: UUID) = error("unused")
+    }

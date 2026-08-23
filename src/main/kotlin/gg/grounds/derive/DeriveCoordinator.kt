@@ -26,8 +26,8 @@ constructor(
     private val urlTtl: Duration,
 ) {
     init {
-        require(!enabled || urlTtl >= Duration.ofSeconds(1200)) {
-            "derive URL TTL must outlive the active Job deadline"
+        require(!enabled || urlTtl >= MINIMUM_URL_TTL) {
+            "derive URL TTL must be at least 30 minutes"
         }
     }
 
@@ -140,5 +140,9 @@ constructor(
                     catalogCandidates = requireNotNull(catalogs).candidates().take(2),
                 )
         jobs.create(DeriveJobRequest(identity, CanonicalJson.write(request).decodeToString()))
+    }
+
+    private companion object {
+        val MINIMUM_URL_TTL: Duration = Duration.ofMinutes(30)
     }
 }
