@@ -25,6 +25,15 @@ import java.util.UUID
 import javax.sql.DataSource
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
+/**
+ * Narrow transaction-boundary coordination used only by repository integration tests. Production
+ * defaults are no-ops, so callers cannot observe or control a transition through this hook.
+ */
+internal object DeriveStateRepositoryTestHooks {
+    @Volatile var beforePublicBlobWrite: () -> Unit = {}
+    @Volatile var afterDeriveResultCommit: () -> Unit = {}
+}
+
 @ApplicationScoped
 class PostgresMapVersionRepository
 @Inject
@@ -227,6 +236,7 @@ constructor(
                 recordPublicBlob(c, facts.bundleSha256, facts.sizeBytes)
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
+                DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
                 result
             } catch (e: Exception) {
                 c.rollback()
@@ -270,6 +280,7 @@ constructor(
                 )
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
+                DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
                 result
             } catch (e: Exception) {
                 c.rollback()
@@ -481,6 +492,7 @@ constructor(
     }
 
     private fun recordPublicBlob(c: Connection, digest: String, size: Long) {
+        DeriveStateRepositoryTestHooks.beforePublicBlobWrite()
         c.prepareStatement(
                 """
                 INSERT INTO map_blob (sha256, size_bytes, public)

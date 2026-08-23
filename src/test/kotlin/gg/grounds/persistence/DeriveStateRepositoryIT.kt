@@ -161,22 +161,26 @@ class DeriveStateRepositoryIT {
         val first = UUID.randomUUID()
         assertNotNull(versions.claimForDerive(map.id, 1, first))
         val executor = Executors.newFixedThreadPool(2)
-        val lock = lockVersion(map.id, 1)
+        val acceptedCommit = CountDownLatch(1)
+        val retryFinished = CountDownLatch(1)
         try {
+            DeriveStateRepositoryTestHooks.afterDeriveResultCommit = {
+                acceptedCommit.countDown()
+                check(retryFinished.await(5, TimeUnit.SECONDS))
+            }
             val accepted =
                 executor.submit<gg.grounds.domain.MapVersionRecord> {
                     versions.acceptFailure(identity(map.id, first), systemFailure("TRANSIENT"))
                 }
-            assertTrue(waitForAllToWaitOnVersionLock(listOf(accepted)))
+            assertTrue(acceptedCommit.await(5, TimeUnit.SECONDS))
             val retried =
                 executor.submit<gg.grounds.domain.MapVersionRecord> {
                     versions.retrySystemFailure(map.id, 1)
                 }
-            assertTrue(waitForAllToWaitOnVersionLock(listOf(accepted, retried)))
-            lock.commit()
+            val retry = retried.get(10, TimeUnit.SECONDS)
+            retryFinished.countDown()
 
             val failed = accepted.get(10, TimeUnit.SECONDS)
-            val retry = retried.get(10, TimeUnit.SECONDS)
             assertEquals(VersionState.DERIVE_FAILED, failed.state)
             assertEquals(first, failed.deriveAttempt)
             assertEquals(VersionState.DERIVING, retry.state)
@@ -186,7 +190,8 @@ class DeriveStateRepositoryIT {
             assertEquals(first, failed.deriveAttempt)
             assertEquals(retry, versions.find(map.id, 1))
         } finally {
-            lock.close()
+            retryFinished.countDown()
+            DeriveStateRepositoryTestHooks.afterDeriveResultCommit = {}
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
@@ -234,37 +239,46 @@ class DeriveStateRepositoryIT {
         assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
         assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
         val executor = Executors.newFixedThreadPool(2)
-        val locks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        val versionLocks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        val blobLock = lockBlobTable()
+        val reachedBlobWrite = CountDownLatch(2)
+        val bundleDigest = uniqueDigest()
         try {
+            DeriveStateRepositoryTestHooks.beforePublicBlobWrite = { reachedBlobWrite.countDown() }
             val calls =
                 listOf(
                     executor.submit<gg.grounds.domain.MapVersionRecord> {
                         versions.acceptSuccess(
                             identity(firstMap.id, firstAttempt),
-                            facts(),
+                            facts(bundleSha256 = bundleDigest),
                             "derive",
                         )
                     },
                     executor.submit<gg.grounds.domain.MapVersionRecord> {
                         versions.acceptSuccess(
                             identity(secondMap.id, secondAttempt),
-                            facts(),
+                            facts(bundleSha256 = bundleDigest),
                             "derive",
                         )
                     },
                 )
             assertTrue(waitForAllToWaitOnVersionLock(calls))
-            locks.forEach(Connection::commit)
+            versionLocks.forEach(Connection::commit)
+            assertTrue(reachedBlobWrite.await(5, TimeUnit.SECONDS))
+            assertTrue(waitForAllToWaitOnBlobLock(calls))
+            blobLock.commit()
 
             val records = calls.map { it.get(10, TimeUnit.SECONDS) }
             assertEquals(
                 listOf(VersionState.PUBLISHED, VersionState.PUBLISHED),
                 records.map { it.state },
             )
-            assertEquals(digest(3), records.first().bundleSha256)
+            assertEquals(bundleDigest, records.first().bundleSha256)
             assertEquals(records.first().sizeBytes, records.last().sizeBytes)
         } finally {
-            locks.forEach(Connection::close)
+            DeriveStateRepositoryTestHooks.beforePublicBlobWrite = {}
+            blobLock.close()
+            versionLocks.forEach(Connection::close)
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
@@ -279,15 +293,19 @@ class DeriveStateRepositoryIT {
         assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
         assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
         val executor = Executors.newFixedThreadPool(2)
-        val locks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        val versionLocks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
+        val blobLock = lockBlobTable()
+        val reachedBlobWrite = CountDownLatch(2)
+        val bundleDigest = uniqueDigest()
         try {
+            DeriveStateRepositoryTestHooks.beforePublicBlobWrite = { reachedBlobWrite.countDown() }
             val calls =
                 listOf(
                     executor.submit<Result<gg.grounds.domain.MapVersionRecord>> {
                         runCatching {
                             versions.acceptSuccess(
                                 identity(firstMap.id, firstAttempt),
-                                facts(123),
+                                facts(sizeBytes = 123, bundleSha256 = bundleDigest),
                                 "derive",
                             )
                         }
@@ -296,14 +314,17 @@ class DeriveStateRepositoryIT {
                         runCatching {
                             versions.acceptSuccess(
                                 identity(secondMap.id, secondAttempt),
-                                facts(124),
+                                facts(sizeBytes = 124, bundleSha256 = bundleDigest),
                                 "derive",
                             )
                         }
                     },
                 )
             assertTrue(waitForAllToWaitOnVersionLock(calls))
-            locks.forEach(Connection::commit)
+            versionLocks.forEach(Connection::commit)
+            assertTrue(reachedBlobWrite.await(5, TimeUnit.SECONDS))
+            assertTrue(waitForAllToWaitOnBlobLock(calls))
+            blobLock.commit()
 
             val results = calls.map { it.get(10, TimeUnit.SECONDS) }
             assertEquals(1, results.count { it.isSuccess })
@@ -313,7 +334,9 @@ class DeriveStateRepositoryIT {
             assertEquals(1, persisted.count { it.state == VersionState.PUBLISHED })
             assertEquals(1, persisted.count { it.state == VersionState.DERIVING })
         } finally {
-            locks.forEach(Connection::close)
+            DeriveStateRepositoryTestHooks.beforePublicBlobWrite = {}
+            blobLock.close()
+            versionLocks.forEach(Connection::close)
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
         }
@@ -647,6 +670,15 @@ class DeriveStateRepositoryIT {
                 }
         }
 
+    /** Blocks writes to map_blob after workers have reached the first atomic upsert. */
+    private fun lockBlobTable(): Connection =
+        dataSource.connection.also { connection ->
+            connection.autoCommit = false
+            connection.createStatement().use { statement ->
+                statement.execute("LOCK TABLE map_blob IN SHARE ROW EXCLUSIVE MODE")
+            }
+        }
+
     private fun waitForAllToWaitOnVersionLock(futures: List<Future<*>>): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (System.nanoTime() < deadline) {
@@ -656,7 +688,21 @@ class DeriveStateRepositoryIT {
         return futures.all { !it.isDone } && versionLockWaiters() >= futures.size
     }
 
-    private fun versionLockWaiters(): Int =
+    private fun versionLockWaiters(): Int = lockWaiters("map_version")
+
+    private fun waitForAllToWaitOnBlobLock(futures: List<Future<*>>): Boolean =
+        waitForAllToWaitOnLock(futures, "map_blob")
+
+    private fun waitForAllToWaitOnLock(futures: List<Future<*>>, table: String): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            if (futures.all { !it.isDone } && lockWaiters(table) >= futures.size) return true
+            Thread.sleep(10)
+        }
+        return futures.all { !it.isDone } && lockWaiters(table) >= futures.size
+    }
+
+    private fun lockWaiters(table: String): Int =
         dataSource.connection.use { connection ->
             connection
                 .prepareStatement(
@@ -665,11 +711,12 @@ class DeriveStateRepositoryIT {
                       FROM pg_stat_activity
                      WHERE datname = current_database()
                        AND wait_event_type = 'Lock'
-                       AND query LIKE '%map_version%'
+                       AND query LIKE ?
                     """
                         .trimIndent()
                 )
                 .use { statement ->
+                    statement.setString(1, "%$table%")
                     statement.executeQuery().use { result ->
                         check(result.next())
                         result.getInt(1)
@@ -731,9 +778,9 @@ class DeriveStateRepositoryIT {
     private fun identity(mapId: UUID, attempt: UUID) =
         DeriveIdentity(mapId, 1, attempt, digest(1), CatalogReference("assets", "2026.08"))
 
-    private fun facts(sizeBytes: Long = 123) =
+    private fun facts(sizeBytes: Long = 123, bundleSha256: String = digest(3)) =
         DerivedFacts(
-            bundleSha256 = digest(3),
+            bundleSha256 = bundleSha256,
             manifestSha256 = digest(4),
             sizeBytes = sizeBytes,
             presentChunks = 2,
@@ -767,4 +814,6 @@ class DeriveStateRepositoryIT {
         DeriveProblem(scope, null, code, null, code.lowercase())
 
     private fun digest(value: Int) = "%064x".format(value)
+
+    private fun uniqueDigest() = UUID.randomUUID().toString().replace("-", "").padStart(64, '0')
 }
