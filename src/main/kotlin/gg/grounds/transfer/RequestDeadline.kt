@@ -1,7 +1,6 @@
 package gg.grounds.transfer
 
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -17,10 +16,7 @@ internal object RequestDeadlineScheduler {
             }
             .apply { removeOnCancelPolicy = true }
 
-    val callbacks: Executor =
-        Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "grounds-http-timeout-callback").apply { isDaemon = true }
-        }
+    val callbacks: Executor = Executor { runnable -> Thread.ofVirtual().start(runnable) }
 }
 
 /** A cancellable request-wide deadline backed by shared daemon infrastructure. */
@@ -30,6 +26,7 @@ class RequestDeadline(
     private val onExpire: () -> Unit,
     private val nanoTime: () -> Long = System::nanoTime,
     private val callbackExecutor: Executor = RequestDeadlineScheduler.callbacks,
+    private val afterCompletionTransition: () -> Unit = {},
 ) : AutoCloseable {
     private val timeoutMillis = timeoutMillis.also { require(it > 0) }
     private val deadlineNanos = nanoTime() + TimeUnit.MILLISECONDS.toNanos(this.timeoutMillis)
@@ -55,6 +52,11 @@ class RequestDeadline(
                 State.EXPIRED -> throw RequestDeadlineExceeded()
                 State.ACTIVE ->
                     if (state.compareAndSet(State.ACTIVE, State.COMPLETED)) {
+                        afterCompletionTransition()
+                        if (nanoTime() >= deadlineNanos) {
+                            expireCompleted()
+                            throw RequestDeadlineExceeded()
+                        }
                         task.get()?.cancel(false)
                         return
                     }
@@ -68,9 +70,19 @@ class RequestDeadline(
 
     private fun expire() {
         if (state.compareAndSet(State.ACTIVE, State.EXPIRED)) {
-            task.get()?.cancel(false)
-            callbackExecutor.execute(onExpire)
+            dispatchExpiry()
         }
+    }
+
+    private fun expireCompleted() {
+        if (state.compareAndSet(State.COMPLETED, State.EXPIRED)) {
+            dispatchExpiry()
+        }
+    }
+
+    private fun dispatchExpiry() {
+        task.get()?.cancel(false)
+        callbackExecutor.execute(onExpire)
     }
 
     private enum class State {
