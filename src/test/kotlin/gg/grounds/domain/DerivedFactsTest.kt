@@ -8,6 +8,14 @@ import org.junit.jupiter.api.assertThrows
 class DerivedFactsTest {
 
     @TestFactory
+    fun `canonical no-scene facts are accepted`() =
+        listOf(
+            DynamicTest.dynamicTest("NONE with no scene facts") {
+                assertDoesNotThrow { facts(noneScene()) }
+            }
+        )
+
+    @TestFactory
     fun `none scene rejects each independently populated field`() =
         listOf(
                 "schema version" to noneScene().copy(schemaVersion = "1"),

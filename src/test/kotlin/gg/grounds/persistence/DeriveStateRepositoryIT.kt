@@ -39,7 +39,7 @@ import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertThrows
 
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
+@QuarkusTestResource(value = PostgresResource::class, restrictToAnnotatedClass = true)
 @TestMethodOrder(OrderAnnotation::class)
 class DeriveStateRepositoryIT {
 
@@ -120,33 +120,73 @@ class DeriveStateRepositoryIT {
     @Test
     @Order(1)
     fun `reconciliation returns ordered claimable and retryable candidates within its configured batch`() {
-        val draft = committed("reconcile-draft")
-        val deriving = committed("reconcile-deriving")
-        val retryable = committed("reconcile-retryable")
-        val beyondLimit = committed("reconcile-beyond-limit")
-        val noSource =
+        val (lowerMap, contentFailure, nonRetryableSystem, retryableMap, beyondLimitMap) =
+            List(5) { committed("reconcile-tie-$it") }.sortedBy { it.id.toString() }
+        val lowerDraft = requireNotNull(versions.find(lowerMap.id, 1))
+        val lowerDeriving =
+            versions.commit(
+                lowerMap.id,
+                digest(1),
+                "tmp/uploads/lower-v2.tar.zst",
+                null,
+                null,
+                "builder",
+            )
+        val lowerAttempt = UUID.randomUUID()
+        versions.claimForDerive(lowerMap.id, lowerDeriving.version, lowerAttempt)
+        val higherRetryableAttempt = UUID.randomUUID()
+        versions.claimForDerive(retryableMap.id, 1, higherRetryableAttempt)
+        versions.acceptFailure(
+            DeriveIdentity(
+                retryableMap.id,
+                1,
+                higherRetryableAttempt,
+                digest(1),
+                CatalogReference("assets", "2026.08"),
+            ),
+            systemFailure("TEMPORARY"),
+        )
+        val beyondLimit =
+            versions.commit(
+                beyondLimitMap.id,
+                digest(1),
+                "tmp/uploads/higher-v2.tar.zst",
+                null,
+                null,
+                "builder",
+            )
+        val missingSourceSha =
             maps.create(
-                MapAddress("derive", "reconcile-no-source-${UUID.randomUUID()}"),
-                "reconcile-no-source",
+                MapAddress("derive", "reconcile-no-source-sha-${UUID.randomUUID()}"),
+                "reconcile-no-source-sha",
                 MapKind.ARENA,
                 false,
                 MapTrust.FIRST_PARTY,
                 "builder",
             )
-        versions.commit(noSource.id, null, null, null, null, "builder")
-        val published = committed("reconcile-published")
-        val contentFailure = committed("reconcile-content-failure")
-        val attempt = UUID.randomUUID()
-        versions.claimForDerive(deriving.id, 1, attempt)
-        versions.claimForDerive(published.id, 1, UUID.randomUUID())
-        versions.acceptSuccess(
-            identity(published.id, requireNotNull(versions.find(published.id, 1)?.deriveAttempt)),
-            facts(),
-            "derive",
+        versions.commit(
+            missingSourceSha.id,
+            null,
+            "tmp/uploads/source.tar.zst",
+            null,
+            null,
+            "builder",
         )
-        val retryAttempt = UUID.randomUUID()
-        versions.claimForDerive(retryable.id, 1, retryAttempt)
-        versions.acceptFailure(identity(retryable.id, retryAttempt), systemFailure("TEMPORARY"))
+        val missingSourceKey =
+            maps.create(
+                MapAddress("derive", "reconcile-no-source-key-${UUID.randomUUID()}"),
+                "reconcile-no-source-key",
+                MapKind.ARENA,
+                false,
+                MapTrust.FIRST_PARTY,
+                "builder",
+            )
+        versions.commit(missingSourceKey.id, digest(1), null, null, null, "builder")
+        val published = committed("reconcile-published")
+        val missingAttempt = committed("reconcile-missing-attempt")
+        val publishedAttempt = UUID.randomUUID()
+        versions.claimForDerive(published.id, 1, publishedAttempt)
+        versions.acceptSuccess(identity(published.id, publishedAttempt), facts(), "derive")
         val contentAttempt = UUID.randomUUID()
         versions.claimForDerive(contentFailure.id, 1, contentAttempt)
         versions.acceptFailure(
@@ -157,21 +197,56 @@ class DeriveStateRepositoryIT {
                 listOf(problem(DeriveFailureScope.CONTENT, "BAD_ARCHIVE")),
             ),
         )
-        listOf(draft, deriving, retryable, beyondLimit, noSource, published, contentFailure)
-            .forEachIndexed { index, map -> setCreatedAt(map.id, index.toLong()) }
+        val missingAttemptId = UUID.randomUUID()
+        versions.claimForDerive(missingAttempt.id, 1, missingAttemptId)
+        clearDeriveAttempt(missingAttempt.id, 1)
+        val nonRetryableAttempt = UUID.randomUUID()
+        versions.claimForDerive(nonRetryableSystem.id, 1, nonRetryableAttempt)
+        versions.acceptFailure(
+            identity(nonRetryableSystem.id, nonRetryableAttempt),
+            systemFailure("TEMPORARY"),
+        )
+        setRetryable(nonRetryableSystem.id, 1, false)
+
+        setCreatedAt(missingSourceSha.id, 1, 0)
+        setCreatedAt(missingSourceKey.id, 1, 0)
+        setCreatedAt(missingAttempt.id, 1, 1)
+        setCreatedAt(lowerMap.id, lowerDraft.version, 10)
+        setCreatedAt(lowerMap.id, lowerDeriving.version, 10)
+        setCreatedAt(contentFailure.id, 1, 10)
+        setCreatedAt(nonRetryableSystem.id, 1, 10)
+        setCreatedAt(retryableMap.id, 1, 10)
+        setCreatedAt(beyondLimitMap.id, beyondLimit.version, 10)
+        setCreatedAt(published.id, 1, 11)
 
         val candidates = versions.listReconcileCandidates()
-        assertEquals(listOf(draft.id, deriving.id, retryable.id), candidates.map { it.mapId })
+        assertEquals(
+            listOf(
+                lowerMap.id to lowerDraft.version,
+                lowerMap.id to lowerDeriving.version,
+                retryableMap.id to 1,
+            ),
+            candidates.map { it.mapId to it.version },
+        )
         assertEquals(
             listOf(VersionState.DRAFT, VersionState.DERIVING, VersionState.DERIVE_FAILED),
             candidates.map { it.state },
         )
         assertFalse(
             candidates.any {
-                it.mapId in setOf(beyondLimit.id, noSource.id, published.id, contentFailure.id)
+                it.mapId in
+                    setOf(
+                        missingSourceSha.id,
+                        missingSourceKey.id,
+                        missingAttempt.id,
+                        contentFailure.id,
+                        nonRetryableSystem.id,
+                        published.id,
+                    ) || (it.mapId == beyondLimitMap.id && it.version == beyondLimit.version)
             }
         )
-        assertNull(versions.claimForDerive(noSource.id, 1, UUID.randomUUID()))
+        assertNull(versions.claimForDerive(missingSourceSha.id, 1, UUID.randomUUID()))
+        assertNull(versions.claimForDerive(missingSourceKey.id, 1, UUID.randomUUID()))
     }
 
     @Test
@@ -306,10 +381,12 @@ class DeriveStateRepositoryIT {
                 )
             }
 
-    private fun setCreatedAt(mapId: UUID, offsetSeconds: Long) {
+    private fun setCreatedAt(mapId: UUID, version: Int, offsetSeconds: Long) {
         dataSource.connection.use { connection ->
             connection
-                .prepareStatement("UPDATE map_version SET created_at = ? WHERE map = ?")
+                .prepareStatement(
+                    "UPDATE map_version SET created_at = ? WHERE map = ? AND version = ?"
+                )
                 .use { statement ->
                     statement.setTimestamp(
                         1,
@@ -318,6 +395,38 @@ class DeriveStateRepositoryIT {
                         ),
                     )
                     statement.setObject(2, mapId)
+                    statement.setInt(3, version)
+                    statement.executeUpdate()
+                }
+        }
+    }
+
+    private fun clearDeriveAttempt(mapId: UUID, version: Int) =
+        updateVersion(mapId, version, "derive_attempt = NULL")
+
+    private fun setRetryable(mapId: UUID, version: Int, retryable: Boolean) =
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    "UPDATE map_version SET derive_retryable = ? WHERE map = ? AND version = ?"
+                )
+                .use { statement ->
+                    statement.setBoolean(1, retryable)
+                    statement.setObject(2, mapId)
+                    statement.setInt(3, version)
+                    statement.executeUpdate()
+                }
+        }
+
+    private fun updateVersion(mapId: UUID, version: Int, assignment: String) {
+        dataSource.connection.use { connection ->
+            connection
+                .prepareStatement(
+                    "UPDATE map_version SET $assignment WHERE map = ? AND version = ?"
+                )
+                .use { statement ->
+                    statement.setObject(1, mapId)
+                    statement.setInt(2, version)
                     statement.executeUpdate()
                 }
         }
