@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -19,6 +20,33 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class DeriveWorkerMainIT {
+    @Test
+    fun `catalog connection refusal is acknowledged as retryable system failure`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        workerServer(source) { server, uploads ->
+            val refusedPort = ServerSocket(0).use { it.localPort }
+            val candidate =
+                AssetCatalogCandidate(
+                    "stable",
+                    "grounds:assets",
+                    "1",
+                    "coord",
+                    "catalog.jar",
+                    URI("http://127.0.0.1:$refusedPort/catalog"),
+                    digest(catalog),
+                    catalog.size.toLong(),
+                )
+
+            run(server, request(server, digest(source)).copy(catalogCandidates = listOf(candidate)))
+
+            assertEquals(listOf("/result"), uploads.map { it.first })
+            val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("SYSTEM", marker.scope.name)
+            assertTrue(marker.retryable)
+        }
+    }
+
     @Test
     fun `valid generated catalog resolves grounds actions and uploads canonical scene artifacts`() {
         val catalog = generatedCatalogJar()

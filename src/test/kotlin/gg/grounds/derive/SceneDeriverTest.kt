@@ -1,6 +1,7 @@
 package gg.grounds.derive
 
 import com.github.luben.zstd.ZstdOutputStream
+import gg.grounds.catalog.CatalogContentException
 import gg.grounds.catalog.CatalogTransferException
 import gg.grounds.scene.format.ActionCatalog
 import gg.grounds.scene.format.AssetCatalog
@@ -99,10 +100,12 @@ class SceneDeriverTest {
     }
 
     @Test
-    fun `catalog content becomes a structured nonretryable scene problem`() {
+    fun `catalog content exception becomes a structured nonretryable scene problem`() {
         val result =
             SceneDeriver(
-                    SceneCatalogResolver { throw IllegalArgumentException("catalog malformed") }
+                    SceneCatalogResolver {
+                        throw CatalogContentException("catalog identity does not match")
+                    }
                 )
                 .derive(
                     ByteArrayInputStream(
@@ -115,6 +118,11 @@ class SceneDeriverTest {
         val invalid = assertInstanceOf(SceneDerivationOutcome.Invalid::class.java, result)
         assertEquals("CONTENT", invalid.problems.single().scope.name)
         assertEquals("SCENE", invalid.problems.single().code)
+        assertEquals("scene.json", invalid.problems.single().path)
+        assertEquals(
+            "scene catalog could not be resolved: catalog identity does not match",
+            invalid.problems.single().message,
+        )
     }
 
     @Test
