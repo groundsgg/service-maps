@@ -9,6 +9,8 @@ import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.jar.JarEntry
+import java.util.jar.JarOutputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -17,6 +19,235 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class DeriveWorkerMainIT {
+    @Test
+    fun `valid generated catalog resolves grounds actions and uploads canonical scene artifacts`() {
+        val catalog = generatedCatalogJar()
+        val source =
+            archive(
+                mapOf(
+                    "scene.json" to
+                        """{"schemaVersion":1,"id":"grounds:scene","metadata":{"name":"Scene","description":null,"tags":[]},"catalogs":{"assets":{"id":"grounds:assets","version":"1"},"actions":{"id":"grounds:actions","version":"1"}},"groups":[],"elements":[]}"""
+                            .encodeToByteArray()
+                )
+            )
+        catalogWorkerServer(source, catalog) { server, uploads, requests ->
+            val base = "http://127.0.0.1:${server.address.port}"
+            val request =
+                request(server, digest(source))
+                    .copy(
+                        catalogCandidates =
+                            listOf(
+                                AssetCatalogCandidate(
+                                    "stable",
+                                    "grounds:assets",
+                                    "1",
+                                    "gg.grounds:resourcepacks-catalog:1",
+                                    "catalog.jar",
+                                    URI("$base/catalog?signature=catalog-secret"),
+                                    digest(catalog),
+                                    catalog.size.toLong(),
+                                )
+                            )
+                    )
+
+            run(server, request)
+
+            assertEquals(listOf("/source", "/catalog", "/bundle", "/manifest", "/result"), requests)
+            assertEquals(listOf("/bundle", "/manifest", "/result"), uploads.map { it.first })
+            val result = CanonicalJson.readResult(uploads.last().second) as DeriveSuccess
+            assertEquals("grounds:assets", result.scene.assetCatalog?.id)
+            assertEquals("1", result.scene.assetCatalog?.version)
+            assertEquals("grounds:actions", result.scene.actionCatalog?.id)
+            assertEquals("1", result.scene.actionCatalog?.version)
+            assertTrue(result.scene.present)
+        }
+    }
+
+    @Test
+    fun `catalog content failures produce only a nonretryable marker`() {
+        val source =
+            archive(
+                mapOf(
+                    "scene.json" to
+                        """{"schemaVersion":1,"id":"grounds:scene","metadata":{"name":"Scene","description":null,"tags":[]},"catalogs":{"assets":{"id":"grounds:assets","version":"1"},"actions":{"id":"grounds:actions","version":"1"}},"groups":[],"elements":[]}"""
+                            .encodeToByteArray()
+                )
+            )
+        catalogWorkerServer(source, "hostile-not-a-jar".encodeToByteArray()) { server, uploads, _ ->
+            val bad = "hostile-not-a-jar".encodeToByteArray()
+            val request =
+                request(server, digest(source))
+                    .copy(
+                        catalogCandidates =
+                            listOf(
+                                AssetCatalogCandidate(
+                                    "stable",
+                                    "grounds:assets",
+                                    "1",
+                                    "coord",
+                                    "catalog.jar",
+                                    URI("http://127.0.0.1:${server.address.port}/catalog"),
+                                    digest(bad),
+                                    bad.size.toLong(),
+                                )
+                            )
+                    )
+
+            run(server, request)
+
+            assertEquals(listOf("/result"), uploads.map { it.first })
+            val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("CONTENT", marker.scope.name)
+            assertFalse(marker.retryable)
+        }
+    }
+
+    @Test
+    fun `catalog manifest size and digest mismatches are nonretryable content`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        catalogWorkerServer(source, catalog) { server, uploads, _ ->
+            val base = "http://127.0.0.1:${server.address.port}"
+            listOf(
+                    "size" to
+                        { candidate: AssetCatalogCandidate ->
+                            candidate.copy(size = candidate.size + 1)
+                        },
+                    "digest" to
+                        { candidate: AssetCatalogCandidate ->
+                            candidate.copy(sha256 = "0".repeat(64))
+                        },
+                )
+                .forEach { (_, corrupt) ->
+                    uploads.clear()
+                    val candidate =
+                        AssetCatalogCandidate(
+                            "stable",
+                            "grounds:assets",
+                            "1",
+                            "coord",
+                            "catalog.jar",
+                            URI("$base/catalog"),
+                            digest(catalog),
+                            catalog.size.toLong(),
+                        )
+                    run(
+                        server,
+                        request(server, digest(source))
+                            .copy(catalogCandidates = listOf(corrupt(candidate))),
+                    )
+                    val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                    assertEquals("CONTENT", marker.scope.name)
+                    assertFalse(marker.retryable)
+                }
+        }
+    }
+
+    @Test
+    fun `catalog status and redirect failures are acknowledged retryable system markers`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        listOf(503, 302).forEach { status ->
+            catalogWorkerServer(source, catalog, catalogStatus = status) { server, uploads, requests
+                ->
+                val candidate =
+                    AssetCatalogCandidate(
+                        "stable",
+                        "grounds:assets",
+                        "1",
+                        "coord",
+                        "catalog.jar",
+                        URI("http://127.0.0.1:${server.address.port}/catalog"),
+                        digest(catalog),
+                        catalog.size.toLong(),
+                    )
+                run(
+                    server,
+                    request(server, digest(source)).copy(catalogCandidates = listOf(candidate)),
+                )
+
+                assertEquals(listOf("/source", "/catalog", "/result"), requests)
+                val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                assertEquals("SYSTEM", marker.scope.name)
+                assertTrue(marker.retryable)
+            }
+        }
+    }
+
+    @Test
+    fun `zero duplicate and nonexact catalog selections are nonretryable content`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        catalogWorkerServer(source, catalog) { server, uploads, requests ->
+            val candidate =
+                AssetCatalogCandidate(
+                    "stable",
+                    "grounds:assets",
+                    "1",
+                    "coord",
+                    "catalog.jar",
+                    URI("http://127.0.0.1:${server.address.port}/catalog"),
+                    digest(catalog),
+                    catalog.size.toLong(),
+                )
+            listOf(
+                    emptyList(),
+                    listOf(candidate, candidate.copy(channel = "edge")),
+                    listOf(candidate.copy(version = "2")),
+                )
+                .forEach { candidates ->
+                    uploads.clear()
+                    requests.clear()
+                    run(
+                        server,
+                        request(server, digest(source)).copy(catalogCandidates = candidates),
+                    )
+                    assertEquals(listOf("/source", "/result"), requests)
+                    val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                    assertEquals("CONTENT", marker.scope.name)
+                    assertFalse(marker.retryable)
+                }
+        }
+    }
+
+    @Test
+    fun `unsupported action namespace and action catalog mismatch are nonretryable content`() {
+        val catalog = generatedCatalogJar()
+        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
+        catalogWorkerServer(source, catalog) { server, uploads, _ ->
+            val candidate =
+                AssetCatalogCandidate(
+                    "stable",
+                    "grounds:assets",
+                    "1",
+                    "coord",
+                    "catalog.jar",
+                    URI("http://127.0.0.1:${server.address.port}/catalog"),
+                    digest(catalog),
+                    catalog.size.toLong(),
+                )
+            listOf(
+                    validGroundsScene.replace("grounds:actions", "other:actions"),
+                    validGroundsScene.replace(
+                        "\"version\":\"1\"}},\"groups\"",
+                        "\"version\":\"2\"}},\"groups\"",
+                    ),
+                )
+                .forEach { scene ->
+                    uploads.clear()
+                    val altered = archive(mapOf("scene.json" to scene.encodeToByteArray()))
+                    run(
+                        server,
+                        request(server, digest(altered)).copy(catalogCandidates = listOf(candidate)),
+                    )
+                    assertEquals(listOf("/result"), uploads.map { it.first })
+                    val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+                    assertEquals("CONTENT", marker.scope.name)
+                    assertFalse(marker.retryable)
+                }
+        }
+    }
+
     @Test
     fun `reports a declared source compressed limit as nonretryable content`() =
         workerServer(byteArrayOf(1, 2)) { server, uploads ->
@@ -504,6 +735,40 @@ class DeriveWorkerMainIT {
         }
     }
 
+    private fun catalogWorkerServer(
+        source: ByteArray,
+        catalog: ByteArray,
+        catalogStatus: Int = 200,
+        block: (HttpServer, MutableList<Pair<String, ByteArray>>, MutableList<String>) -> Unit,
+    ) {
+        val uploads = mutableListOf<Pair<String, ByteArray>>()
+        val requests = mutableListOf<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.createContext("/source") { exchange ->
+                requests += "/source"
+                respond(exchange, 200, source)
+            }
+            server.createContext("/catalog") { exchange ->
+                requests += "/catalog"
+                if (catalogStatus in 300..399)
+                    exchange.responseHeaders.add("Location", "/redirect-target")
+                respond(exchange, catalogStatus, catalog)
+            }
+            listOf("/bundle", "/manifest", "/result").forEach { path ->
+                server.createContext(path) { exchange ->
+                    requests += path
+                    uploads += path to exchange.requestBody.readBytes()
+                    respond(exchange, 200, ByteArray(0))
+                }
+            }
+            server.start()
+            block(server, uploads, requests)
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun run(
         server: HttpServer,
         request: DeriveRequest,
@@ -584,6 +849,31 @@ class DeriveWorkerMainIT {
 
     private fun digest(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun generatedCatalogJar(): ByteArray {
+        val owner =
+            requireNotNull(
+                    javaClass.classLoader.getResourceAsStream(
+                        "gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class"
+                    )
+                )
+                .use { it.readBytes() }
+        return ByteArrayOutputStream().use { output ->
+            JarOutputStream(output).use { jar ->
+                jar.putNextEntry(
+                    JarEntry("gg/grounds/resourcepacks/catalog/GroundsAssetCatalog.class")
+                )
+                jar.write(owner)
+                jar.closeEntry()
+            }
+            output.toByteArray()
+        }
+    }
+
+    private companion object {
+        const val validGroundsScene =
+            """{"schemaVersion":1,"id":"grounds:scene","metadata":{"name":"Scene","description":null,"tags":[]},"catalogs":{"assets":{"id":"grounds:assets","version":"1"},"actions":{"id":"grounds:actions","version":"1"}},"groups":[],"elements":[]}"""
+    }
 
     private fun respond(exchange: HttpExchange, status: Int, body: ByteArray) {
         exchange.sendResponseHeaders(status, body.size.toLong())

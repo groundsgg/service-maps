@@ -1,6 +1,7 @@
 package gg.grounds.derive
 
 import com.github.luben.zstd.ZstdOutputStream
+import gg.grounds.catalog.CatalogTransferException
 import gg.grounds.scene.format.ActionCatalog
 import gg.grounds.scene.format.AssetCatalog
 import gg.grounds.scene.format.CatalogId
@@ -76,6 +77,44 @@ class SceneDeriverTest {
                 )
         val failure = assertInstanceOf(SceneDerivationOutcome.Invalid::class.java, result)
         assertEquals("CONTENT", failure.problems.single().scope.name)
+    }
+
+    @Test
+    fun `catalog transfer escapes to the worker system boundary`() {
+        val failure =
+            assertThrows(CatalogTransferException::class.java) {
+                SceneDeriver(
+                        SceneCatalogResolver { throw CatalogTransferException("catalog offline") }
+                    )
+                    .derive(
+                        ByteArrayInputStream(
+                            archive(mapOf("scene.json" to validScene.encodeToByteArray()))
+                        ),
+                        "a".repeat(64),
+                        Files.createTempDirectory("derive"),
+                    )
+            }
+
+        assertEquals("catalog offline", failure.message)
+    }
+
+    @Test
+    fun `catalog content becomes a structured nonretryable scene problem`() {
+        val result =
+            SceneDeriver(
+                    SceneCatalogResolver { throw IllegalArgumentException("catalog malformed") }
+                )
+                .derive(
+                    ByteArrayInputStream(
+                        archive(mapOf("scene.json" to validScene.encodeToByteArray()))
+                    ),
+                    "a".repeat(64),
+                    Files.createTempDirectory("derive"),
+                )
+
+        val invalid = assertInstanceOf(SceneDerivationOutcome.Invalid::class.java, result)
+        assertEquals("CONTENT", invalid.problems.single().scope.name)
+        assertEquals("SCENE", invalid.problems.single().code)
     }
 
     @Test
