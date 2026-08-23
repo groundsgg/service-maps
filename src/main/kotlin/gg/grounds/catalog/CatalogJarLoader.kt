@@ -2,6 +2,9 @@ package gg.grounds.catalog
 
 import gg.grounds.derive.AssetCatalogCandidate
 import gg.grounds.scene.format.AssetCatalog
+import gg.grounds.transfer.RequestDeadline
+import gg.grounds.transfer.RequestDeadlineExceeded
+import gg.grounds.transfer.RequestDeadlineScheduler
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.InetAddress
@@ -11,6 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.concurrent.ScheduledExecutorService
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 
@@ -29,6 +33,8 @@ class CatalogJarLoader(
     private val maxEntries: Int = MAX_ENTRIES,
     private val maxEntryExpandedBytes: Long = MAX_ENTRY_EXPANDED_BYTES,
     private val maxExpandedBytes: Long = MAX_EXPANDED_BYTES,
+    private val requestDeadlineMillis: Long = REQUEST_DEADLINE_MS,
+    private val deadlineScheduler: ScheduledExecutorService = RequestDeadlineScheduler.shared,
     internal val deleteJar: (Path) -> Unit = { Files.deleteIfExists(it) },
     internal val beforeLoad: () -> Unit = {},
 ) : AutoCloseable {
@@ -37,6 +43,7 @@ class CatalogJarLoader(
         require(maxEntries > 0)
         require(maxEntryExpandedBytes > 0)
         require(maxExpandedBytes >= maxEntryExpandedBytes)
+        require(requestDeadlineMillis > 0)
     }
 
     fun load(candidate: AssetCatalogCandidate): AssetCatalog {
@@ -97,52 +104,74 @@ class CatalogJarLoader(
                 .getOrDefault(false)
 
     private fun download(candidate: AssetCatalogCandidate): ByteArray {
-        val connection =
-            candidate.uri.toURL().openConnection() as? HttpURLConnection
-                ?: throw CatalogContentException("Catalog URL is not HTTP.")
-        connection.instanceFollowRedirects = false
-        connection.connectTimeout = 5_000
-        connection.readTimeout = 5_000
+        var connection: HttpURLConnection? = null
         try {
-            if (connection.responseCode !in 200..299)
-                throw CatalogTransferException(
-                    "Catalog download failed (${connection.responseCode})."
-                )
-            if (
-                connection.contentLengthLong >= 0 && connection.contentLengthLong != candidate.size
-            ) {
-                throw CatalogContentException("Catalog response size does not match manifest.")
-            }
-            val bytes = ByteArrayOutputStream(candidate.size.toInt())
-            try {
-                connection.inputStream.use { input ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    var received = 0L
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        received += count
-                        if (received > candidate.size || received > maxCatalogBytes) {
-                            throw CatalogContentException("Catalog response exceeds manifest size.")
-                        }
-                        bytes.write(buffer, 0, count)
-                    }
+            connection =
+                candidate.uri.toURL().openConnection() as? HttpURLConnection
+                    ?: throw CatalogTransferException("Catalog URL is not HTTP.")
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = TIMEOUT_MS
+            connection.readTimeout = TIMEOUT_MS
+            RequestDeadline(requestDeadlineMillis, deadlineScheduler, connection::disconnect).use {
+                deadline ->
+                if (connection.responseCode !in 200..299)
+                    throw CatalogTransferException(
+                        "Catalog download failed (${connection.responseCode})."
+                    )
+                if (
+                    connection.contentLengthLong >= 0 &&
+                        connection.contentLengthLong != candidate.size
+                ) {
+                    throw CatalogContentException("Catalog response size does not match manifest.")
                 }
-            } catch (failure: CatalogContentException) {
-                throw failure
-            } catch (failure: Exception) {
-                throw CatalogTransferException("Catalog transfer failed.", failure)
+                val bytes = ByteArrayOutputStream(candidate.size.toInt())
+                try {
+                    connection.inputStream.use { input ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var received = 0L
+                        while (true) {
+                            deadline.check()
+                            val count = input.read(buffer)
+                            if (count < 0) {
+                                deadline.check()
+                                break
+                            }
+                            received += count
+                            if (received > candidate.size || received > maxCatalogBytes) {
+                                throw CatalogContentException(
+                                    "Catalog response exceeds manifest size."
+                                )
+                            }
+                            bytes.write(buffer, 0, count)
+                            deadline.check()
+                        }
+                    }
+                } catch (failure: CatalogContentException) {
+                    throw failure
+                } catch (failure: RequestDeadlineExceeded) {
+                    throw failure
+                } catch (failure: Exception) {
+                    throw CatalogTransferException("Catalog transfer failed.", failure)
+                }
+                val result = bytes.toByteArray()
+                if (result.size.toLong() != candidate.size) {
+                    throw CatalogContentException("Catalog response size does not match manifest.")
+                }
+                if (sha256(result) != candidate.sha256) {
+                    throw CatalogContentException("Catalog digest does not match manifest.")
+                }
+                return result
             }
-            val result = bytes.toByteArray()
-            if (result.size.toLong() != candidate.size) {
-                throw CatalogContentException("Catalog response size does not match manifest.")
-            }
-            if (sha256(result) != candidate.sha256) {
-                throw CatalogContentException("Catalog digest does not match manifest.")
-            }
-            return result
+        } catch (failure: CatalogContentException) {
+            throw failure
+        } catch (failure: CatalogTransferException) {
+            throw failure
+        } catch (failure: RequestDeadlineExceeded) {
+            throw CatalogTransferException(failure.message!!, failure)
+        } catch (failure: Exception) {
+            throw CatalogTransferException("Catalog transfer failed.", failure)
         } finally {
-            connection.disconnect()
+            connection?.disconnect()
         }
     }
 
@@ -275,5 +304,7 @@ class CatalogJarLoader(
         const val UNIX_FILE_TYPE_MASK = 0xF000
         const val UNIX_REGULAR = 0x8000
         const val UNIX_DIRECTORY = 0x4000
+        const val TIMEOUT_MS = 5_000
+        const val REQUEST_DEADLINE_MS = 10 * 60 * 1_000L
     }
 }

@@ -6,6 +6,7 @@ import gg.grounds.scene.format.AssetCatalog
 import gg.grounds.scene.format.CatalogId
 import gg.grounds.scene.format.CatalogVersionRange
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -17,9 +18,51 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class CatalogJarLoaderTest {
+    @Test
+    fun `classifies catalog connection refusal as a transfer failure`() {
+        val bytes = catalogJar()
+        val port = ServerSocket(0).use { it.localPort }
+
+        CatalogJarLoader(Files.createTempDirectory("catalog-loader"), allowLoopbackHttp = true)
+            .use { loader ->
+                assertThrows(CatalogTransferException::class.java) {
+                    loader.load(candidate(URI("http://127.0.0.1:$port/catalog.jar"), bytes))
+                }
+            }
+    }
+
+    @Test
+    fun `classifies a catalog drip deadline as a transfer failure`() {
+        val bytes = catalogJar()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/catalog.jar") { exchange ->
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.write(bytes.copyOfRange(0, 1))
+            exchange.responseBody.flush()
+            Thread.sleep(100)
+            exchange.responseBody.close()
+        }
+        server.start()
+        try {
+            val failure =
+                assertThrows(CatalogTransferException::class.java) {
+                    CatalogJarLoader(
+                            Files.createTempDirectory("catalog-loader"),
+                            allowLoopbackHttp = true,
+                            requestDeadlineMillis = 25,
+                        )
+                        .use { it.load(candidate(server, bytes)) }
+                }
+            assertTrue(failure.message!!.contains("deadline"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun `loads a standard catalog jar from an explicit loopback test server and cleans it up`() {
         val jar = catalogJar()

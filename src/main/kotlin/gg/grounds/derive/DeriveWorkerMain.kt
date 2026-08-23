@@ -18,7 +18,12 @@ object DeriveWorkerMain {
         exitProcess(run(args))
     }
 
-    internal fun run(args: Array<String>): Int {
+    internal fun run(args: Array<String>): Int = run(args) { WorkerHttpTransfer(it) }
+
+    internal fun run(
+        args: Array<String>,
+        transferFactory: (allowLoopbackHttp: Boolean) -> WorkerHttpTransfer,
+    ): Int {
         val options =
             try {
                 options(args)
@@ -31,7 +36,7 @@ object DeriveWorkerMain {
             } catch (failure: Exception) {
                 return 2
             }
-        val transfer = WorkerHttpTransfer(options.allowLoopbackHttp)
+        val transfer = transferFactory(options.allowLoopbackHttp)
         try {
             listOf(request.sourceUrl, request.bundleUrl, request.manifestUrl, request.resultUrl)
                 .plus(request.catalogCandidates.map { it.uri })
@@ -71,6 +76,12 @@ object DeriveWorkerMain {
                     }
                 }
             } catch (e: ContentFailure) {
+                return failure(
+                    request,
+                    listOf(problem(DeriveFailureScope.CONTENT, "SOURCE", e.message!!)),
+                    transfer,
+                )
+            } catch (e: WorkerSourceLimitException) {
                 return failure(
                     request,
                     listOf(problem(DeriveFailureScope.CONTENT, "SOURCE", e.message!!)),

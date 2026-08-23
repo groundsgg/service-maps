@@ -18,6 +18,34 @@ import org.junit.jupiter.api.Test
 
 class DeriveWorkerMainIT {
     @Test
+    fun `reports a declared source compressed limit as nonretryable content`() =
+        workerServer(byteArrayOf(1, 2)) { server, uploads ->
+            run(
+                server,
+                request(server, digest(byteArrayOf(1, 2))),
+                WorkerHttpTransfer(true, maxSourceBytes = 1),
+            )
+
+            val result = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("CONTENT", result.scope.name)
+            assertFalse(result.retryable)
+        }
+
+    @Test
+    fun `reports a chunked source compressed limit as nonretryable content`() =
+        workerServer(byteArrayOf(1, 2), sourceChunked = true) { server, uploads ->
+            run(
+                server,
+                request(server, digest(byteArrayOf(1, 2))),
+                WorkerHttpTransfer(true, maxSourceBytes = 1),
+            )
+
+            val result = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals("CONTENT", result.scope.name)
+            assertFalse(result.retryable)
+        }
+
+    @Test
     fun `uploads bundle then manifest then success result for a valid loopback request`() =
         workerServer(archive(mapOf("level.dat" to "world".encodeToByteArray()))) { server, uploads
             ->
@@ -122,13 +150,21 @@ class DeriveWorkerMainIT {
     private fun workerServer(
         source: ByteArray,
         sourceStatus: Int = 200,
+        sourceChunked: Boolean = false,
         bundleStatus: Int = 200,
         block: (HttpServer, MutableList<Pair<String, ByteArray>>) -> Unit,
     ) {
         val uploads = mutableListOf<Pair<String, ByteArray>>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         try {
-            server.createContext("/source") { exchange -> respond(exchange, sourceStatus, source) }
+            server.createContext("/source") { exchange ->
+                if (sourceChunked && sourceStatus == 200) {
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.use { it.write(source) }
+                } else {
+                    respond(exchange, sourceStatus, source)
+                }
+            }
             listOf("/bundle", "/manifest", "/result").forEach { path ->
                 server.createContext(path) { exchange ->
                     uploads += path to exchange.requestBody.readBytes()
@@ -142,14 +178,19 @@ class DeriveWorkerMainIT {
         }
     }
 
-    private fun run(server: HttpServer, request: DeriveRequest) {
+    private fun run(
+        server: HttpServer,
+        request: DeriveRequest,
+        transfer: WorkerHttpTransfer = WorkerHttpTransfer(true),
+    ) {
         val file = Files.createTempFile("derive-request-", ".json")
         try {
             Files.write(file, CanonicalJson.write(request))
             assertEquals(
                 0,
                 DeriveWorkerMain.run(
-                    arrayOf("--request-file", file.toString(), "--allow-loopback-http")
+                    arrayOf("--request-file", file.toString(), "--allow-loopback-http"),
+                    { transfer },
                 ),
             )
         } finally {
