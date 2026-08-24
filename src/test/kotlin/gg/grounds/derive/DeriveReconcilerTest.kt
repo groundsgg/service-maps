@@ -257,7 +257,7 @@ class DeriveReconcilerTest {
     }
 
     @Test
-    fun `failed Job is SYSTEM and only retryable SYSTEM failures retry`() {
+    fun `failed Job is SYSTEM and completed failures are never retried automatically`() {
         val deriving = record(VersionState.DERIVING)
         val system =
             record(VersionState.DERIVE_FAILED)
@@ -272,7 +272,7 @@ class DeriveReconcilerTest {
             )
             .reconcile()
         assertEquals("JOB_FAILED", versions.failures.single().second.problems.single().code)
-        assertEquals(listOf(system.mapId to system.version), versions.retried)
+        assertTrue(versions.retried.isEmpty())
     }
 
     @Test

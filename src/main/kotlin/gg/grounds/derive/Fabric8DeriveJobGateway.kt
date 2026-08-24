@@ -17,6 +17,8 @@ import io.fabric8.kubernetes.api.model.batch.v1.Job
 import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.KubernetesClientException
+import io.fabric8.kubernetes.client.Watcher
+import io.fabric8.kubernetes.client.WatcherException
 import io.fabric8.kubernetes.client.utils.Serialization
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -89,6 +91,25 @@ constructor(
         } catch (_: Exception) {
             false
         }
+
+    override fun watch(onEvent: () -> Unit, onClose: (Throwable?) -> Unit): AutoCloseable? {
+        if (!enabled) return null
+        val watch =
+            client
+                .batch()
+                .v1()
+                .jobs()
+                .inNamespace(namespace)
+                .watch(
+                    object : Watcher<Job> {
+                        override fun eventReceived(action: Watcher.Action, resource: Job) =
+                            onEvent()
+
+                        override fun onClose(cause: WatcherException?) = onClose(cause)
+                    }
+                )
+        return AutoCloseable { watch.close() }
+    }
 
     private fun job(name: String, request: DeriveJobRequest): Job {
         val labels: Map<String, String> = labels(request)

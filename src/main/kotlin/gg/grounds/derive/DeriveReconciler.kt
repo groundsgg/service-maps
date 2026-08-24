@@ -12,11 +12,20 @@ import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
 import gg.grounds.domain.VersionState
+import io.quarkus.runtime.StartupEvent
 import io.quarkus.scheduler.Scheduled
+import jakarta.annotation.PreDestroy
 import jakarta.enterprise.context.ApplicationScoped
+import jakarta.enterprise.event.Observes
 import jakarta.inject.Inject
 import java.security.MessageDigest
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import org.jboss.logging.Logger
 
 @ApplicationScoped
 class DeriveReconciler
@@ -27,20 +36,54 @@ constructor(
     private val jobs: DeriveJobGateway,
     private val blobs: DeriveArtifactStore,
 ) {
+    private val log = Logger.getLogger(DeriveReconciler::class.java)
+    private val scheduler: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "derive-reconciliation").apply { isDaemon = true }
+        }
+    private val reconciling = AtomicBoolean(false)
+    private val pendingRetries = ConcurrentHashMap.newKeySet<DeriveIdentity>()
+    private val retryCounts = ConcurrentHashMap<DeriveIdentity, Int>()
+    private val watchOpen = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
+    private var watch: AutoCloseable? = null
+    private var watchReconnects = 0
+
+    /** Startup and the scheduled poll share the same gate. The poll is the correctness path. */
+    fun onStart(@Observes event: StartupEvent) {
+        reconcile()
+        openWatch()
+    }
+
     @Scheduled(every = "{grounds.maps.derive.poll-interval:30s}")
     fun reconcile() {
-        versions.listReconcileCandidates().forEach { record ->
-            when (record.state) {
-                VersionState.DRAFT -> coordinator.coordinate(record.mapId, record.version)
-                VersionState.DERIVING -> reconcileDeriving(record)
-                VersionState.DERIVE_FAILED ->
-                    if (
-                        record.deriveFailureScope == DeriveFailureScope.SYSTEM &&
-                            record.deriveRetryable
-                    )
-                        versions.retrySystemFailure(record.mapId, record.version)
-                else -> Unit
+        if (!reconciling.compareAndSet(false, true)) return
+        val integrityFailures = mutableListOf<DeriveResultIntegrityException>()
+        try {
+            versions.listReconcileCandidates().forEach { record ->
+                try {
+                    when (record.state) {
+                        VersionState.DRAFT -> coordinator.coordinate(record.mapId, record.version)
+                        VersionState.DERIVING -> reconcileDeriving(record)
+                        // A failed attempt is terminal for automation. Task 9 owns the explicitly
+                        // authorized manual retry that creates a fresh attempt.
+                        VersionState.DERIVE_FAILED -> Unit
+                        else -> Unit
+                    }
+                } catch (failure: DeriveResultIntegrityException) {
+                    integrityFailures += failure
+                } catch (failure: Exception) {
+                    if (record.state == VersionState.DERIVING) scheduleRetry(record, failure)
+                    else log.warnf("derive_reconcile scope=batch outcome=ignored")
+                }
             }
+        } finally {
+            reconciling.set(false)
+        }
+        if (integrityFailures.isNotEmpty()) {
+            val first = integrityFailures.first()
+            integrityFailures.drop(1).forEach(first::addSuppressed)
+            throw first
         }
     }
 
@@ -64,6 +107,80 @@ constructor(
             DeriveJobStatus.SUCCEEDED -> acceptResult(identity)
             else -> Unit
         }
+        retryCounts.remove(identity)
+    }
+
+    private fun scheduleRetry(record: gg.grounds.domain.MapVersionRecord, failure: Exception) {
+        val identity =
+            DeriveIdentity(
+                record.mapId,
+                record.version,
+                requireNotNull(record.deriveAttempt),
+                requireNotNull(record.sourceSha256),
+            )
+        if (!pendingRetries.add(identity)) return
+        val failures = retryCounts.merge(identity, 1, Int::plus) ?: 1
+        if (failures > RETRY_DELAYS.size) {
+            pendingRetries.remove(identity)
+            retryCounts.remove(identity)
+            try {
+                versions.acceptFailure(
+                    identity,
+                    systemFailure(
+                        "RECONCILIATION_UNAVAILABLE",
+                        "reconciliation retry budget exhausted",
+                    ),
+                )
+            } catch (rejected: DeriveResultRejectedException) {
+                // A concurrent accepted terminal transition wins.
+            }
+            log.warnf(
+                "derive_reconcile scope=attempt outcome=failed code=RECONCILIATION_UNAVAILABLE"
+            )
+            return
+        }
+        val delay = RETRY_DELAYS[failures - 1]
+        log.warnf(
+            "derive_reconcile scope=attempt outcome=retry code=TRANSIENT delay_seconds=%d",
+            delay.seconds,
+        )
+        scheduler.schedule(
+            {
+                pendingRetries.remove(identity)
+                reconcile()
+            },
+            delay.toMillis(),
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun openWatch() {
+        if (closed.get()) return
+        if (!watchOpen.compareAndSet(false, true)) return
+        watch =
+            runCatching { jobs.watch(onEvent = { reconcile() }, onClose = ::watchClosed) }
+                .getOrElse {
+                    watchClosed(it)
+                    null
+                }
+        if (watch == null) watchOpen.set(false) else watchReconnects = 0
+    }
+
+    private fun watchClosed(cause: Throwable?) {
+        watchOpen.set(false)
+        watch = null
+        if (closed.get()) return
+        val delay = WATCH_DELAYS[watchReconnects.coerceAtMost(WATCH_DELAYS.lastIndex)]
+        watchReconnects++
+        scheduler.schedule(::openWatch, delay.toMillis(), TimeUnit.MILLISECONDS)
+        log.warnf("derive_watch outcome=closed delay_seconds=%d", delay.seconds)
+    }
+
+    @PreDestroy
+    fun close() {
+        closed.set(true)
+        runCatching { watch?.close() }
+        scheduler.shutdownNow()
     }
 
     private fun acceptResult(identity: DeriveIdentity) {
@@ -225,6 +342,10 @@ constructor(
                 failures == 1 -> Duration.ofSeconds(30)
                 else -> Duration.ofMinutes(2)
             }
+
+        private val RETRY_DELAYS =
+            listOf(Duration.ofSeconds(5), Duration.ofSeconds(30), Duration.ofMinutes(2))
+        private val WATCH_DELAYS = RETRY_DELAYS
 
         fun systemFailure(code: String, message: String) =
             DerivedFailure(

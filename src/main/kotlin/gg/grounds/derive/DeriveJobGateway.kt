@@ -32,6 +32,12 @@ interface DeriveJobGateway {
 
     /** Read-only capability probe; implementations must not create or delete Jobs here. */
     fun ready(): Boolean = true
+
+    /**
+     * A bounded best-effort watch. It is only a latency hint: callers must continue polling for
+     * correctness. The returned handle owns the live stream and must be closed by its owner.
+     */
+    fun watch(onEvent: () -> Unit, onClose: (Throwable?) -> Unit): AutoCloseable? = null
 }
 
 data class DeriveJobRequest(val identity: DeriveIdentity, val requestJson: String)
