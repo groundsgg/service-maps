@@ -4,6 +4,7 @@ import gg.grounds.blob.BlobStore
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
@@ -14,6 +15,7 @@ import gg.grounds.domain.VersionState
 import io.quarkus.scheduler.Scheduled
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.security.MessageDigest
 import java.time.Duration
 
 @ApplicationScoped
@@ -74,17 +76,13 @@ constructor(
                                 identity.mapId,
                                 identity.version,
                                 identity.attempt,
-                            )
+                            ),
+                            RESULT_MAX_BYTES,
                         )
                     )
             ) {
                 is DeriveSuccess -> {
-                    require(
-                        result.mapId == identity.mapId &&
-                            result.version == identity.version &&
-                            result.attempt == identity.attempt &&
-                            result.sourceSha256 == identity.sourceSha256
-                    )
+                    requireResultIdentity(result, identity)
                     requireArtifactSize(
                         BlobStore.deriveBundleKey(
                             identity.mapId,
@@ -93,14 +91,27 @@ constructor(
                         ),
                         result.bundleSize,
                     )
-                    requireArtifactSize(
+                    val manifestKey =
                         BlobStore.deriveManifestKey(
                             identity.mapId,
                             identity.version,
                             identity.attempt,
-                        ),
-                        result.manifestSize,
-                    )
+                        )
+                    requireArtifactSize(manifestKey, result.manifestSize)
+                    val manifest = blobs.getPrivate(manifestKey, MANIFEST_MAX_BYTES)
+                    require(manifest.size.toLong() == result.manifestSize) {
+                        "derive manifest content size does not match result"
+                    }
+                    require(sha256(manifest) == result.manifestSha256) {
+                        "derive manifest digest does not match result"
+                    }
+                    val derivedManifest = CanonicalJson.readManifest(manifest)
+                    require(derivedManifest.sourceSha256 == identity.sourceSha256) {
+                        "derive manifest source does not match claimed request"
+                    }
+                    require(derivedManifest.scene == result.scene) {
+                        "derive manifest scene does not match result"
+                    }
                     val scene = result.scene
                     val projection =
                         if (scene.present)
@@ -123,6 +134,15 @@ constructor(
                                 emptyList(),
                                 emptyList(),
                             )
+                    blobs.promotePrivateBundle(
+                        BlobStore.deriveBundleKey(
+                            identity.mapId,
+                            identity.version,
+                            identity.attempt,
+                        ),
+                        BlobStore.bundleKey(result.bundleSha256),
+                        result.bundleSize,
+                    )
                     versions.acceptSuccess(
                         identity.copy(assetCatalog = scene.assetCatalog),
                         DerivedFacts(
@@ -136,7 +156,8 @@ constructor(
                         "derive-worker",
                     )
                 }
-                is DeriveFailure ->
+                is DeriveFailure -> {
+                    requireResultIdentity(result, identity)
                     versions.acceptFailure(
                         identity,
                         gg.grounds.domain.DerivedFailure(
@@ -145,11 +166,20 @@ constructor(
                             result.problems,
                         ),
                     )
+                }
             }
+        } catch (e: DeriveResultIntegrityException) {
+            throw e
         } catch (_: DeriveResultRejectedException) {
             // Another tick accepted/retried this immutable version first; stale completion is
             // harmless.
         } catch (_: Exception) {
+            recordUnavailableResult(identity)
+        }
+    }
+
+    private fun recordUnavailableResult(identity: DeriveIdentity) {
+        try {
             versions.acceptFailure(
                 identity,
                 systemFailure(
@@ -157,6 +187,10 @@ constructor(
                     "completed derive Job has no acceptable result marker",
                 ),
             )
+        } catch (e: DeriveResultIntegrityException) {
+            throw e
+        } catch (_: DeriveResultRejectedException) {
+            // A later tick may already have accepted or retried this immutable version.
         }
     }
 
@@ -167,7 +201,24 @@ constructor(
         require(metadata.sizeBytes == expectedSize) { "derive result artifact size does not match" }
     }
 
+    private fun requireResultIdentity(result: DeriveResult, identity: DeriveIdentity) {
+        require(
+            result.mapId == identity.mapId &&
+                result.version == identity.version &&
+                result.attempt == identity.attempt &&
+                result.sourceSha256 == identity.sourceSha256
+        ) {
+            "derive result does not match claimed request"
+        }
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
     companion object {
+        private const val RESULT_MAX_BYTES = 1L shl 20
+        private const val MANIFEST_MAX_BYTES = 4L shl 20
+
         fun retryDelay(failures: Int): Duration =
             when {
                 failures <= 0 -> Duration.ofSeconds(5)

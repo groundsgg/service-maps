@@ -10,6 +10,7 @@ import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.core.ResponseInputStream
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient
 import software.amazon.awssdk.regions.Region
@@ -17,6 +18,7 @@ import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.S3Configuration
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
+import software.amazon.awssdk.services.s3.model.GetObjectResponse
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
@@ -127,10 +129,42 @@ constructor(
     override fun headPrivate(key: String): BlobMetadata? = head(privateBucket, key)
 
     /** Completion markers are small, private, and read only after the worker Job succeeds. */
-    override fun getPrivate(key: String): ByteArray =
-        client
-            .getObject(GetObjectRequest.builder().bucket(privateBucket).key(key).build())
-            .readAllBytes()
+    override fun getPrivate(key: String, maxBytes: Long): ByteArray {
+        require(maxBytes >= 0) { "maxBytes must be non-negative" }
+        val response: ResponseInputStream<GetObjectResponse> =
+            client.getObject(GetObjectRequest.builder().bucket(privateBucket).key(key).build())
+        response.use {
+            val declared = it.response().contentLength()
+            if (declared != null && declared > maxBytes) {
+                throw BlobIntegrityException("private object $key exceeds $maxBytes bytes")
+            }
+            val output =
+                java.io.ByteArrayOutputStream(
+                    (declared ?: 0)
+                        .coerceAtMost(maxBytes)
+                        .coerceAtMost(Int.MAX_VALUE.toLong())
+                        .toInt()
+                )
+            val buffer = ByteArray(READ_BUFFER_BYTES)
+            while (true) {
+                val read = it.read(buffer)
+                if (read < 0) break
+                if (output.size().toLong() + read > maxBytes) {
+                    throw BlobIntegrityException("private object $key exceeds $maxBytes bytes")
+                }
+                output.write(buffer, 0, read)
+            }
+            return output.toByteArray()
+        }
+    }
+
+    override fun promotePrivateBundle(
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+    ) {
+        copyPrivateToPublic(sourceKey, destinationKey, expectedSizeBytes, MapTrust.FIRST_PARTY)
+    }
 
     fun headPublic(key: String, trust: MapTrust): BlobMetadata? = head(publicBucketFor(trust), key)
 
@@ -258,6 +292,7 @@ constructor(
         NoSuchKeyException.builder().message("private object is missing: $key").build()
 
     companion object {
+        private const val READ_BUFFER_BYTES = 8 * 1024
         val PRESIGN_TTL: Duration = Duration.ofMinutes(30)
 
         /** The only write key for a newly opened upload. */

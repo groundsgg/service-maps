@@ -8,9 +8,20 @@ import gg.grounds.domain.DeriveIdentity
  * acceptance rules testable without an S3 client (or a Kubernetes cluster).
  */
 interface DeriveArtifactStore {
-    fun getPrivate(key: String): ByteArray
+    /**
+     * Reads a small control object without allowing an untrusted object to allocate unbounded heap.
+     */
+    fun getPrivate(key: String, maxBytes: Long): ByteArray
 
     fun headPrivate(key: String): BlobMetadata?
+
+    /**
+     * Promotes exactly the digest-pinned worker bundle before a version may become public. The
+     * assigned private key is signed into the Job request; Task 8A proves that the immutable worker
+     * Job is digest-pinned, so its streamed digest is the trust anchor for this content address.
+     * The service intentionally does not download bundles.
+     */
+    fun promotePrivateBundle(sourceKey: String, destinationKey: String, expectedSizeBytes: Long)
 }
 
 /** K8s is deliberately isolated here: a reconciliation tick remains deterministic in unit tests. */
