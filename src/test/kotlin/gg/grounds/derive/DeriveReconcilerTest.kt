@@ -18,12 +18,176 @@ import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.stream.Stream
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.DynamicTest
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestFactory
 
 class DeriveReconcilerTest {
+    /** Each row isolates one value that must remain bound to the assigned worker request. */
+    @TestFactory
+    fun `success result identity mutations are rejected one at a time`() =
+        Stream.of(
+                "map" to { result: DeriveSuccess -> result.copy(mapId = UUID.randomUUID()) },
+                "version" to { result: DeriveSuccess -> result.copy(version = result.version + 1) },
+                "attempt" to { result: DeriveSuccess -> result.copy(attempt = UUID.randomUUID()) },
+                "source" to { result: DeriveSuccess -> result.copy(sourceSha256 = "d".repeat(64)) },
+            )
+            .map { (name, mutate) ->
+                DynamicTest.dynamicTest(name) {
+                    val version = record(VersionState.DERIVING)
+                    assertUnavailable(version, mutate(success(version)))
+                }
+            }
+
+    @TestFactory
+    fun `failure result identity mutations are rejected one at a time`() =
+        Stream.of(
+                "map" to { value: DeriveFailure -> value.copy(mapId = UUID.randomUUID()) },
+                "version" to { value: DeriveFailure -> value.copy(version = value.version + 1) },
+                "attempt" to { value: DeriveFailure -> value.copy(attempt = UUID.randomUUID()) },
+                "source" to { value: DeriveFailure -> value.copy(sourceSha256 = "d".repeat(64)) },
+            )
+            .map { (name, mutate) ->
+                DynamicTest.dynamicTest(name) {
+                    val version = record(VersionState.DERIVING)
+                    val failure = failure(version)
+                    val versions = FakeVersions(listOf(version))
+                    reconciler(
+                            versions,
+                            FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                            FakeArtifacts(CanonicalJson.write(mutate(failure))).assigned(version),
+                        )
+                        .reconcile()
+                    assertEquals(
+                        "RESULT_UNAVAILABLE",
+                        versions.failures.single().second.problems.single().code,
+                    )
+                }
+            }
+
+    @TestFactory
+    fun `result marker mutations are rejected one at a time`() =
+        Stream.of(
+                "missing" to { _: MapVersionRecord, _: DeriveSuccess -> null },
+                "oversized" to { _: MapVersionRecord, _: DeriveSuccess -> ByteArray(1_048_577) },
+                "malformed" to
+                    { _: MapVersionRecord, _: DeriveSuccess ->
+                        "not-json".encodeToByteArray()
+                    },
+            )
+            .map { (name, marker) ->
+                DynamicTest.dynamicTest(name) {
+                    val version = record(VersionState.DERIVING)
+                    assertUnavailable(version, success(version), marker(version, success(version)))
+                }
+            }
+
+    @TestFactory
+    fun `manifest and bundle mutations are rejected one at a time`() =
+        Stream.of(
+                "manifest missing" to { a: FakeArtifacts, _: DeriveSuccess -> a.manifest = null },
+                "manifest oversized" to
+                    { a: FakeArtifacts, _: DeriveSuccess ->
+                        a.manifest = ByteArray(4_194_305)
+                    },
+                "manifest malformed" to
+                    { a: FakeArtifacts, _: DeriveSuccess ->
+                        a.manifest = "not-json".encodeToByteArray()
+                    },
+                "manifest metadata size" to
+                    { a: FakeArtifacts, r: DeriveSuccess ->
+                        a.sizes["manifest"] = BlobMetadata(r.manifestSize + 1)
+                    },
+                "manifest body size" to
+                    { a: FakeArtifacts, _: DeriveSuccess ->
+                        a.manifest = "{}".encodeToByteArray()
+                    },
+                "manifest sha" to
+                    { a: FakeArtifacts, _: DeriveSuccess ->
+                        a.manifest =
+                            a.manifest!!.clone().also { bytes ->
+                                bytes[bytes.lastIndex] = (bytes.last().toInt() xor 1).toByte()
+                            }
+                    },
+                "bundle missing" to
+                    { a: FakeArtifacts, _: DeriveSuccess ->
+                        a.sizes.remove("bundle")
+                    },
+                "bundle wrong size" to
+                    { a: FakeArtifacts, r: DeriveSuccess ->
+                        a.sizes["bundle"] = BlobMetadata(r.bundleSize + 1)
+                    },
+            )
+            .map { (name, mutate) ->
+                DynamicTest.dynamicTest(name) {
+                    val version = record(VersionState.DERIVING)
+                    val result = success(version)
+                    val events = mutableListOf<String>()
+                    val artifacts =
+                        FakeArtifacts(CanonicalJson.write(result), events).assigned(version).apply {
+                            complete(result)
+                            mutate(this, result)
+                        }
+                    val versions = FakeVersions(listOf(version), events = events)
+                    reconciler(
+                            versions,
+                            FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                            artifacts,
+                        )
+                        .reconcile()
+                    assertEquals(
+                        "RESULT_UNAVAILABLE",
+                        versions.failures.single().second.problems.single().code,
+                    )
+                    assertTrue(events.none { it.startsWith("promote:") || it == "accept" })
+                }
+            }
+
+    @TestFactory
+    fun `validated manifest fields stay bound to the success result`() =
+        Stream.of("source", "scene", "catalog").map { field ->
+            DynamicTest.dynamicTest(field) {
+                val version = record(VersionState.DERIVING)
+                val baseline = success(version, catalogScene("catalog"))
+                val changedScene =
+                    when (field) {
+                        "source" -> baseline.scene
+                        "scene" -> catalogScene("catalog", sha = "f".repeat(64))
+                        else -> catalogScene("other")
+                    }
+                val changedSource = if (field == "source") "d".repeat(64) else baseline.sourceSha256
+                val changedManifest = manifest(baseline, changedSource, changedScene)
+                val result =
+                    baseline.copy(
+                        manifestSha256 = sha256(changedManifest),
+                        manifestSize = changedManifest.size.toLong(),
+                    )
+                val events = mutableListOf<String>()
+                val artifacts =
+                    FakeArtifacts(CanonicalJson.write(result), events).assigned(version).apply {
+                        complete(result)
+                        manifest = changedManifest
+                        sizes["manifest"] = BlobMetadata(changedManifest.size.toLong())
+                    }
+                val versions = FakeVersions(listOf(version), events = events)
+                reconciler(
+                        versions,
+                        FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                        artifacts,
+                    )
+                    .reconcile()
+                assertEquals(
+                    "RESULT_UNAVAILABLE",
+                    versions.failures.single().second.problems.single().code,
+                )
+                assertTrue(events.none { it.startsWith("promote:") || it == "accept" })
+            }
+        }
+
     @Test
     fun `missing Job is recreated while a running Job is left alone`() {
         val missing = record(VersionState.DERIVING)
@@ -109,6 +273,68 @@ class DeriveReconcilerTest {
             )
             .reconcile()
         assertTrue(versions.failures.isEmpty())
+    }
+
+    @Test
+    fun `stale success is promoted exactly before acceptance rejects it`() {
+        val version = record(VersionState.DERIVING)
+        val result = success(version)
+        val events = mutableListOf<String>()
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result), events).assigned(version).apply {
+                complete(result)
+            }
+        val versions = FakeVersions(listOf(version), rejectSuccess = true, events = events)
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+        assertEquals(
+            listOf(
+                "get:${BlobStore.deriveResultKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:1048576",
+                "head:${BlobStore.deriveBundleKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}",
+                "head:${BlobStore.deriveManifestKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}",
+                "get:${BlobStore.deriveManifestKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:4194304",
+                "promote:${BlobStore.deriveBundleKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:${BlobStore.bundleKey(result.bundleSha256)}:${result.bundleSize}",
+            ),
+            events,
+        )
+        assertEquals(1, artifacts.promotions.size)
+    }
+
+    @Test
+    fun `accepted success carries the result asset catalog identity`() {
+        val version = record(VersionState.DERIVING)
+        val result = success(version, catalogScene("assets"))
+        val versions = FakeVersions(listOf(version))
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                FakeArtifacts(CanonicalJson.write(result)).assigned(version).apply {
+                    complete(result)
+                },
+            )
+            .reconcile()
+        assertEquals(
+            gg.grounds.domain.CatalogReference("assets", "1"),
+            versions.successes.single().first.assetCatalog,
+        )
+    }
+
+    @Test
+    fun `integrity exception while recording unavailable result is not treated as stale`() {
+        val version = record(VersionState.DERIVING)
+        val versions = FakeVersions(listOf(version), failureIntegrity = true)
+        assertThrows(DeriveResultIntegrityException::class.java) {
+            reconciler(
+                    versions,
+                    FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                    FakeArtifacts("not-json".encodeToByteArray()).assigned(version),
+                )
+                .reconcile()
+        }
     }
 
     @Test
@@ -282,7 +508,12 @@ class DeriveReconcilerTest {
     }
 
     private fun reconciler(v: FakeVersions, j: FakeJobs, a: FakeArtifacts) =
-        DeriveReconciler(v, DeriveCoordinator(v, j, { emptyList() }, true), j, a)
+        DeriveReconciler(
+            v,
+            DeriveCoordinator(v, j, { emptyList() }, true),
+            j,
+            a.assigned(v.firstDeriving()),
+        )
 
     private fun record(state: VersionState) =
         MapVersionRecord(
@@ -309,7 +540,10 @@ class DeriveReconcilerTest {
     private fun MapVersionRecord.identity() =
         DeriveIdentity(mapId, version, requireNotNull(deriveAttempt), requireNotNull(sourceSha256))
 
-    private fun success(v: MapVersionRecord) =
+    private fun success(
+        v: MapVersionRecord,
+        scene: DerivedScene = DerivedScene(false, null, null, null, null, emptyList()),
+    ) =
         DeriveSuccess(
                 mapId = v.mapId,
                 version = v.version,
@@ -319,7 +553,7 @@ class DeriveReconcilerTest {
                 bundleSize = 42,
                 manifestSha256 = "c".repeat(64),
                 manifestSize = 9,
-                scene = DerivedScene(false, null, null, null, null, emptyList()),
+                scene = scene,
             )
             .let { result ->
                 val manifest =
@@ -336,6 +570,52 @@ class DeriveReconcilerTest {
                 )
             }
 
+    private fun failure(v: MapVersionRecord) =
+        DeriveFailure(
+            mapId = v.mapId,
+            version = v.version,
+            attempt = requireNotNull(v.deriveAttempt),
+            sourceSha256 = requireNotNull(v.sourceSha256),
+            scope = DeriveFailureScope.CONTENT,
+            retryable = false,
+            problems =
+                listOf(DeriveProblem(DeriveFailureScope.CONTENT, null, "INVALID", null, "bad")),
+        )
+
+    private fun manifest(
+        result: DeriveSuccess,
+        source: String = result.sourceSha256,
+        scene: DerivedScene = result.scene,
+    ) =
+        CanonicalJson.write(
+            DerivedManifest(sourceSha256 = source, bundleDigestInputs = emptyList(), scene = scene)
+        )
+
+    private fun catalogScene(id: String, sha: String = "e".repeat(64)) =
+        DerivedScene(
+            true,
+            "1",
+            sha,
+            gg.grounds.domain.CatalogReference(id, "1"),
+            gg.grounds.domain.CatalogReference("actions", "1"),
+            emptyList(),
+        )
+
+    private fun assertUnavailable(
+        version: MapVersionRecord,
+        result: DeriveSuccess,
+        marker: ByteArray? = CanonicalJson.write(result),
+    ) {
+        val versions = FakeVersions(listOf(version))
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                FakeArtifacts(marker).assigned(version).apply { complete(result) },
+            )
+            .reconcile()
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
+    }
+
     private fun sha256(bytes: ByteArray) =
         java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
             "%02x".format(it)
@@ -348,23 +628,72 @@ class DeriveReconcilerTest {
         val sizes = mutableMapOf<String, BlobMetadata>()
         var manifest: ByteArray? = null
         var promotionFailure: Exception? = null
+        private var identity: DeriveIdentity? = null
+        val reads = mutableListOf<Pair<String, Long>>()
+        val promotions = mutableListOf<Triple<String, String, Long>>()
+
+        fun assigned(version: MapVersionRecord?) = apply {
+            identity =
+                version?.let {
+                    DeriveIdentity(
+                        it.mapId,
+                        it.version,
+                        requireNotNull(it.deriveAttempt),
+                        requireNotNull(it.sourceSha256),
+                    )
+                }
+        }
+
+        private fun assignedKey(type: String): String =
+            requireNotNull(identity).let { assigned ->
+                when (type) {
+                    "result" ->
+                        BlobStore.deriveResultKey(
+                            assigned.mapId,
+                            assigned.version,
+                            assigned.attempt,
+                        )
+                    "manifest" ->
+                        BlobStore.deriveManifestKey(
+                            assigned.mapId,
+                            assigned.version,
+                            assigned.attempt,
+                        )
+                    else ->
+                        BlobStore.deriveBundleKey(
+                            assigned.mapId,
+                            assigned.version,
+                            assigned.attempt,
+                        )
+                }
+            }
 
         override fun getPrivate(key: String, maxBytes: Long) =
             when {
-                key.endsWith("result.json") -> {
+                key == assignedKey("result") -> {
+                    require(maxBytes == 1_048_576L) { "unexpected result bound $maxBytes" }
                     events?.add("get:$key:$maxBytes")
-                    marker ?: error("missing result")
+                    reads += key to maxBytes
+                    requireNotNull(marker) { "missing result" }
+                        .also { require(it.size <= maxBytes) { "oversized result" } }
                 }
-                key.endsWith("derived-manifest.json") -> {
+                key == assignedKey("manifest") -> {
+                    require(maxBytes == 4_194_304L) { "unexpected manifest bound $maxBytes" }
                     events?.add("get:$key:$maxBytes")
-                    manifest ?: error("missing manifest")
+                    reads += key to maxBytes
+                    requireNotNull(manifest) { "missing manifest" }
+                        .also { require(it.size <= maxBytes) { "oversized manifest" } }
                 }
                 else -> error("unexpected key $key")
             }
 
         override fun headPrivate(key: String): BlobMetadata? {
             events?.add("head:$key")
-            return if (key.endsWith("bundle.tar.zst")) sizes["bundle"] else sizes["manifest"]
+            return when (key) {
+                assignedKey("bundle") -> sizes["bundle"]
+                assignedKey("manifest") -> sizes["manifest"]
+                else -> error("unexpected key $key")
+            }
         }
 
         fun complete(result: DeriveSuccess) {
@@ -386,8 +715,12 @@ class DeriveReconcilerTest {
             destinationKey: String,
             expectedSizeBytes: Long,
         ) {
+            require(sourceKey == assignedKey("bundle"))
+            require(destinationKey == BlobStore.bundleKey("b".repeat(64)))
+            require(expectedSizeBytes == 42L)
             promotionFailure?.let { throw it }
             events?.add("promote:$sourceKey:$destinationKey:$expectedSizeBytes")
+            promotions += Triple(sourceKey, destinationKey, expectedSizeBytes)
         }
     }
 
@@ -411,6 +744,7 @@ class DeriveReconcilerTest {
         private val rejectSuccess: Boolean = false,
         private val rejectFailure: Boolean = false,
         private val integrityFailure: Boolean = false,
+        private val failureIntegrity: Boolean = false,
         private val events: MutableList<String>? = null,
     ) : MapVersionRepository by unused() {
         private val records = records.toMutableList()
@@ -418,6 +752,8 @@ class DeriveReconcilerTest {
         val failures = mutableListOf<Pair<DeriveIdentity, DerivedFailure>>()
         val successes = mutableListOf<Pair<DeriveIdentity, DerivedFacts>>()
         val retried = mutableListOf<Pair<UUID, Int>>()
+
+        fun firstDeriving() = records.firstOrNull { it.deriveAttempt != null }
 
         override fun listReconcileCandidates() = synchronized(records) { records.toList() }
 
@@ -454,6 +790,7 @@ class DeriveReconcilerTest {
             identity: DeriveIdentity,
             failure: DerivedFailure,
         ): MapVersionRecord {
+            if (failureIntegrity) throw DeriveResultIntegrityException("conflicting failure")
             if (rejectFailure) throw gg.grounds.domain.DeriveResultRejectedException("stale")
             failures += identity to failure
             return records.first()
