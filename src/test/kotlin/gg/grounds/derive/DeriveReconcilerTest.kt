@@ -1,5 +1,6 @@
 package gg.grounds.derive
 
+import gg.grounds.blob.BlobCopyPreconditionException
 import gg.grounds.blob.BlobMetadata
 import gg.grounds.blob.BlobStore
 import gg.grounds.domain.DeriveFailureScope
@@ -27,6 +28,55 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 
 class DeriveReconcilerTest {
+    @Test
+    fun `strict manifest parser rejects malformed bytes whose claimed facts match`() {
+        val version = record(VersionState.DERIVING)
+        val malformed = "not-json".encodeToByteArray()
+        val result =
+            success(version)
+                .copy(manifestSha256 = sha256(malformed), manifestSize = malformed.size.toLong())
+        val events = mutableListOf<String>()
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result), events).assigned(version).apply {
+                complete(result)
+                manifest = malformed
+                sizes["manifest"] = BlobMetadata(malformed.size.toLong())
+            }
+        val versions = FakeVersions(listOf(version), events = events)
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
+        assertTrue(events.none { it.startsWith("promote:") || it == "accept" })
+    }
+
+    @Test
+    fun `promotion precondition conflict records retryable system failure after manifest validation`() {
+        val version = record(VersionState.DERIVING)
+        val result = success(version)
+        val events = mutableListOf<String>()
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result), events).assigned(version).apply {
+                complete(result)
+                promotionFailure = BlobCopyPreconditionException("conflict")
+            }
+        val versions = FakeVersions(listOf(version), events = events)
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+        assertTrue(versions.successes.isEmpty())
+        assertEquals(DeriveFailureScope.SYSTEM, versions.failures.single().second.scope)
+        assertTrue(versions.failures.single().second.retryable)
+        assertTrue(events.any { it.startsWith("get:") && it.contains("derived-manifest.json") })
+        assertTrue(events.none { it == "accept" })
+    }
+
     /** Each row isolates one value that must remain bound to the assigned worker request. */
     @TestFactory
     fun `success result identity mutations are rejected one at a time`() =
