@@ -46,3 +46,15 @@ assertion was observed flaky in one focused full-class run; it is part of Task 8
 ownership and was not changed. The task's bounded reader behavior is implemented but lacks a new
 dedicated loopback HTTP test matrix for declared/chunked close semantics; this should be included
 in the next review round if full Task 8B acceptance requires explicit black-box proof.
+
+## Fix round 1 proof additions
+
+- Added real AWS SDK `UrlConnectionHttpClient` loopback GET coverage for declared success,
+  declared oversize, chunked exact-limit, chunked over-limit, and a truncated declared body. The
+  truncated-body red test exposed that an early EOF after a declared content length was accepted;
+  `BlobStore` now fails it closed after the bounded stream read.
+- Expanded reconciler traces to assert exact result/manifest keys and bounds, exact private HEAD
+  keys, exact promotion source/destination/size, and the strict read/HEAD/manifest-read/promotion/
+  acceptance order. Negative manifest digest and bundle-size cases separately prove that promotion
+  and acceptance are not reached.
+- Fresh round verification passed: focused blob/reconciler tests, Spotless, and `quarkusBuild`.

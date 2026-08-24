@@ -154,6 +154,9 @@ constructor(
                 }
                 output.write(buffer, 0, read)
             }
+            if (declared != null && output.size().toLong() != declared) {
+                throw BlobIntegrityException("private object $key ended before its declared size")
+            }
             return output.toByteArray()
         }
     }

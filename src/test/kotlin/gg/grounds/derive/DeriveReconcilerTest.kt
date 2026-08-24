@@ -128,7 +128,14 @@ class DeriveReconcilerTest {
             .reconcile()
 
         assertEquals(
-            listOf("promote:${BlobStore.bundleKey(result.bundleSha256)}", "accept"),
+            listOf(
+                "get:${BlobStore.deriveResultKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:1048576",
+                "head:${BlobStore.deriveBundleKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}",
+                "head:${BlobStore.deriveManifestKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}",
+                "get:${BlobStore.deriveManifestKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:4194304",
+                "promote:${BlobStore.deriveBundleKey(version.mapId, version.version, requireNotNull(version.deriveAttempt))}:${BlobStore.bundleKey(result.bundleSha256)}:${result.bundleSize}",
+                "accept",
+            ),
             events,
         )
     }
@@ -208,6 +215,49 @@ class DeriveReconcilerTest {
             .reconcile()
 
         assertTrue(versions.failures.isEmpty())
+    }
+
+    @Test
+    fun `a manifest digest mismatch prevents promotion and acceptance`() {
+        val version = record(VersionState.DERIVING)
+        val result = success(version).copy(manifestSha256 = "d".repeat(64))
+        val events = mutableListOf<String>()
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result), events).apply { complete(success(version)) }
+        val versions = FakeVersions(listOf(version), events = events)
+
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+
+        assertTrue(events.none { it.startsWith("promote:") || it == "accept" })
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
+    }
+
+    @Test
+    fun `a wrong bundle metadata size prevents promotion and acceptance`() {
+        val version = record(VersionState.DERIVING)
+        val result = success(version)
+        val events = mutableListOf<String>()
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result), events).apply {
+                complete(result)
+                sizes["bundle"] = BlobMetadata(result.bundleSize + 1)
+            }
+        val versions = FakeVersions(listOf(version), events = events)
+
+        reconciler(
+                versions,
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+
+        assertTrue(events.none { it.startsWith("promote:") || it == "accept" })
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
     }
 
     @Test
@@ -301,13 +351,21 @@ class DeriveReconcilerTest {
 
         override fun getPrivate(key: String, maxBytes: Long) =
             when {
-                key.endsWith("result.json") -> marker ?: error("missing result")
-                key.endsWith("derived-manifest.json") -> manifest ?: error("missing manifest")
+                key.endsWith("result.json") -> {
+                    events?.add("get:$key:$maxBytes")
+                    marker ?: error("missing result")
+                }
+                key.endsWith("derived-manifest.json") -> {
+                    events?.add("get:$key:$maxBytes")
+                    manifest ?: error("missing manifest")
+                }
                 else -> error("unexpected key $key")
             }
 
-        override fun headPrivate(key: String) =
-            if (key.endsWith("bundle.tar.zst")) sizes["bundle"] else sizes["manifest"]
+        override fun headPrivate(key: String): BlobMetadata? {
+            events?.add("head:$key")
+            return if (key.endsWith("bundle.tar.zst")) sizes["bundle"] else sizes["manifest"]
+        }
 
         fun complete(result: DeriveSuccess) {
             val body =
@@ -329,7 +387,7 @@ class DeriveReconcilerTest {
             expectedSizeBytes: Long,
         ) {
             promotionFailure?.let { throw it }
-            events?.add("promote:$destinationKey")
+            events?.add("promote:$sourceKey:$destinationKey:$expectedSizeBytes")
         }
     }
 
