@@ -93,7 +93,7 @@ class DeriveApiIT {
     }
 
     @Test
-    fun `enabled derivation accepts a source commit and rejects legacy source publish`() {
+    fun `explicit derive request accepts a source commit and rejects legacy source publish`() {
         given()
             .contentType(ContentType.JSON)
             .body("""{"address":"bedwars/derive-legacy","kind":"arena"}""")
@@ -117,6 +117,37 @@ class DeriveApiIT {
             .post("/v1/maps/bedwars/derive-legacy/versions/1/publish")
             .then()
             .statusCode(409)
+    }
+
+    @Test
+    fun `optional derivation keeps an omitted derive signal compatible with legacy publish`() {
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"address":"bedwars/derive-optional","kind":"arena"}""")
+            .post("/v1/maps")
+            .then()
+            .statusCode(201)
+
+        given()
+            .contentType(ContentType.JSON)
+            .body(
+                """{"uploadId":"00000000-0000-0000-0000-000000000003","sourceSha256":"${"d".repeat(64)}"}"""
+            )
+            .post("/v1/maps/bedwars/derive-optional/versions")
+            .then()
+            .statusCode(201)
+            .body("state", equalTo("DRAFT"))
+
+        given()
+            .contentType(ContentType.JSON)
+            .body("""{"bundleSha256":"${"e".repeat(64)}","sizeBytes":1}""")
+            .post("/v1/maps/bedwars/derive-optional/versions/1/publish")
+            .then()
+            .statusCode(409)
+            .body(
+                "detail",
+                equalTo("the uploaded object for version 1 is gone; upload and commit again"),
+            )
     }
 }
 

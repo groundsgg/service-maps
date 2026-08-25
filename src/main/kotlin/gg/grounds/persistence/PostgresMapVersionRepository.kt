@@ -55,6 +55,25 @@ constructor(
         note: String?,
         bySub: String,
     ): MapVersionRecord =
+        commitWithDeriveRequest(
+            mapId,
+            sourceSha256,
+            sourceKey,
+            deriveRequested = false,
+            parentVersion,
+            note,
+            bySub,
+        )
+
+    override fun commitWithDeriveRequest(
+        mapId: UUID,
+        sourceSha256: String?,
+        sourceKey: String?,
+        deriveRequested: Boolean,
+        parentVersion: Int?,
+        note: String?,
+        bySub: String,
+    ): MapVersionRecord =
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
@@ -66,6 +85,7 @@ constructor(
                     state = VersionState.DRAFT,
                     sourceSha256 = sourceSha256,
                     sourceKey = sourceKey,
+                    deriveRequested = deriveRequested,
                     parentVersion = parentVersion,
                     note = note,
                     bySub = bySub,
@@ -412,6 +432,7 @@ constructor(
         state: VersionState,
         sourceSha256: String?,
         sourceKey: String?,
+        deriveRequested: Boolean,
         parentVersion: Int?,
         note: String?,
         bySub: String,
@@ -419,8 +440,8 @@ constructor(
         c.prepareStatement(
                 """
                 INSERT INTO map_version (map, version, state, source_sha256, source_key,
-                                         parent_version, published_by_sub, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                         derive_requested, parent_version, published_by_sub, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
             )
             .use { ps ->
@@ -429,9 +450,10 @@ constructor(
                 ps.setString(3, state.name)
                 ps.setString(4, sourceSha256)
                 ps.setString(5, sourceKey)
-                ps.setObject(6, parentVersion)
-                ps.setString(7, bySub)
-                ps.setString(8, note)
+                ps.setBoolean(6, deriveRequested)
+                ps.setObject(7, parentVersion)
+                ps.setString(8, bySub)
+                ps.setString(9, note)
                 ps.executeUpdate()
             }
     }
@@ -621,6 +643,7 @@ constructor(
             publishedBySub = getString("published_by_sub"),
             note = getString("note"),
             createdAt = getTimestamp("created_at").toInstant(),
+            deriveRequested = getBoolean("derive_requested"),
         )
 
     private fun ResultSet.sceneStatus(): SceneStatus =
@@ -782,7 +805,7 @@ constructor(
             """
             SELECT map, version, state, bundle_sha256, source_sha256, source_key, manifest_sha256,
                    parent_version, size_bytes, present_chunks, est_loaded_mib,
-                   derive_attempt, derive_failure_scope, derive_retryable,
+                   derive_attempt, derive_failure_scope, derive_retryable, derive_requested,
                    scene_present, scene_schema_version, scene_sha256,
                    asset_catalog_id, asset_catalog_version, action_catalog_id, action_catalog_version,
                    published_by_sub, note, created_at

@@ -46,6 +46,8 @@ data class MapVersionRecord(
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
+    /** Whether this version explicitly opted into asynchronous derivation at commit time. */
+    val deriveRequested: Boolean = false,
 )
 
 /** What a publish supplies about the assembled bundle. */
@@ -87,6 +89,20 @@ interface MapVersionRepository {
         note: String?,
         bySub: String,
     ): MapVersionRecord
+
+    /**
+     * Records whether this immutable version opted into asynchronous derivation during the
+     * compatibility rollout. The default keeps older repository implementations source-compatible.
+     */
+    fun commitWithDeriveRequest(
+        mapId: UUID,
+        sourceSha256: String?,
+        sourceKey: String?,
+        deriveRequested: Boolean,
+        parentVersion: Int?,
+        note: String?,
+        bySub: String,
+    ): MapVersionRecord = commit(mapId, sourceSha256, sourceKey, parentVersion, note, bySub)
 
     /** Marks a version published and records what the bundle turned out to be. */
     fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord

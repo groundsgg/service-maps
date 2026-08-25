@@ -214,7 +214,8 @@ constructor(
                     "derivation is required for uploaded sources; commit again with derive=true",
                 )
             }
-            if (derive.enabled && sourceBacked && !Digest.isValid(request.sourceSha256)) {
+            val deriveRequested = derive.enabled && sourceBacked && request.derive
+            if (deriveRequested && !Digest.isValid(request.sourceSha256)) {
                 return@withMap problem(
                     Response.Status.BAD_REQUEST,
                     "sourceSha256 must be 64 lowercase hex characters when derivation runs",
@@ -232,10 +233,11 @@ constructor(
                 )
             }
             val committed =
-                versions.commit(
+                versions.commitWithDeriveRequest(
                     mapId = map.id,
                     sourceSha256 = request.sourceSha256,
                     sourceKey = sourceKey,
+                    deriveRequested = deriveRequested,
                     parentVersion = request.parentVersion,
                     note = request.note,
                     bySub = identity.principal.name,
@@ -244,7 +246,7 @@ constructor(
             // erase an immutable version or make the caller believe it was published; the
             // reconciler owns repairing the persisted DRAFT/DERIVING candidate.
             val response =
-                if (derive.enabled && sourceBacked)
+                if (deriveRequested)
                     try {
                         coordinator.coordinate(map.id, committed.version)
                         versions.find(map.id, committed.version) ?: committed
@@ -401,7 +403,7 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
-            if (derive.enabled && existing.sourceKey != null) {
+            if (existing.deriveRequested) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
                     "source-backed versions derive asynchronously; poll the exact version instead of /publish",
