@@ -144,6 +144,12 @@ class AuthorizationIT {
             .statusCode(201)
 
         given().`when`().get("/v1/maps/u/carol/secret").then().statusCode(200)
+        given()
+            .contentType(ContentType.JSON)
+            .body("{}")
+            .post("/v1/maps/u/carol/secret/versions")
+            .then()
+            .statusCode(201)
     }
 
     @Test
@@ -151,6 +157,7 @@ class AuthorizationIT {
     @TestSecurity(user = "dave")
     fun `and it is a 404, not a 403`() {
         given().`when`().get("/v1/maps/u/carol/secret").then().statusCode(404)
+        given().`when`().get("/v1/maps/u/carol/secret/versions/1").then().statusCode(404)
         given()
             .`when`()
             .get("/v1/maps?namespace=u/carol")

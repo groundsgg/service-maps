@@ -29,14 +29,19 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag
                     "CDN — they never call this service.\n\n" +
                     "**Publishing is not going live.** A published version is merely pinnable; " +
                     "moving a pin is what changes the map every player loads, and it is granted " +
-                    "separately.",
+                    "separately.\n\n" +
+                    "**Uploaded maps may derive asynchronously.** When derivation is enabled, " +
+                    "commit an uploaded source, poll its exact version until it reaches a terminal " +
+                    "state, and retry only retryable SYSTEM failures through the derive retry endpoint.",
         ),
     tags =
         [
             Tag(name = "Maps", description = "The catalogue: creating, listing and forking maps."),
             Tag(
                 name = "Versions",
-                description = "Uploading a world, committing a version and publishing it.",
+                description =
+                    "Uploading a world, asynchronous derivation and exact-version polling. " +
+                        "Legacy publish remains only for source-less compatibility versions.",
             ),
             Tag(
                 name = "Pins",
