@@ -297,7 +297,6 @@ constructor(
                     $SELECT_COLUMNS
                     WHERE (state = 'DRAFT' AND source_sha256 IS NOT NULL AND source_key IS NOT NULL)
                        OR (state = 'DERIVING' AND derive_attempt IS NOT NULL)
-                       OR (state = 'DERIVE_FAILED' AND derive_failure_scope = 'SYSTEM' AND derive_retryable)
                     ORDER BY created_at, map, version
                     LIMIT ?
                     """

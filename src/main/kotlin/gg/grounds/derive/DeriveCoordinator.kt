@@ -3,6 +3,7 @@ package gg.grounds.derive
 import gg.grounds.blob.BlobStore
 import gg.grounds.catalog.PackSetCatalogProvider
 import gg.grounds.domain.DeriveIdentity
+import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.VersionState
 import jakarta.enterprise.context.ApplicationScoped
@@ -46,13 +47,17 @@ constructor(
     fun coordinate(mapId: UUID, version: Int) {
         if (!enabled) return
         val claimed = versions.claimForDerive(mapId, version, UUID.randomUUID()) ?: return
-        createFor(
-            claimed.mapId,
-            claimed.version,
-            requireNotNull(claimed.deriveAttempt),
-            requireNotNull(claimed.sourceSha256),
-            requireNotNull(claimed.sourceKey),
-        )
+        try {
+            createFor(
+                claimed.mapId,
+                claimed.version,
+                requireNotNull(claimed.deriveAttempt),
+                requireNotNull(claimed.sourceSha256),
+                requireNotNull(claimed.sourceKey),
+            )
+        } catch (failure: Exception) {
+            throw DeriveJobCreationException(claimed, failure)
+        }
     }
 
     fun ensure(record: gg.grounds.domain.MapVersionRecord) {
@@ -146,3 +151,7 @@ constructor(
         val MINIMUM_URL_TTL: Duration = Duration.ofMinutes(30)
     }
 }
+
+/** Preserves the immutable claimed identity when creating its Job fails transiently. */
+class DeriveJobCreationException(val claimed: MapVersionRecord, cause: Exception) :
+    RuntimeException("could not create derive Job for claimed version", cause)

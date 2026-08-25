@@ -20,7 +20,6 @@ import jakarta.enterprise.event.Observes
 import jakarta.inject.Inject
 import java.security.MessageDigest
 import java.time.Duration
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import org.jboss.logging.Logger
 
@@ -37,8 +36,8 @@ constructor(
 ) {
     private val log = Logger.getLogger(DeriveReconciler::class.java)
     private val reconciling = AtomicBoolean(false)
-    private val pendingRetries = ConcurrentHashMap.newKeySet<DeriveIdentity>()
-    private val retryCounts = ConcurrentHashMap<DeriveIdentity, Int>()
+    private val retryLock = Any()
+    private val retries = mutableMapOf<DeriveIdentity, RetryState>()
     private val watchOpen = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private var watch: AutoCloseable? = null
@@ -61,7 +60,10 @@ constructor(
                 try {
                     when (record.state) {
                         VersionState.DRAFT -> coordinator.coordinate(record.mapId, record.version)
-                        VersionState.DERIVING -> reconcileDeriving(record)
+                        VersionState.DERIVING -> {
+                            val identity = identity(record)
+                            if (claimDueRetry(identity)) reconcileDeriving(record)
+                        }
                         // A failed attempt is terminal for automation. Task 9 owns the explicitly
                         // authorized manual retry that creates a fresh attempt.
                         VersionState.DERIVE_FAILED -> Unit
@@ -69,8 +71,11 @@ constructor(
                     }
                 } catch (failure: DeriveResultIntegrityException) {
                     integrityFailures += failure
+                } catch (failure: DeriveJobCreationException) {
+                    scheduleRetrySafely(failure.claimed, integrityFailures)
                 } catch (failure: Exception) {
-                    if (record.state == VersionState.DERIVING) scheduleRetry(record, failure)
+                    if (record.state == VersionState.DERIVING)
+                        scheduleRetrySafely(record, integrityFailures)
                     else log.warnf("derive_reconcile scope=batch outcome=ignored")
                 }
             }
@@ -85,13 +90,7 @@ constructor(
     }
 
     private fun reconcileDeriving(record: gg.grounds.domain.MapVersionRecord) {
-        val identity =
-            DeriveIdentity(
-                record.mapId,
-                record.version,
-                requireNotNull(record.deriveAttempt),
-                requireNotNull(record.sourceSha256),
-            )
+        val identity = identity(record)
         val status = jobs.find(identity)
         when (status) {
             null,
@@ -107,33 +106,39 @@ constructor(
             DeriveJobStatus.SUCCEEDED -> acceptResult(identity)
             else -> Unit
         }
-        retryCounts.remove(identity)
+        clearRetry(identity)
     }
 
-    private fun scheduleRetry(record: gg.grounds.domain.MapVersionRecord, failure: Exception) {
-        val identity =
-            DeriveIdentity(
-                record.mapId,
-                record.version,
-                requireNotNull(record.deriveAttempt),
-                requireNotNull(record.sourceSha256),
-            )
-        if (!pendingRetries.add(identity)) return
-        val failures = retryCounts.merge(identity, 1, Int::plus) ?: 1
-        if (failures > RETRY_DELAYS.size) {
-            pendingRetries.remove(identity)
-            retryCounts.remove(identity)
-            try {
-                versions.acceptFailure(
-                    identity,
-                    systemFailure(
-                        "RECONCILIATION_UNAVAILABLE",
-                        "reconciliation retry budget exhausted",
-                    ),
-                )
-            } catch (rejected: DeriveResultRejectedException) {
-                // A concurrent accepted terminal transition wins.
+    private fun scheduleRetrySafely(
+        record: gg.grounds.domain.MapVersionRecord,
+        integrityFailures: MutableList<DeriveResultIntegrityException>,
+    ) {
+        try {
+            scheduleRetry(record)
+        } catch (failure: DeriveResultIntegrityException) {
+            integrityFailures += failure
+        } catch (_: Exception) {
+            log.warnf("derive_reconcile scope=attempt outcome=retry_schedule_failed")
+        }
+    }
+
+    private fun scheduleRetry(record: gg.grounds.domain.MapVersionRecord) {
+        val identity = identity(record)
+        val failures =
+            synchronized(retryLock) {
+                val current = retries[identity]
+                if (current?.phase == RetryPhase.PENDING) return
+                val next = (current?.failures ?: 0) + 1
+                if (next <= RETRY_DELAYS.size)
+                    retries[identity] = RetryState(next, RetryPhase.PENDING)
+                else retries.remove(identity)
+                next
             }
+        if (failures > RETRY_DELAYS.size) {
+            versions.acceptFailure(
+                identity,
+                systemFailure("RECONCILIATION_UNAVAILABLE", "reconciliation retry budget exhausted"),
+            )
             log.warnf(
                 "derive_reconcile scope=attempt outcome=failed code=RECONCILIATION_UNAVAILABLE"
             )
@@ -145,10 +150,52 @@ constructor(
             "derive_reconcile scope=attempt outcome=retry code=TRANSIENT delay_seconds=%d",
             delay.seconds,
         )
-        scheduler.schedule(delay) {
-            pendingRetries.remove(identity)
-            reconcile()
+        try {
+            scheduler.schedule(delay) {
+                synchronized(retryLock) {
+                    retries[identity]?.takeIf { it.phase == RetryPhase.PENDING }?.phase =
+                        RetryPhase.DUE
+                }
+                reconcile()
+            }
+        } catch (failure: Exception) {
+            synchronized(retryLock) {
+                retries[identity]?.takeIf { it.phase == RetryPhase.PENDING }?.phase = RetryPhase.DUE
+            }
+            throw failure
         }
+    }
+
+    private fun identity(record: gg.grounds.domain.MapVersionRecord) =
+        DeriveIdentity(
+            record.mapId,
+            record.version,
+            requireNotNull(record.deriveAttempt),
+            requireNotNull(record.sourceSha256),
+        )
+
+    private fun claimDueRetry(identity: DeriveIdentity): Boolean =
+        synchronized(retryLock) {
+            when (retries[identity]?.phase) {
+                RetryPhase.PENDING,
+                RetryPhase.PROCESSING -> false
+                RetryPhase.DUE -> {
+                    retries.getValue(identity).phase = RetryPhase.PROCESSING
+                    true
+                }
+                null -> true
+            }
+        }
+
+    private fun clearRetry(identity: DeriveIdentity) =
+        synchronized(retryLock) { retries.remove(identity) }
+
+    private data class RetryState(val failures: Int, var phase: RetryPhase)
+
+    private enum class RetryPhase {
+        PENDING,
+        DUE,
+        PROCESSING,
     }
 
     private fun openWatch() {

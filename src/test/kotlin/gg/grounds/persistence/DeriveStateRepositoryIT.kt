@@ -384,7 +384,7 @@ class DeriveStateRepositoryIT {
 
     @Test
     @Order(1)
-    fun `reconciliation returns ordered claimable and retryable candidates within its configured batch`() {
+    fun `reconciliation excludes terminal failures before applying its ordered batch limit`() {
         val (lowerMap, contentFailure, nonRetryableSystem, retryableMap, beyondLimitMap) =
             List(5) { committed("reconcile-tie-$it") }.sortedBy { it.id.toString() }
         val lowerDraft = requireNotNull(versions.find(lowerMap.id, 1))
@@ -489,12 +489,12 @@ class DeriveStateRepositoryIT {
             listOf(
                 lowerMap.id to lowerDraft.version,
                 lowerMap.id to lowerDeriving.version,
-                retryableMap.id to 1,
+                beyondLimitMap.id to beyondLimit.version,
             ),
             candidates.map { it.mapId to it.version },
         )
         assertEquals(
-            listOf(VersionState.DRAFT, VersionState.DERIVING, VersionState.DERIVE_FAILED),
+            listOf(VersionState.DRAFT, VersionState.DERIVING, VersionState.DRAFT),
             candidates.map { it.state },
         )
         assertFalse(
@@ -506,8 +506,9 @@ class DeriveStateRepositoryIT {
                         missingAttempt.id,
                         contentFailure.id,
                         nonRetryableSystem.id,
+                        retryableMap.id,
                         published.id,
-                    ) || (it.mapId == beyondLimitMap.id && it.version == beyondLimit.version)
+                    )
             }
         )
         assertNull(versions.claimForDerive(missingSourceSha.id, 1, UUID.randomUUID()))

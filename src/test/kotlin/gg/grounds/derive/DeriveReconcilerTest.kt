@@ -584,6 +584,50 @@ class DeriveReconcilerTest {
     }
 
     @Test
+    fun `pending retry prevents a poll from reprocessing the same identity`() {
+        val version = record(VersionState.DERIVING)
+        val scheduler = FakeScheduler()
+        val jobs = FakeJobs(failFinds = 1)
+        val reconciler = reconciler(FakeVersions(listOf(version)), jobs, FakeArtifacts(), scheduler)
+
+        reconciler.reconcile()
+        reconciler.reconcile()
+
+        assertEquals(1, jobs.findCalls)
+        assertEquals(listOf(Duration.ofSeconds(5)), scheduler.delays)
+    }
+
+    @Test
+    fun `draft Job creation failure enters the retry gate using the claimed attempt`() {
+        val draft = record(VersionState.DRAFT).copy(deriveAttempt = null)
+        val scheduler = FakeScheduler()
+        val jobs = FakeJobs(failCreates = 1)
+        val versions = FakeVersions(listOf(draft))
+
+        reconciler(versions, jobs, FakeArtifacts(), scheduler).reconcile()
+
+        assertEquals(1, versions.claims)
+        assertEquals(listOf(Duration.ofSeconds(5)), scheduler.delays)
+    }
+
+    @Test
+    fun `retry scheduling failure does not prevent a later candidate from reconciling`() {
+        val failing = record(VersionState.DERIVING)
+        val later = record(VersionState.DERIVING)
+        val jobs = FakeJobs(mapOf(later.identity() to DeriveJobStatus.MISSING), failFinds = 1)
+
+        reconciler(
+                FakeVersions(listOf(failing, later)),
+                jobs,
+                FakeArtifacts(),
+                FakeScheduler(failSchedules = 1),
+            )
+            .reconcile()
+
+        assertEquals(listOf(later.identity()), jobs.created.map { it.identity })
+    }
+
+    @Test
     fun `reconciliation metrics use only bounded non-secret labels`() {
         val registry = SimpleMeterRegistry()
         val metrics = DeriveReconciliationMetrics(registry)
@@ -860,11 +904,13 @@ class DeriveReconcilerTest {
     private class FakeJobs(
         private val states: Map<DeriveIdentity, DeriveJobStatus> = emptyMap(),
         private var failFinds: Int = 0,
+        private var failCreates: Int = 0,
     ) : DeriveJobGateway {
         val created = java.util.concurrent.CopyOnWriteArrayList<DeriveJobRequest>()
         var findCalls = 0
 
         override fun create(request: DeriveJobRequest) {
+            if (failCreates-- > 0) throw IllegalStateException("transient create")
             if (created.none { it.identity == request.identity }) created += request
         }
 
@@ -875,11 +921,12 @@ class DeriveReconcilerTest {
         }
     }
 
-    private class FakeScheduler : ReconciliationScheduler {
+    private class FakeScheduler(private var failSchedules: Int = 0) : ReconciliationScheduler {
         val delays = mutableListOf<Duration>()
         private val tasks = ArrayDeque<() -> Unit>()
 
         override fun schedule(delay: Duration, task: () -> Unit) {
+            if (failSchedules-- > 0) throw IllegalStateException("scheduler unavailable")
             delays += delay
             tasks += task
         }
