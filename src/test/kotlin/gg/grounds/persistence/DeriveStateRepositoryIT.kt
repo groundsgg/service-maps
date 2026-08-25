@@ -53,6 +53,24 @@ class DeriveStateRepositoryIT {
     @Inject lateinit var dataSource: javax.sql.DataSource
 
     @Test
+    fun `legacy draft is neither claimable nor a reconciliation candidate`() {
+        val map =
+            maps.create(
+                MapAddress("derive", "legacy-draft-${UUID.randomUUID()}"),
+                "legacy-draft",
+                MapKind.ARENA,
+                false,
+                MapTrust.FIRST_PARTY,
+                "builder",
+            )
+        versions.commit(map.id, digest(1), "tmp/uploads/legacy.tar.zst", null, null, "builder")
+
+        assertNull(versions.claimForDerive(map.id, 1, UUID.randomUUID()))
+        assertFalse(versions.listReconcileCandidates().any { it.mapId == map.id })
+        assertEquals(VersionState.DRAFT, versions.find(map.id, 1)?.state)
+    }
+
+    @Test
     @Order(2)
     fun `competing claims block behind the version lock and assign exactly one attempt`() {
         val map = committed("concurrent-claim")
@@ -646,10 +664,11 @@ class DeriveStateRepositoryIT {
                 "builder",
             )
             .also { map ->
-                versions.commit(
+                versions.commitWithDeriveRequest(
                     map.id,
                     digest(1),
                     "tmp/uploads/source.tar.zst",
+                    true,
                     null,
                     null,
                     "builder",

@@ -172,6 +172,7 @@ constructor(
                         ?: throw VersionNotFoundException(mapId, version)
                 if (
                     current.state != VersionState.DRAFT ||
+                        !current.deriveRequested ||
                         current.sourceSha256 == null ||
                         current.sourceKey == null
                 ) {
@@ -326,7 +327,8 @@ constructor(
             c.prepareStatement(
                     """
                     $SELECT_COLUMNS
-                    WHERE (state = 'DRAFT' AND source_sha256 IS NOT NULL AND source_key IS NOT NULL)
+                    WHERE (state = 'DRAFT' AND derive_requested = TRUE
+                           AND source_sha256 IS NOT NULL AND source_key IS NOT NULL)
                        OR (state = 'DERIVING' AND derive_attempt IS NOT NULL)
                     ORDER BY created_at, map, version
                     LIMIT ?
