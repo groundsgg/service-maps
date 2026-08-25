@@ -18,7 +18,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -541,14 +540,25 @@ class DeriveReconcilerTest {
     }
 
     @Test
-    fun `concurrent ticks cannot duplicate a draft claim or Job`() {
+    fun `overlapping triggers create at most one logical Job`() {
         val versions = FakeVersions(listOf(record(VersionState.DRAFT).copy(deriveAttempt = null)))
-        val jobs = FakeJobs()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val jobs =
+            FakeJobs(
+                onCreate = {
+                    entered.countDown()
+                    check(release.await(2, TimeUnit.SECONDS))
+                }
+            )
         val reconciler = reconciler(versions, jobs, FakeArtifacts())
-        Executors.newFixedThreadPool(4).use { pool ->
-            pool.invokeAll(List(12) { Callable { reconciler.reconcile() } }).forEach {
-                it.get(2, TimeUnit.SECONDS)
-            }
+        Executors.newFixedThreadPool(2).use { pool ->
+            val first = pool.submit { reconciler.reconcile() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            val overlapping = pool.submit { reconciler.reconcile() }
+            release.countDown()
+            first.get(2, TimeUnit.SECONDS)
+            overlapping.get(2, TimeUnit.SECONDS)
         }
         assertEquals(1, versions.claims)
         assertEquals(1, jobs.created.size)
@@ -732,16 +742,18 @@ class DeriveReconcilerTest {
     }
 
     @Test
-    fun `reconciliation metrics use only bounded non-secret labels`() {
+    fun `reconciliation records closed-label outcomes duration and resets candidate gauge`() {
         val registry = SimpleMeterRegistry()
-        val metrics = DeriveReconciliationMetrics(registry)
-
-        metrics.attempt("success", "worker")
-        metrics.retry()
-        metrics.repair()
-        metrics.activeCandidates(2)
-        metrics.activeCandidates(3)
-        metrics.duration("poll") {}
+        val version = record(VersionState.DERIVING)
+        val result = success(version)
+        reconciler(
+                FakeVersions(listOf(version)),
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                FakeArtifacts(CanonicalJson.write(result)).apply { complete(result) },
+                FakeScheduler(),
+                DeriveReconciliationMetrics(registry),
+            )
+            .reconcile()
 
         val labels = registry.meters.flatMap { it.id.tags }.map { it.key to it.value }
         assertTrue(
@@ -754,30 +766,31 @@ class DeriveReconcilerTest {
         assertEquals(
             1.0,
             registry
-                .counter("derive.reconciliation.attempts", "outcome", "success", "scope", "worker")
+                .counter("derive.reconciliation.attempts", "outcome", "succeeded", "scope", "none")
                 .count(),
         )
-        assertEquals(1.0, registry.counter("derive.reconciliation.retries").count())
-        assertEquals(1.0, registry.counter("derive.reconciliation.repairs").count())
-        assertEquals(3.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
+        assertEquals(0.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
+        assertEquals(
+            1L,
+            registry.timer("derive.reconciliation.duration", "trigger", "reconcile").count(),
+        )
     }
 
     @Test
-    fun `transient reconciliation records its retry metric without identity labels`() {
+    fun `reconciliation resets candidate gauge when candidate loading fails`() {
         val registry = SimpleMeterRegistry()
-        val version = record(VersionState.DERIVING)
         val reconciler =
             reconciler(
-                FakeVersions(listOf(version)),
-                FakeJobs(failFinds = 1),
+                FakeVersions(emptyList(), failList = true),
+                FakeJobs(),
                 FakeArtifacts(),
                 FakeScheduler(),
                 DeriveReconciliationMetrics(registry),
             )
 
-        reconciler.reconcile()
+        assertThrows(IllegalStateException::class.java) { reconciler.reconcile() }
 
-        assertEquals(1.0, registry.counter("derive.reconciliation.retries").count())
+        assertEquals(0.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
     }
 
     private fun reconciler(
@@ -1010,6 +1023,7 @@ class DeriveReconcilerTest {
         private var failFinds: Int = 0,
         private var failCreates: Int = 0,
         private val onFind: ((DeriveIdentity) -> Unit)? = null,
+        private val onCreate: (() -> Unit)? = null,
     ) : DeriveJobGateway {
         val created = java.util.concurrent.CopyOnWriteArrayList<DeriveJobRequest>()
         val watches = mutableListOf<FakeWatch>()
@@ -1017,6 +1031,7 @@ class DeriveReconcilerTest {
 
         override fun create(request: DeriveJobRequest) {
             if (failCreates-- > 0) throw IllegalStateException("transient create")
+            onCreate?.invoke()
             if (created.none { it.identity == request.identity }) created += request
         }
 
@@ -1064,6 +1079,7 @@ class DeriveReconcilerTest {
         private val rejectFailure: Boolean = false,
         private val integrityFailure: Boolean = false,
         private val failureIntegrity: Boolean = false,
+        private val failList: Boolean = false,
         private val events: MutableList<String>? = null,
     ) : MapVersionRepository by unused() {
         private val records = records.toMutableList()
@@ -1074,7 +1090,11 @@ class DeriveReconcilerTest {
 
         fun firstDeriving() = records.firstOrNull { it.deriveAttempt != null }
 
-        override fun listReconcileCandidates() = synchronized(records) { records.toList() }
+        override fun listReconcileCandidates() =
+            synchronized(records) {
+                if (failList) throw IllegalStateException("repository unavailable")
+                records.toList()
+            }
 
         override fun claimForDerive(mapId: UUID, version: Int, attempt: UUID) =
             synchronized(records) {

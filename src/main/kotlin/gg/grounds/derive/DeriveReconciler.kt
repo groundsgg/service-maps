@@ -60,13 +60,23 @@ constructor(
             return
         }
         val integrityFailures = mutableListOf<DeriveResultIntegrityException>()
+        val startedAt = System.nanoTime()
         try {
             val candidates = versions.listReconcileCandidates()
             observe { metrics?.activeCandidates(candidates.size) }
             candidates.forEach { record ->
+                val candidateStartedAt = System.nanoTime()
                 try {
                     when (record.state) {
-                        VersionState.DRAFT -> coordinator.coordinate(record.mapId, record.version)
+                        VersionState.DRAFT -> {
+                            coordinator.coordinate(record.mapId, record.version)
+                            logTransition(
+                                record,
+                                "coordinated",
+                                ReconciliationWorkScope.DRAFT,
+                                candidateStartedAt,
+                            )
+                        }
                         VersionState.DERIVING -> {
                             val identity = identity(record)
                             if (claimDueRetry(identity)) reconcileDeriving(record)
@@ -78,15 +88,36 @@ constructor(
                     }
                 } catch (failure: DeriveResultIntegrityException) {
                     integrityFailures += failure
+                    logTransition(
+                        record,
+                        "failed",
+                        workScope(record),
+                        candidateStartedAt,
+                        "RESULT_INTEGRITY",
+                    )
                 } catch (failure: DeriveJobCreationException) {
                     scheduleRetrySafely(failure.claimed, integrityFailures)
                 } catch (failure: Exception) {
                     if (record.state == VersionState.DERIVING)
                         scheduleRetrySafely(record, integrityFailures)
-                    else log.warnf("derive_reconcile scope=batch outcome=ignored")
+                    else
+                        logTransition(
+                            record,
+                            "failed",
+                            workScope(record),
+                            candidateStartedAt,
+                            "RECONCILIATION_UNAVAILABLE",
+                        )
                 }
             }
         } finally {
+            observe { metrics?.activeCandidates(0) }
+            observe {
+                metrics?.duration(
+                    ReconciliationTrigger.RECONCILE,
+                    Duration.ofNanos(System.nanoTime() - startedAt),
+                )
+            }
             reconciling.set(false)
         }
         if (rerunRequested.compareAndSet(true, false)) requestPromptRerun()
@@ -105,13 +136,39 @@ constructor(
             DeriveJobStatus.MISSING -> {
                 coordinator.ensure(record, status)
                 observe { metrics?.repair() }
+                logTransition(record, "repaired", ReconciliationWorkScope.DERIVING)
             }
-            DeriveJobStatus.FAILED ->
+            DeriveJobStatus.FAILED -> {
                 versions.acceptFailure(
                     identity,
                     systemFailure("JOB_FAILED", "derive Job exhausted its backoff limit"),
                 )
-            DeriveJobStatus.SUCCEEDED -> acceptResult(identity)
+                observeTerminal(
+                    TerminalAttempt(
+                        ReconciliationAttemptOutcome.FAILED,
+                        ReconciliationAttemptScope.SYSTEM,
+                        "JOB_FAILED",
+                    )
+                )
+                logTransition(
+                    record,
+                    "failed",
+                    ReconciliationWorkScope.DERIVING,
+                    code = "JOB_FAILED",
+                )
+            }
+            DeriveJobStatus.SUCCEEDED -> {
+                acceptResult(identity)?.let { terminal ->
+                    observeTerminal(terminal)
+                    logTransition(
+                        record,
+                        if (terminal.outcome == ReconciliationAttemptOutcome.SUCCEEDED) "succeeded"
+                        else "failed",
+                        ReconciliationWorkScope.DERIVING,
+                        code = terminal.code,
+                    )
+                }
+            }
             else -> Unit
         }
         clearRetry(identity)
@@ -126,7 +183,7 @@ constructor(
         } catch (failure: DeriveResultIntegrityException) {
             integrityFailures += failure
         } catch (_: Exception) {
-            log.warnf("derive_reconcile scope=attempt outcome=retry_schedule_failed")
+            logTransition(record, "failed", workScope(record), code = "RETRY_SCHEDULE_FAILED")
         }
     }
 
@@ -147,17 +204,19 @@ constructor(
                 identity,
                 systemFailure("RECONCILIATION_UNAVAILABLE", "reconciliation retry budget exhausted"),
             )
-            log.warnf(
-                "derive_reconcile scope=attempt outcome=failed code=RECONCILIATION_UNAVAILABLE"
+            observeTerminal(
+                TerminalAttempt(
+                    ReconciliationAttemptOutcome.FAILED,
+                    ReconciliationAttemptScope.SYSTEM,
+                    "RECONCILIATION_UNAVAILABLE",
+                )
             )
+            logTransition(record, "failed", workScope(record), code = "RECONCILIATION_UNAVAILABLE")
             return
         }
         val delay = RETRY_DELAYS[failures - 1]
         observe { metrics?.retry() }
-        log.warnf(
-            "derive_reconcile scope=attempt outcome=retry code=TRANSIENT delay_seconds=%d",
-            delay.seconds,
-        )
+        logTransition(record, "retry", workScope(record), code = "TRANSIENT")
         try {
             scheduler.schedule(delay) {
                 synchronized(retryLock) {
@@ -198,6 +257,39 @@ constructor(
     private fun clearRetry(identity: DeriveIdentity) =
         synchronized(retryLock) { retries.remove(identity) }
 
+    private fun observeTerminal(terminal: TerminalAttempt) {
+        observe { metrics?.attempt(terminal.outcome, terminal.scope) }
+    }
+
+    private fun workScope(record: gg.grounds.domain.MapVersionRecord) =
+        when (record.state) {
+            VersionState.DRAFT -> ReconciliationWorkScope.DRAFT
+            else -> ReconciliationWorkScope.DERIVING
+        }
+
+    private fun logTransition(
+        record: gg.grounds.domain.MapVersionRecord,
+        outcome: String,
+        scope: ReconciliationWorkScope,
+        startedAt: Long? = null,
+        code: String? = null,
+    ) {
+        val duration =
+            startedAt?.let { " duration_ms=${(System.nanoTime() - it) / 1_000_000}" } ?: ""
+        val resultCode = code?.let { " code=$it" } ?: ""
+        log.infof(
+            "derive_reconcile map_id=%s version=%d attempt=%s state=%s scope=%s outcome=%s%s%s",
+            record.mapId,
+            record.version,
+            record.deriveAttempt ?: "none",
+            record.state,
+            scope.name.lowercase(),
+            outcome,
+            resultCode,
+            duration,
+        )
+    }
+
     private fun requestPromptRerun() {
         try {
             scheduler.schedule(Duration.ZERO, ::reconcile)
@@ -216,6 +308,17 @@ constructor(
     }
 
     private data class RetryState(val failures: Int, var phase: RetryPhase)
+
+    private data class TerminalAttempt(
+        val outcome: ReconciliationAttemptOutcome,
+        val scope: ReconciliationAttemptScope,
+        val code: String? = null,
+    )
+
+    private enum class ReconciliationWorkScope {
+        DRAFT,
+        DERIVING,
+    }
 
     private enum class RetryPhase {
         PENDING,
@@ -305,8 +408,8 @@ constructor(
         runCatching { scheduler.close() }
     }
 
-    private fun acceptResult(identity: DeriveIdentity) {
-        try {
+    private fun acceptResult(identity: DeriveIdentity): TerminalAttempt? {
+        return try {
             when (
                 val result =
                     CanonicalJson.readResult(
@@ -394,6 +497,10 @@ constructor(
                         ),
                         "derive-worker",
                     )
+                    TerminalAttempt(
+                        ReconciliationAttemptOutcome.SUCCEEDED,
+                        ReconciliationAttemptScope.NONE,
+                    )
                 }
                 is DeriveFailure -> {
                     requireResultIdentity(result, identity)
@@ -405,6 +512,11 @@ constructor(
                             result.problems,
                         ),
                     )
+                    TerminalAttempt(
+                        ReconciliationAttemptOutcome.FAILED,
+                        result.scope.metricScope(),
+                        result.problems.firstOrNull()?.code,
+                    )
                 }
             }
         } catch (e: DeriveResultIntegrityException) {
@@ -412,13 +524,14 @@ constructor(
         } catch (_: DeriveResultRejectedException) {
             // Another tick accepted/retried this immutable version first; stale completion is
             // harmless.
+            null
         } catch (_: Exception) {
             recordUnavailableResult(identity)
         }
     }
 
-    private fun recordUnavailableResult(identity: DeriveIdentity) {
-        try {
+    private fun recordUnavailableResult(identity: DeriveIdentity): TerminalAttempt? {
+        return try {
             versions.acceptFailure(
                 identity,
                 systemFailure(
@@ -426,12 +539,24 @@ constructor(
                     "completed derive Job has no acceptable result marker",
                 ),
             )
+            TerminalAttempt(
+                ReconciliationAttemptOutcome.FAILED,
+                ReconciliationAttemptScope.SYSTEM,
+                "RESULT_UNAVAILABLE",
+            )
         } catch (e: DeriveResultIntegrityException) {
             throw e
         } catch (_: DeriveResultRejectedException) {
             // A later tick may already have accepted or retried this immutable version.
+            null
         }
     }
+
+    private fun DeriveFailureScope.metricScope() =
+        when (this) {
+            DeriveFailureScope.CONTENT -> ReconciliationAttemptScope.CONTENT
+            DeriveFailureScope.SYSTEM -> ReconciliationAttemptScope.SYSTEM
+        }
 
     private fun requireArtifactSize(key: String, expectedSize: Long) {
         val metadata =
