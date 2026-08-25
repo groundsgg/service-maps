@@ -1,3 +1,4 @@
+{{- include "service-maps.validateDerive" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,6 +94,30 @@ spec:
               value: {{ .Values.config.otel.disabled | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otel.endpoint | quote }}
+            {{- if .Values.derive.enabled }}
+            - name: MAPS_DERIVE_ENABLED
+              value: "true"
+            - name: MAPS_DERIVE_REQUIRED
+              value: {{ .Values.derive.required | quote }}
+            - name: MAPS_DERIVE_NAMESPACE
+              value: {{ default .Release.Namespace .Values.derive.namespace | quote }}
+            - name: MAPS_DERIVE_IMAGE
+              value: {{ .Values.derive.worker.image | quote }}
+            - name: MAPS_DERIVE_SERVICE_ACCOUNT
+              value: {{ .Values.derive.worker.serviceAccount.name | quote }}
+            - name: MAPS_DERIVE_POLL_INTERVAL
+              value: {{ .Values.derive.pollInterval | quote }}
+            - name: MAPS_DERIVE_RECONCILE_BATCH_SIZE
+              value: {{ .Values.derive.reconcileBatchSize | quote }}
+            - name: MAPS_DERIVE_URL_TTL
+              value: {{ .Values.derive.urlTtl | quote }}
+            - name: MAPS_CATALOGS_BASE_URI
+              value: {{ .Values.derive.catalog.baseUri | quote }}
+            - name: MAPS_CATALOGS_PACK_SET
+              value: {{ .Values.derive.catalog.packSet | quote }}
+            - name: MAPS_CATALOGS_CACHE_ROOT
+              value: {{ .Values.derive.catalog.cacheRoot | quote }}
+            {{- end }}
           startupProbe:
             # Flyway runs at boot, so the first readiness can be slower than the steady state.
             httpGet: { path: /q/health/started, port: http }
@@ -110,9 +135,33 @@ spec:
             # The root filesystem is read-only; Quarkus still wants somewhere to write.
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.derive.enabled }}
+            # Fabric8 uses the conventional in-cluster token, namespace, and CA paths.
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.derive.enabled }}
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

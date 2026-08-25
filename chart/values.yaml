@@ -20,6 +20,26 @@ serviceAccount:
   # same-named SA from both sides fails the whole install.
   create: true
 
+# Derivation stays off until the service has the narrowly-scoped Kubernetes API access it needs.
+# The worker image is intentionally empty: enabling derives requires an immutable digest.
+derive:
+  enabled: false
+  required: false
+  # Empty uses the namespace of the Helm release.
+  namespace: ""
+  worker:
+    image: ""
+    serviceAccount:
+      name: service-maps-derive-worker
+      create: true
+  pollInterval: 30s
+  reconcileBatchSize: 100
+  urlTtl: 30m
+  catalog:
+    baseUri: https://cdn.grounds.gg
+    packSet: grounds-global
+    cacheRoot: /tmp/service-maps/packsets
+
 service:
   port: 9000
 
