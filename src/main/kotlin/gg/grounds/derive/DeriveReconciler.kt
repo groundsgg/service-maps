@@ -32,10 +32,11 @@ constructor(
     private val jobs: DeriveJobGateway,
     private val blobs: DeriveArtifactStore,
     private val scheduler: ReconciliationScheduler = ExecutorReconciliationScheduler(),
-    private val metrics: DeriveReconciliationMetrics? = null,
+    private val metrics: DeriveReconciliationObserver? = null,
 ) {
     private val log = Logger.getLogger(DeriveReconciler::class.java)
     private val reconciling = AtomicBoolean(false)
+    private val rerunRequested = AtomicBoolean(false)
     private val retryLock = Any()
     private val retries = mutableMapOf<DeriveIdentity, RetryState>()
     private val watchOpen = AtomicBoolean(false)
@@ -51,11 +52,14 @@ constructor(
 
     @Scheduled(every = "{grounds.maps.derive.poll-interval:30s}")
     fun reconcile() {
-        if (!reconciling.compareAndSet(false, true)) return
+        if (!reconciling.compareAndSet(false, true)) {
+            rerunRequested.set(true)
+            return
+        }
         val integrityFailures = mutableListOf<DeriveResultIntegrityException>()
         try {
             val candidates = versions.listReconcileCandidates()
-            metrics?.activeCandidates(candidates.size)
+            observe { metrics?.activeCandidates(candidates.size) }
             candidates.forEach { record ->
                 try {
                     when (record.state) {
@@ -82,6 +86,7 @@ constructor(
         } finally {
             reconciling.set(false)
         }
+        if (rerunRequested.compareAndSet(true, false)) requestPromptRerun()
         if (integrityFailures.isNotEmpty()) {
             val first = integrityFailures.first()
             integrityFailures.drop(1).forEach(first::addSuppressed)
@@ -96,7 +101,7 @@ constructor(
             null,
             DeriveJobStatus.MISSING -> {
                 coordinator.ensure(record, status)
-                metrics?.repair()
+                observe { metrics?.repair() }
             }
             DeriveJobStatus.FAILED ->
                 versions.acceptFailure(
@@ -145,7 +150,7 @@ constructor(
             return
         }
         val delay = RETRY_DELAYS[failures - 1]
-        metrics?.retry()
+        observe { metrics?.retry() }
         log.warnf(
             "derive_reconcile scope=attempt outcome=retry code=TRANSIENT delay_seconds=%d",
             delay.seconds,
@@ -189,6 +194,23 @@ constructor(
 
     private fun clearRetry(identity: DeriveIdentity) =
         synchronized(retryLock) { retries.remove(identity) }
+
+    private fun requestPromptRerun() {
+        try {
+            scheduler.schedule(Duration.ZERO, ::reconcile)
+        } catch (_: Exception) {
+            // Due retries remain claimable by the next poll/watch trigger; never restore PENDING.
+            log.warnf("derive_reconcile scope=batch outcome=rerun_schedule_failed")
+        }
+    }
+
+    private fun observe(action: () -> Unit) {
+        try {
+            action()
+        } catch (_: Exception) {
+            log.warnf("derive_reconcile scope=metrics outcome=ignored")
+        }
+    }
 
     private data class RetryState(val failures: Int, var phase: RetryPhase)
 

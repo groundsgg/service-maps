@@ -19,8 +19,10 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.stream.Stream
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -615,15 +617,74 @@ class DeriveReconcilerTest {
         val failing = record(VersionState.DERIVING)
         val later = record(VersionState.DERIVING)
         val jobs = FakeJobs(mapOf(later.identity() to DeriveJobStatus.MISSING), failFinds = 1)
+        val versions = FakeVersions(listOf(failing, later))
+        val scheduler = FakeScheduler(failSchedules = 1)
+        val reconciler = reconciler(versions, jobs, FakeArtifacts(), scheduler)
 
-        reconciler(
-                FakeVersions(listOf(failing, later)),
-                jobs,
-                FakeArtifacts(),
-                FakeScheduler(failSchedules = 1),
+        reconciler.reconcile()
+
+        assertEquals(listOf(later.identity()), jobs.created.map { it.identity })
+        reconciler.reconcile()
+        assertTrue(jobs.created.any { it.identity == failing.identity() })
+    }
+
+    @Test
+    fun `due callback colliding with an active batch prompts one post-batch reconciliation`() {
+        val due = record(VersionState.DERIVING)
+        val blocker = record(VersionState.DERIVING)
+        val scheduler = FakeScheduler()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blockActiveBatch = AtomicBoolean(false)
+        val jobs =
+            FakeJobs(
+                mapOf(blocker.identity() to DeriveJobStatus.RUNNING),
+                failFinds = 1,
+                onFind = { identity ->
+                    if (blockActiveBatch.get() && identity == blocker.identity()) {
+                        entered.countDown()
+                        check(release.await(2, TimeUnit.SECONDS))
+                    }
+                },
             )
+        val reconciler =
+            reconciler(FakeVersions(listOf(due, blocker)), jobs, FakeArtifacts(), scheduler)
+
+        reconciler.reconcile()
+        blockActiveBatch.set(true)
+        Executors.newSingleThreadExecutor().use { executor ->
+            val active = executor.submit { reconciler.reconcile() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            scheduler.runNext()
+            release.countDown()
+            active.get(2, TimeUnit.SECONDS)
+        }
+        scheduler.runNext()
+
+        assertEquals(5, jobs.findCalls)
+        assertEquals(listOf(due.identity()), jobs.created.map { it.identity })
+        assertEquals(listOf(Duration.ofSeconds(5), Duration.ZERO), scheduler.delays)
+    }
+
+    @Test
+    fun `throwing retry metrics do not strand the retry or later candidate`() {
+        val failing = record(VersionState.DERIVING)
+        val later = record(VersionState.DERIVING)
+        val jobs = FakeJobs(mapOf(later.identity() to DeriveJobStatus.MISSING), failFinds = 1)
+        val scheduler = FakeScheduler()
+        val metrics =
+            object : DeriveReconciliationObserver {
+                override fun retry() = error("metrics unavailable")
+
+                override fun activeCandidates(count: Int) = Unit
+
+                override fun repair() = Unit
+            }
+
+        reconciler(FakeVersions(listOf(failing, later)), jobs, FakeArtifacts(), scheduler, metrics)
             .reconcile()
 
+        assertEquals(listOf(Duration.ofSeconds(5)), scheduler.delays)
         assertEquals(listOf(later.identity()), jobs.created.map { it.identity })
     }
 
@@ -681,7 +742,7 @@ class DeriveReconcilerTest {
         j: FakeJobs,
         a: FakeArtifacts,
         scheduler: ReconciliationScheduler = FakeScheduler(),
-        metrics: DeriveReconciliationMetrics? = null,
+        metrics: DeriveReconciliationObserver? = null,
     ) =
         DeriveReconciler(
             v,
@@ -905,6 +966,7 @@ class DeriveReconcilerTest {
         private val states: Map<DeriveIdentity, DeriveJobStatus> = emptyMap(),
         private var failFinds: Int = 0,
         private var failCreates: Int = 0,
+        private val onFind: ((DeriveIdentity) -> Unit)? = null,
     ) : DeriveJobGateway {
         val created = java.util.concurrent.CopyOnWriteArrayList<DeriveJobRequest>()
         var findCalls = 0
@@ -917,6 +979,7 @@ class DeriveReconcilerTest {
         override fun find(identity: DeriveIdentity): DeriveJobStatus? {
             findCalls++
             if (failFinds-- > 0) throw IllegalStateException("transient")
+            onFind?.invoke(identity)
             return states[identity]
         }
     }
