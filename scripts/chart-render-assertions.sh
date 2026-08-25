@@ -10,8 +10,16 @@ trap 'rm -f "$disabled" "$enabled"' EXIT
 
 die() { echo "chart render assertion failed: $*" >&2; exit 1; }
 expect() { grep -F -- "$1" "$2" >/dev/null || die "missing $1"; }
-reject() { grep -F -- "$1" "$2" >/dev/null && die "unexpected $1"; }
-must_fail() { "$@" >/dev/null 2>&1 && die "expected command to fail: $*"; }
+reject() {
+  if grep -F -- "$1" "$2" >/dev/null; then
+    die "unexpected $1"
+  fi
+}
+must_fail() {
+  if "$@" >/dev/null 2>&1; then
+    die "expected command to fail: $*"
+  fi
+}
 worker_sa_is_secure() {
   awk '
     /^---$/ { in_worker=0 }

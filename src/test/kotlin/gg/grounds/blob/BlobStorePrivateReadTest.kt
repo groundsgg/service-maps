@@ -1,5 +1,6 @@
 package gg.grounds.blob
 
+import gg.grounds.derive.DeriveArtifactUnavailableException
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetAddress
@@ -60,12 +61,12 @@ class BlobStorePrivateReadTest {
             }
 
     @Test
-    fun `truncated declared body surfaces premature EOF and closes the SDK response`() =
+    fun `truncated declared body is retryable and closes the SDK response`() =
         RawHttpScript(ByteArray(5), Framing.DECLARED, BodyDisposition.TRUNCATE).use { script ->
             script.withClient { client ->
                 val result = client.submit<ByteArray> { script.blobs.getPrivate("marker", 8) }
                 script.awaitHeaders()
-                assertIOExceptionFailure(result, "Premature EOF")
+                assertArtifactUnavailable(result, "Premature EOF")
                 script.assertClientClosed()
             }
         }
@@ -84,14 +85,15 @@ class BlobStorePrivateReadTest {
         return failure as BlobIntegrityException
     }
 
-    private fun assertIOExceptionFailure(result: Future<ByteArray>, expectedMessage: String) {
+    private fun assertArtifactUnavailable(result: Future<ByteArray>, expectedCauseMessage: String) {
         val execution =
             assertThrows(ExecutionException::class.java) {
                 result.get(TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
             }
         val failure = execution.cause
-        assertEquals(IOException::class.java, failure?.javaClass)
-        assertEquals(expectedMessage, failure?.message)
+        assertEquals(DeriveArtifactUnavailableException::class.java, failure?.javaClass)
+        assertEquals(IOException::class.java, failure?.cause?.javaClass)
+        assertEquals(expectedCauseMessage, failure?.cause?.message)
     }
 
     private inline fun RawHttpScript.withClient(block: (ExecutorService) -> Unit) {
