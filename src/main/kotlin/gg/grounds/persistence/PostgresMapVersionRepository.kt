@@ -10,6 +10,7 @@ import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
+import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
@@ -646,6 +647,7 @@ constructor(
             note = getString("note"),
             createdAt = getTimestamp("created_at").toInstant(),
             deriveRequested = getBoolean("derive_requested"),
+            trust = MapTrust.valueOf(getString("map_trust")),
         )
 
     private fun ResultSet.sceneStatus(): SceneStatus =
@@ -810,7 +812,8 @@ constructor(
                    derive_attempt, derive_failure_scope, derive_retryable, derive_requested,
                    scene_present, scene_schema_version, scene_sha256,
                    asset_catalog_id, asset_catalog_version, action_catalog_id, action_catalog_version,
-                   published_by_sub, note, created_at
+                   published_by_sub, note, created_at,
+                   (SELECT trust FROM map WHERE id = map_version.map) AS map_trust
             FROM map_version
             """
     }

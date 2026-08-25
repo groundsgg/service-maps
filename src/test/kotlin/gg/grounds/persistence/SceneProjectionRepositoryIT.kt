@@ -60,7 +60,15 @@ class SceneProjectionRepositoryIT {
     @Test
     fun `accepted scene facts sort unique actions by Unicode code point`() {
         val map = createMap("projection-replacement")
-        versions.commit(map.id, "%064x".format(1), "tmp/source", null, null, "builder-sub")
+        versions.commitWithDeriveRequest(
+            map.id,
+            "%064x".format(1),
+            "tmp/source",
+            true,
+            null,
+            null,
+            "builder-sub",
+        )
         val attempt = UUID.randomUUID()
         versions.claimForDerive(map.id, 1, attempt)
         val finalScene =

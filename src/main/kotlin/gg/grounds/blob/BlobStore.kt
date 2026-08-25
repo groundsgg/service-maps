@@ -172,10 +172,9 @@ constructor(
         sourceKey: String,
         destinationKey: String,
         expectedSizeBytes: Long,
+        trust: MapTrust,
     ) {
-        artifactAccess {
-            copyPrivateToPublic(sourceKey, destinationKey, expectedSizeBytes, MapTrust.FIRST_PARTY)
-        }
+        artifactAccess { copyPrivateToPublic(sourceKey, destinationKey, expectedSizeBytes, trust) }
     }
 
     fun headPublic(key: String, trust: MapTrust): BlobMetadata? = head(publicBucketFor(trust), key)

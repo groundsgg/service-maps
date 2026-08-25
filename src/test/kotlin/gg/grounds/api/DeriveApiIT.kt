@@ -38,10 +38,11 @@ class DeriveApiIT {
         val map =
             requireNotNull(maps.find(gg.grounds.domain.MapAddress.parse("bedwars/derive-api")!!))
         val committed =
-            versions.commit(
+            versions.commitWithDeriveRequest(
                 map.id,
                 "a".repeat(64),
                 "tmp/uploads/00000000-0000-0000-0000-000000000001/source.tar.zst",
+                true,
                 null,
                 null,
                 "derive-staff",

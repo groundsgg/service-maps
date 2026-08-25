@@ -9,6 +9,7 @@ import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
+import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
@@ -417,6 +418,23 @@ class DeriveReconcilerTest {
             ),
             events,
         )
+    }
+
+    @Test
+    fun `promotes an untrusted map bundle into creator storage`() {
+        val version = record(VersionState.DERIVING).copy(trust = MapTrust.UNTRUSTED)
+        val result = success(version)
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(version).apply { complete(result) }
+
+        reconciler(
+                FakeVersions(listOf(version)),
+                FakeJobs(mapOf(version.identity() to DeriveJobStatus.SUCCEEDED)),
+                artifacts,
+            )
+            .reconcile()
+
+        assertEquals(MapTrust.UNTRUSTED, artifacts.promotions.single().trust)
     }
 
     @Test
@@ -927,7 +945,7 @@ class DeriveReconcilerTest {
         var promotionFailure: Exception? = null
         private var identity: DeriveIdentity? = null
         val reads = mutableListOf<Pair<String, Long>>()
-        val promotions = mutableListOf<Triple<String, String, Long>>()
+        val promotions = mutableListOf<Promotion>()
 
         fun assigned(version: MapVersionRecord?) = apply {
             identity =
@@ -1011,14 +1029,22 @@ class DeriveReconcilerTest {
             sourceKey: String,
             destinationKey: String,
             expectedSizeBytes: Long,
+            trust: MapTrust,
         ) {
             require(sourceKey == assignedKey("bundle"))
             require(destinationKey == BlobStore.bundleKey("b".repeat(64)))
             require(expectedSizeBytes == 42L)
             promotionFailure?.let { throw it }
             events?.add("promote:$sourceKey:$destinationKey:$expectedSizeBytes")
-            promotions += Triple(sourceKey, destinationKey, expectedSizeBytes)
+            promotions += Promotion(sourceKey, destinationKey, expectedSizeBytes, trust)
         }
+
+        data class Promotion(
+            val sourceKey: String,
+            val destinationKey: String,
+            val expectedSizeBytes: Long,
+            val trust: MapTrust,
+        )
     }
 
     private class FakeJobs(

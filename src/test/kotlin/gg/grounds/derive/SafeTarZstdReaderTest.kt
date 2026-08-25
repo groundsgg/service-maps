@@ -79,6 +79,17 @@ class SafeTarZstdReaderTest {
     }
 
     @Test
+    fun `classifies file nested directory path conflicts as archive content`() {
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader()
+                .read(
+                    ByteArrayInputStream(archive(entry("a"), entry("a/b/c"))),
+                    Files.createTempDirectory("safe-tar-test"),
+                )
+        }
+    }
+
+    @Test
     fun `enforces injectable entry path file and expanded limits`() {
         assertThrows(ArchiveContentException::class.java) {
             SafeTarZstdReader(ArchiveLimits(maxEntries = 1))

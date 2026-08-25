@@ -146,7 +146,8 @@ private class PhysicalTar(
         val name = path(header)
         if (size > limits.maxFileBytes) fail("archive file exceeds size limit", name)
         val target = target(name)
-        target.parent?.let(Files::createDirectories)
+        createDirectories(target.parent, name)
+        if (Files.exists(target)) fail("archive path conflicts with an existing entry", name)
         outputFactory(target).use { copyExactly(it, size, name) }
         padding(size)
         entries += SpoolEntry(name, target, false)
@@ -156,8 +157,25 @@ private class PhysicalTar(
         val name = path(header)
         discard(size)
         padding(size)
-        Files.createDirectories(target(name))
+        val target = target(name)
+        createDirectories(target.parent, name)
+        if (Files.exists(target) && !Files.isDirectory(target))
+            fail("archive path conflicts with a file", name)
+        Files.createDirectories(target)
         entries += SpoolEntry(name, null, true)
+    }
+
+    private fun createDirectories(directory: Path?, archivePath: String) {
+        var ancestor = directory
+        while (ancestor != null && ancestor.startsWith(root)) {
+            if (Files.exists(ancestor)) {
+                if (!Files.isDirectory(ancestor))
+                    fail("archive path conflicts with a file", archivePath)
+                break
+            }
+            ancestor = ancestor.parent
+        }
+        directory?.let(Files::createDirectories)
     }
 
     private fun pax(size: Long) {

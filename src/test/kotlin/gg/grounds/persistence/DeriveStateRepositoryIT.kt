@@ -71,6 +71,32 @@ class DeriveStateRepositoryIT {
     }
 
     @Test
+    fun `claimed version carries the owning maps untrusted storage routing`() {
+        val map =
+            maps.create(
+                MapAddress("u/builder", "trust-${UUID.randomUUID()}"),
+                "untrusted",
+                MapKind.ARENA,
+                false,
+                MapTrust.UNTRUSTED,
+                "builder",
+            )
+        versions.commitWithDeriveRequest(
+            map.id,
+            digest(1),
+            "tmp/uploads/untrusted.tar.zst",
+            true,
+            null,
+            null,
+            "builder",
+        )
+
+        val claimed = requireNotNull(versions.claimForDerive(map.id, 1, UUID.randomUUID()))
+
+        assertEquals(MapTrust.UNTRUSTED, claimed.trust)
+    }
+
+    @Test
     @Order(2)
     fun `competing claims block behind the version lock and assign exactly one attempt`() {
         val map = committed("concurrent-claim")
@@ -407,10 +433,11 @@ class DeriveStateRepositoryIT {
             List(5) { committed("reconcile-tie-$it") }.sortedBy { it.id.toString() }
         val lowerDraft = requireNotNull(versions.find(lowerMap.id, 1))
         val lowerDeriving =
-            versions.commit(
+            versions.commitWithDeriveRequest(
                 lowerMap.id,
                 digest(1),
                 "tmp/uploads/lower-v2.tar.zst",
+                true,
                 null,
                 null,
                 "builder",
@@ -430,10 +457,11 @@ class DeriveStateRepositoryIT {
             systemFailure("TEMPORARY"),
         )
         val beyondLimit =
-            versions.commit(
+            versions.commitWithDeriveRequest(
                 beyondLimitMap.id,
                 digest(1),
                 "tmp/uploads/higher-v2.tar.zst",
+                true,
                 null,
                 null,
                 "builder",

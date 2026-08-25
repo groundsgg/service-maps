@@ -2,6 +2,7 @@ package gg.grounds.derive
 
 import gg.grounds.blob.BlobMetadata
 import gg.grounds.domain.DeriveIdentity
+import gg.grounds.domain.MapTrust
 
 /**
  * The reconciler needs only attempt-scoped private artifacts. Keeping that narrow makes its
@@ -21,7 +22,12 @@ interface DeriveArtifactStore {
      * Job is digest-pinned, so its streamed digest is the trust anchor for this content address.
      * The service intentionally does not download bundles.
      */
-    fun promotePrivateBundle(sourceKey: String, destinationKey: String, expectedSizeBytes: Long)
+    fun promotePrivateBundle(
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+        trust: MapTrust,
+    )
 }
 
 /**

@@ -48,6 +48,8 @@ data class MapVersionRecord(
     val createdAt: Instant,
     /** Whether this version explicitly opted into asynchronous derivation at commit time. */
     val deriveRequested: Boolean = false,
+    /** Owning map trust decides which isolated public bucket receives a derived bundle. */
+    val trust: MapTrust = MapTrust.FIRST_PARTY,
 )
 
 /** What a publish supplies about the assembled bundle. */

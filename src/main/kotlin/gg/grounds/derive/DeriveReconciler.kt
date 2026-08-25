@@ -8,6 +8,7 @@ import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
+import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
@@ -159,7 +160,7 @@ constructor(
                 )
             }
             DeriveJobStatus.SUCCEEDED -> {
-                acceptResult(identity)?.let { terminal ->
+                acceptResult(identity, record.trust)?.let { terminal ->
                     observeTerminal(terminal)
                     logTransition(
                         record,
@@ -414,7 +415,7 @@ constructor(
         runCatching { scheduler.close() }
     }
 
-    private fun acceptResult(identity: DeriveIdentity): TerminalAttempt? {
+    private fun acceptResult(identity: DeriveIdentity, trust: MapTrust): TerminalAttempt? {
         return try {
             when (
                 val result =
@@ -490,6 +491,7 @@ constructor(
                         ),
                         BlobStore.bundleKey(result.bundleSha256),
                         result.bundleSize,
+                        trust,
                     )
                     val acceptance =
                         versions.acceptSuccessOutcome(
