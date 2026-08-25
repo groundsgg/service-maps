@@ -39,9 +39,12 @@ constructor(
     private val rerunRequested = AtomicBoolean(false)
     private val retryLock = Any()
     private val retries = mutableMapOf<DeriveIdentity, RetryState>()
-    private val watchOpen = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
-    private var watch: AutoCloseable? = null
+    private val watchLock = Any()
+    private var watchGeneration = 0L
+    /** Non-null while a particular generation is opening or live. */
+    private var activeWatchGeneration: Long? = null
+    private var liveWatch: AutoCloseable? = null
     private var watchReconnects = 0
 
     /** Startup and the scheduled poll share the same gate. The poll is the correctness path. */
@@ -221,32 +224,85 @@ constructor(
     }
 
     private fun openWatch() {
-        if (closed.get()) return
-        if (!watchOpen.compareAndSet(false, true)) return
-        watch =
-            runCatching { jobs.watch(onEvent = { reconcile() }, onClose = ::watchClosed) }
-                .getOrElse {
-                    watchClosed(it)
-                    null
+        val generation =
+            synchronized(watchLock) {
+                if (closed.get() || activeWatchGeneration != null) return
+                val next = watchGeneration + 1
+                watchGeneration = next
+                activeWatchGeneration = next
+                next
+            }
+        val opened =
+            try {
+                jobs.watch(
+                    onEvent = { watchEvent(generation) },
+                    onClose = { cause -> watchClosed(generation, cause) },
+                )
+            } catch (failure: Exception) {
+                watchClosed(generation, failure)
+                return
+            }
+        val mustClose =
+            synchronized(watchLock) {
+                when {
+                    closed.get() || activeWatchGeneration != generation -> true
+                    opened == null -> {
+                        // A disabled/unavailable latency hint is not a watch loss. Polling remains
+                        // authoritative and will continue to reconcile without reconnect churn.
+                        activeWatchGeneration = null
+                        false
+                    }
+                    else -> {
+                        liveWatch = opened
+                        false
+                    }
                 }
-        if (watch == null) watchOpen.set(false) else watchReconnects = 0
+            }
+        if (mustClose) runCatching { opened?.close() }
     }
 
-    private fun watchClosed(cause: Throwable?) {
-        watchOpen.set(false)
-        watch = null
-        if (closed.get()) return
-        val delay = WATCH_DELAYS[watchReconnects.coerceAtMost(WATCH_DELAYS.lastIndex)]
-        watchReconnects++
-        scheduler.schedule(delay, ::openWatch)
+    /** A labeled derive event is the only healthy signal that resets reconnect backoff. */
+    private fun watchEvent(generation: Long) {
+        val current =
+            synchronized(watchLock) {
+                if (closed.get() || activeWatchGeneration != generation) false
+                else {
+                    watchReconnects = 0
+                    true
+                }
+            }
+        if (current) reconcile()
+    }
+
+    private fun watchClosed(generation: Long, cause: Throwable?) {
+        val delay =
+            synchronized(watchLock) {
+                if (closed.get() || activeWatchGeneration != generation) return
+                activeWatchGeneration = null
+                liveWatch = null
+                WATCH_DELAYS[watchReconnects.coerceAtMost(WATCH_DELAYS.lastIndex)].also {
+                    watchReconnects++
+                }
+            }
+        try {
+            scheduler.schedule(delay, ::openWatch)
+        } catch (_: Exception) {
+            log.warnf("derive_watch outcome=reconnect_schedule_failed")
+            return
+        }
         log.warnf("derive_watch outcome=closed delay_seconds=%d", delay.seconds)
     }
 
     @PreDestroy
     fun close() {
-        closed.set(true)
+        val watch =
+            synchronized(watchLock) {
+                closed.set(true)
+                activeWatchGeneration = null
+                liveWatch.also { liveWatch = null }
+            }
         runCatching { watch?.close() }
-        scheduler.close()
+        runCatching { scheduler.close() }
     }
 
     private fun acceptResult(identity: DeriveIdentity) {

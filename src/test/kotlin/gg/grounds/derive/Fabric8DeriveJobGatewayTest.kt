@@ -7,6 +7,8 @@ import io.fabric8.kubernetes.api.model.batch.v1.Job
 import io.fabric8.kubernetes.client.KubernetesClientBuilder
 import io.fabric8.kubernetes.client.utils.Serialization
 import java.net.InetSocketAddress
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -27,10 +29,15 @@ class Fabric8DeriveJobGatewayTest {
         val cause = AtomicReference<Throwable?>()
         loopback { exchange, _ ->
                 assertEquals("GET", exchange.requestMethod)
-                assertTrue(exchange.requestURI.query.orEmpty().contains("watch=true"))
+                val query =
+                    URLDecoder.decode(exchange.requestURI.query.orEmpty(), StandardCharsets.UTF_8)
+                assertTrue(query.contains("watch=true"))
+                assertTrue(
+                    query.contains("labelSelector=app.kubernetes.io/name=service-maps-derive")
+                )
                 exchange.responseHeaders.add("Content-Type", "application/json")
                 val body =
-                    """{"type":"MODIFIED","object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive"}}}""" +
+                    """{"type":"MODIFIED","object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive","labels":{"app.kubernetes.io/name":"service-maps-derive"}}}}""" +
                         "\n"
                 exchange.sendResponseHeaders(200, 0)
                 exchange.responseBody.use { it.write(body.toByteArray()) }
@@ -50,6 +57,43 @@ class Fabric8DeriveJobGatewayTest {
                 assertTrue(closed.await(2, TimeUnit.SECONDS))
             }
         assertEquals(null, cause.get())
+    }
+
+    @Test
+    fun `watch ignores unrelated loopback Jobs even if the server sends them`() {
+        val events = java.util.concurrent.atomic.AtomicInteger()
+        val event = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        loopback { exchange, _ ->
+                val query =
+                    URLDecoder.decode(exchange.requestURI.query.orEmpty(), StandardCharsets.UTF_8)
+                assertTrue(
+                    query.contains("labelSelector=app.kubernetes.io/name=service-maps-derive")
+                )
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                val body =
+                    """{"type":"MODIFIED","object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"other","labels":{"app.kubernetes.io/name":"other"}}}}""" +
+                        "\n" +
+                        """{"type":"MODIFIED","object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive","labels":{"app.kubernetes.io/name":"service-maps-derive"}}}}""" +
+                        "\n"
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.use { it.write(body.toByteArray()) }
+            }
+            .use { client ->
+                val watch =
+                    gateway(client.client)
+                        .watch(
+                            {
+                                events.incrementAndGet()
+                                event.countDown()
+                            },
+                            { closed.countDown() },
+                        )!!
+                assertTrue(event.await(2, TimeUnit.SECONDS))
+                watch.close()
+                assertTrue(closed.await(2, TimeUnit.SECONDS))
+            }
+        assertEquals(1, events.get())
     }
 
     @Test

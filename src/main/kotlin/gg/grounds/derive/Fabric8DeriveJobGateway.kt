@@ -105,10 +105,15 @@ constructor(
                 .v1()
                 .jobs()
                 .inNamespace(namespace)
+                .withLabel(DERIVE_LABEL, DERIVE_LABEL_VALUE)
                 .watch(
                     object : Watcher<Job> {
-                        override fun eventReceived(action: Watcher.Action, resource: Job) =
-                            onEvent()
+                        override fun eventReceived(action: Watcher.Action, resource: Job) {
+                            // Keep a local guard as defense in depth if a proxy returns a stream
+                            // that does not honor the Kubernetes label selector.
+                            if (resource.metadata?.labels?.get(DERIVE_LABEL) == DERIVE_LABEL_VALUE)
+                                onEvent()
+                        }
 
                         override fun onClose(cause: WatcherException?) = closed(cause)
                     }
@@ -360,6 +365,8 @@ constructor(
 
     private companion object {
         val DIGEST_IMAGE = Regex(".+@sha256:[a-f0-9]{64}")
+        const val DERIVE_LABEL = "app.kubernetes.io/name"
+        const val DERIVE_LABEL_VALUE = "service-maps-derive"
         const val UUID_BASE36_WIDTH = 25
         const val CONTRACT_FINGERPRINT = "grounds.gg/derive-contract-sha256"
         val CONTROLLER_UID_LABELS = setOf("controller-uid", "batch.kubernetes.io/controller-uid")

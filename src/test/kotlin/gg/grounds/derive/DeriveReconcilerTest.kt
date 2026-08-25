@@ -562,6 +562,49 @@ class DeriveReconcilerTest {
     }
 
     @Test
+    fun `watch reconnects progress until a derive event resets the backoff`() {
+        val scheduler = FakeScheduler()
+        val jobs = FakeJobs()
+        val reconciler = reconciler(FakeVersions(emptyList()), jobs, FakeArtifacts(), scheduler)
+
+        reconciler.onStart(io.quarkus.runtime.StartupEvent())
+        jobs.watches[0].remoteClose()
+        scheduler.runNext()
+        jobs.watches[1].remoteClose()
+
+        assertEquals(listOf(Duration.ofSeconds(5), Duration.ofSeconds(30)), scheduler.delays)
+
+        scheduler.runNext()
+        jobs.watches[2].event()
+        jobs.watches[2].remoteClose()
+
+        assertEquals(
+            listOf(Duration.ofSeconds(5), Duration.ofSeconds(30), Duration.ofSeconds(5)),
+            scheduler.delays,
+        )
+    }
+
+    @Test
+    fun `stale watch close and queued reconnect cannot disturb a newer watch or shutdown`() {
+        val scheduler = FakeScheduler()
+        val jobs = FakeJobs()
+        val reconciler = reconciler(FakeVersions(emptyList()), jobs, FakeArtifacts(), scheduler)
+
+        reconciler.onStart(io.quarkus.runtime.StartupEvent())
+        jobs.watches[0].remoteClose()
+        scheduler.runNext()
+        assertEquals(2, jobs.watches.size)
+
+        jobs.watches[0].remoteClose()
+        assertEquals(listOf(Duration.ofSeconds(5)), scheduler.delays)
+
+        jobs.watches[1].remoteClose()
+        reconciler.close()
+        scheduler.runNext()
+        assertEquals(2, jobs.watches.size)
+    }
+
+    @Test
     fun `transient candidate failures use the exact nonblocking retry sequence before terminal failure`() {
         val version = record(VersionState.DERIVING)
         val clock = FakeScheduler()
@@ -969,6 +1012,7 @@ class DeriveReconcilerTest {
         private val onFind: ((DeriveIdentity) -> Unit)? = null,
     ) : DeriveJobGateway {
         val created = java.util.concurrent.CopyOnWriteArrayList<DeriveJobRequest>()
+        val watches = mutableListOf<FakeWatch>()
         var findCalls = 0
 
         override fun create(request: DeriveJobRequest) {
@@ -982,6 +1026,21 @@ class DeriveReconcilerTest {
             onFind?.invoke(identity)
             return states[identity]
         }
+
+        override fun watch(onEvent: () -> Unit, onClose: (Throwable?) -> Unit): AutoCloseable? {
+            return FakeWatch(onEvent, onClose).also { watches += it }
+        }
+    }
+
+    private class FakeWatch(
+        private val onEvent: () -> Unit,
+        private val onClose: (Throwable?) -> Unit,
+    ) : AutoCloseable {
+        fun event() = onEvent()
+
+        fun remoteClose(cause: Throwable? = null) = onClose(cause)
+
+        override fun close() = onClose(null)
     }
 
     private class FakeScheduler(private var failSchedules: Int = 0) : ReconciliationScheduler {
