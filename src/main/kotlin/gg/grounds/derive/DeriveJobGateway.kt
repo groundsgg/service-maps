@@ -24,6 +24,12 @@ interface DeriveArtifactStore {
     fun promotePrivateBundle(sourceKey: String, destinationKey: String, expectedSizeBytes: Long)
 }
 
+/**
+ * A transient backing-store failure; reconciliation retries this without accepting a terminal
+ * result.
+ */
+class DeriveArtifactUnavailableException(cause: Throwable) : RuntimeException(cause)
+
 /** K8s is deliberately isolated here: a reconciliation tick remains deterministic in unit tests. */
 interface DeriveJobGateway {
     fun create(request: DeriveJobRequest)

@@ -111,7 +111,6 @@ constructor(
                 }
             }
         } finally {
-            observe { metrics?.activeCandidates(0) }
             observe {
                 metrics?.duration(
                     ReconciliationTrigger.RECONCILE,
@@ -139,17 +138,19 @@ constructor(
                 logTransition(record, "repaired", ReconciliationWorkScope.DERIVING)
             }
             DeriveJobStatus.FAILED -> {
-                versions.acceptFailure(
-                    identity,
-                    systemFailure("JOB_FAILED", "derive Job exhausted its backoff limit"),
-                )
-                observeTerminal(
-                    TerminalAttempt(
-                        ReconciliationAttemptOutcome.FAILED,
-                        ReconciliationAttemptScope.SYSTEM,
-                        "JOB_FAILED",
+                val acceptance =
+                    versions.acceptFailureOutcome(
+                        identity,
+                        systemFailure("JOB_FAILED", "derive Job exhausted its backoff limit"),
                     )
-                )
+                if (acceptance.transitioned)
+                    observeTerminal(
+                        TerminalAttempt(
+                            ReconciliationAttemptOutcome.FAILED,
+                            ReconciliationAttemptScope.SYSTEM,
+                            "JOB_FAILED",
+                        )
+                    )
                 logTransition(
                     record,
                     "failed",
@@ -200,17 +201,22 @@ constructor(
                 next
             }
         if (failures > RETRY_DELAYS.size) {
-            versions.acceptFailure(
-                identity,
-                systemFailure("RECONCILIATION_UNAVAILABLE", "reconciliation retry budget exhausted"),
-            )
-            observeTerminal(
-                TerminalAttempt(
-                    ReconciliationAttemptOutcome.FAILED,
-                    ReconciliationAttemptScope.SYSTEM,
-                    "RECONCILIATION_UNAVAILABLE",
+            val acceptance =
+                versions.acceptFailureOutcome(
+                    identity,
+                    systemFailure(
+                        "RECONCILIATION_UNAVAILABLE",
+                        "reconciliation retry budget exhausted",
+                    ),
                 )
-            )
+            if (acceptance.transitioned)
+                observeTerminal(
+                    TerminalAttempt(
+                        ReconciliationAttemptOutcome.FAILED,
+                        ReconciliationAttemptScope.SYSTEM,
+                        "RECONCILIATION_UNAVAILABLE",
+                    )
+                )
             logTransition(record, "failed", workScope(record), code = "RECONCILIATION_UNAVAILABLE")
             return
         }
@@ -485,38 +491,44 @@ constructor(
                         BlobStore.bundleKey(result.bundleSha256),
                         result.bundleSize,
                     )
-                    versions.acceptSuccess(
-                        identity.copy(assetCatalog = scene.assetCatalog),
-                        DerivedFacts(
-                            result.bundleSha256,
-                            result.manifestSha256,
-                            result.bundleSize,
-                            null,
-                            null,
-                            projection,
-                        ),
-                        "derive-worker",
-                    )
-                    TerminalAttempt(
-                        ReconciliationAttemptOutcome.SUCCEEDED,
-                        ReconciliationAttemptScope.NONE,
-                    )
+                    val acceptance =
+                        versions.acceptSuccessOutcome(
+                            identity.copy(assetCatalog = scene.assetCatalog),
+                            DerivedFacts(
+                                result.bundleSha256,
+                                result.manifestSha256,
+                                result.bundleSize,
+                                null,
+                                null,
+                                projection,
+                            ),
+                            "derive-worker",
+                        )
+                    if (acceptance.transitioned)
+                        TerminalAttempt(
+                            ReconciliationAttemptOutcome.SUCCEEDED,
+                            ReconciliationAttemptScope.NONE,
+                        )
+                    else null
                 }
                 is DeriveFailure -> {
                     requireResultIdentity(result, identity)
-                    versions.acceptFailure(
-                        identity,
-                        gg.grounds.domain.DerivedFailure(
-                            result.scope,
-                            result.retryable,
-                            result.problems,
-                        ),
-                    )
-                    TerminalAttempt(
-                        ReconciliationAttemptOutcome.FAILED,
-                        result.scope.metricScope(),
-                        result.problems.firstOrNull()?.code,
-                    )
+                    val acceptance =
+                        versions.acceptFailureOutcome(
+                            identity,
+                            gg.grounds.domain.DerivedFailure(
+                                result.scope,
+                                result.retryable,
+                                result.problems,
+                            ),
+                        )
+                    if (acceptance.transitioned)
+                        TerminalAttempt(
+                            ReconciliationAttemptOutcome.FAILED,
+                            result.scope.metricScope(),
+                            result.problems.firstOrNull()?.code,
+                        )
+                    else null
                 }
             }
         } catch (e: DeriveResultIntegrityException) {
@@ -525,6 +537,8 @@ constructor(
             // Another tick accepted/retried this immutable version first; stale completion is
             // harmless.
             null
+        } catch (e: DeriveArtifactUnavailableException) {
+            throw e
         } catch (_: Exception) {
             recordUnavailableResult(identity)
         }
@@ -532,18 +546,21 @@ constructor(
 
     private fun recordUnavailableResult(identity: DeriveIdentity): TerminalAttempt? {
         return try {
-            versions.acceptFailure(
-                identity,
-                systemFailure(
+            val acceptance =
+                versions.acceptFailureOutcome(
+                    identity,
+                    systemFailure(
+                        "RESULT_UNAVAILABLE",
+                        "completed derive Job has no acceptable result marker",
+                    ),
+                )
+            if (acceptance.transitioned)
+                TerminalAttempt(
+                    ReconciliationAttemptOutcome.FAILED,
+                    ReconciliationAttemptScope.SYSTEM,
                     "RESULT_UNAVAILABLE",
-                    "completed derive Job has no acceptable result marker",
-                ),
-            )
-            TerminalAttempt(
-                ReconciliationAttemptOutcome.FAILED,
-                ReconciliationAttemptScope.SYSTEM,
-                "RESULT_UNAVAILABLE",
-            )
+                )
+            else null
         } catch (e: DeriveResultIntegrityException) {
             throw e
         } catch (_: DeriveResultRejectedException) {

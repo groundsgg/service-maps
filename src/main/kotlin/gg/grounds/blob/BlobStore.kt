@@ -1,6 +1,7 @@
 package gg.grounds.blob
 
 import gg.grounds.derive.DeriveArtifactStore
+import gg.grounds.derive.DeriveArtifactUnavailableException
 import gg.grounds.domain.MapTrust
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
@@ -126,38 +127,44 @@ constructor(
             .url()
             .toExternalForm()
 
-    override fun headPrivate(key: String): BlobMetadata? = head(privateBucket, key)
+    override fun headPrivate(key: String): BlobMetadata? = artifactAccess {
+        head(privateBucket, key)
+    }
 
     /** Completion markers are small, private, and read only after the worker Job succeeds. */
     override fun getPrivate(key: String, maxBytes: Long): ByteArray {
-        require(maxBytes >= 0) { "maxBytes must be non-negative" }
-        val response: ResponseInputStream<GetObjectResponse> =
-            client.getObject(GetObjectRequest.builder().bucket(privateBucket).key(key).build())
-        response.use {
-            val declared = it.response().contentLength()
-            if (declared != null && declared > maxBytes) {
-                throw BlobIntegrityException("private object $key exceeds $maxBytes bytes")
-            }
-            val output =
-                java.io.ByteArrayOutputStream(
-                    (declared ?: 0)
-                        .coerceAtMost(maxBytes)
-                        .coerceAtMost(Int.MAX_VALUE.toLong())
-                        .toInt()
-                )
-            val buffer = ByteArray(READ_BUFFER_BYTES)
-            while (true) {
-                val read = it.read(buffer)
-                if (read < 0) break
-                if (output.size().toLong() + read > maxBytes) {
+        return artifactAccess {
+            require(maxBytes >= 0) { "maxBytes must be non-negative" }
+            val response: ResponseInputStream<GetObjectResponse> =
+                client.getObject(GetObjectRequest.builder().bucket(privateBucket).key(key).build())
+            response.use {
+                val declared = it.response().contentLength()
+                if (declared != null && declared > maxBytes) {
                     throw BlobIntegrityException("private object $key exceeds $maxBytes bytes")
                 }
-                output.write(buffer, 0, read)
+                val output =
+                    java.io.ByteArrayOutputStream(
+                        (declared ?: 0)
+                            .coerceAtMost(maxBytes)
+                            .coerceAtMost(Int.MAX_VALUE.toLong())
+                            .toInt()
+                    )
+                val buffer = ByteArray(READ_BUFFER_BYTES)
+                while (true) {
+                    val read = it.read(buffer)
+                    if (read < 0) break
+                    if (output.size().toLong() + read > maxBytes) {
+                        throw BlobIntegrityException("private object $key exceeds $maxBytes bytes")
+                    }
+                    output.write(buffer, 0, read)
+                }
+                if (declared != null && output.size().toLong() != declared) {
+                    throw BlobIntegrityException(
+                        "private object $key ended before its declared size"
+                    )
+                }
+                output.toByteArray()
             }
-            if (declared != null && output.size().toLong() != declared) {
-                throw BlobIntegrityException("private object $key ended before its declared size")
-            }
-            return output.toByteArray()
         }
     }
 
@@ -166,7 +173,9 @@ constructor(
         destinationKey: String,
         expectedSizeBytes: Long,
     ) {
-        copyPrivateToPublic(sourceKey, destinationKey, expectedSizeBytes, MapTrust.FIRST_PARTY)
+        artifactAccess {
+            copyPrivateToPublic(sourceKey, destinationKey, expectedSizeBytes, MapTrust.FIRST_PARTY)
+        }
     }
 
     fun headPublic(key: String, trust: MapTrust): BlobMetadata? = head(publicBucketFor(trust), key)
@@ -283,6 +292,22 @@ constructor(
             BlobMetadata(sizeBytes = response.contentLength(), eTag = response.eTag())
         } catch (e: S3Exception) {
             if (e.statusCode() == 404) null else throw e
+        }
+
+    private fun <T> artifactAccess(block: () -> T): T =
+        try {
+            block()
+        } catch (e: Exception) {
+            if (
+                e is DeriveArtifactUnavailableException ||
+                    e is NoSuchKeyException ||
+                    e is BlobIntegrityException ||
+                    e is BlobCopyPreconditionException ||
+                    e is IllegalArgumentException ||
+                    (e is S3Exception && e.statusCode() == 404)
+            )
+                throw e
+            throw DeriveArtifactUnavailableException(e)
         }
 
     private fun requireMatchingSize(subject: String, actual: Long, expected: Long) {

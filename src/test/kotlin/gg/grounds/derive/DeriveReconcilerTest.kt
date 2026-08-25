@@ -742,7 +742,7 @@ class DeriveReconcilerTest {
     }
 
     @Test
-    fun `reconciliation records closed-label outcomes duration and resets candidate gauge`() {
+    fun `reconciliation records closed-label outcomes duration and candidate snapshot`() {
         val registry = SimpleMeterRegistry()
         val version = record(VersionState.DERIVING)
         val result = success(version)
@@ -769,7 +769,7 @@ class DeriveReconcilerTest {
                 .counter("derive.reconciliation.attempts", "outcome", "succeeded", "scope", "none")
                 .count(),
         )
-        assertEquals(0.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
+        assertEquals(1.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
         assertEquals(
             1L,
             registry.timer("derive.reconciliation.duration", "trigger", "reconcile").count(),
@@ -777,20 +777,23 @@ class DeriveReconcilerTest {
     }
 
     @Test
-    fun `reconciliation resets candidate gauge when candidate loading fails`() {
+    fun `failed candidate loading preserves the last successful gauge snapshot`() {
         val registry = SimpleMeterRegistry()
+        val versions = FakeVersions(listOf(record(VersionState.DERIVING)))
         val reconciler =
             reconciler(
-                FakeVersions(emptyList(), failList = true),
+                versions,
                 FakeJobs(),
                 FakeArtifacts(),
                 FakeScheduler(),
                 DeriveReconciliationMetrics(registry),
             )
 
+        reconciler.reconcile()
+        versions.failList = true
         assertThrows(IllegalStateException::class.java) { reconciler.reconcile() }
 
-        assertEquals(0.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
+        assertEquals(1.0, registry.get("derive.reconciliation.active_candidates").gauge().value())
     }
 
     private fun reconciler(
@@ -1079,7 +1082,7 @@ class DeriveReconcilerTest {
         private val rejectFailure: Boolean = false,
         private val integrityFailure: Boolean = false,
         private val failureIntegrity: Boolean = false,
-        private val failList: Boolean = false,
+        var failList: Boolean = false,
         private val events: MutableList<String>? = null,
     ) : MapVersionRepository by unused() {
         private val records = records.toMutableList()
@@ -1125,6 +1128,12 @@ class DeriveReconcilerTest {
             return records.first()
         }
 
+        override fun acceptSuccessOutcome(
+            identity: DeriveIdentity,
+            facts: DerivedFacts,
+            bySub: String,
+        ) = gg.grounds.domain.DeriveAcceptance(acceptSuccess(identity, facts, bySub), true)
+
         override fun acceptFailure(
             identity: DeriveIdentity,
             failure: DerivedFailure,
@@ -1134,6 +1143,9 @@ class DeriveReconcilerTest {
             failures += identity to failure
             return records.first()
         }
+
+        override fun acceptFailureOutcome(identity: DeriveIdentity, failure: DerivedFailure) =
+            gg.grounds.domain.DeriveAcceptance(acceptFailure(identity, failure), true)
 
         override fun retrySystemFailure(mapId: UUID, version: Int): MapVersionRecord {
             retried += mapId to version

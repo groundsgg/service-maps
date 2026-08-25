@@ -183,7 +183,13 @@ constructor(
         identity: DeriveIdentity,
         facts: DerivedFacts,
         bySub: String,
-    ): MapVersionRecord =
+    ): MapVersionRecord = acceptSuccessOutcome(identity, facts, bySub).record
+
+    override fun acceptSuccessOutcome(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): gg.grounds.domain.DeriveAcceptance =
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
@@ -192,7 +198,7 @@ constructor(
                 if (current.state == VersionState.PUBLISHED) {
                     if (current.matchesSuccess(identity, facts, bySub)) {
                         c.commit()
-                        return current
+                        return gg.grounds.domain.DeriveAcceptance(current, false)
                     }
                     throw DeriveResultIntegrityException("conflicting duplicate success result")
                 }
@@ -237,7 +243,7 @@ constructor(
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
                 DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
-                result
+                gg.grounds.domain.DeriveAcceptance(result, true)
             } catch (e: Exception) {
                 c.rollback()
                 throw e
@@ -249,7 +255,12 @@ constructor(
     override fun acceptFailure(
         identity: DeriveIdentity,
         failure: DerivedFailure,
-    ): MapVersionRecord =
+    ): MapVersionRecord = acceptFailureOutcome(identity, failure).record
+
+    override fun acceptFailureOutcome(
+        identity: DeriveIdentity,
+        failure: DerivedFailure,
+    ): gg.grounds.domain.DeriveAcceptance =
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
@@ -257,7 +268,7 @@ constructor(
                 if (current.state == VersionState.DERIVE_FAILED) {
                     if (current.matchesFailure(identity, failure)) {
                         c.commit()
-                        return current
+                        return gg.grounds.domain.DeriveAcceptance(current, false)
                     }
                     throw DeriveResultIntegrityException("conflicting duplicate failure result")
                 }
@@ -281,7 +292,7 @@ constructor(
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
                 DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
-                result
+                gg.grounds.domain.DeriveAcceptance(result, true)
             } catch (e: Exception) {
                 c.rollback()
                 throw e

@@ -57,6 +57,11 @@ data class BundleFacts(
     val estLoadedMib: Int?,
 )
 
+/**
+ * Whether a terminal derive acceptance changed persistent state rather than matched a duplicate.
+ */
+data class DeriveAcceptance(val record: MapVersionRecord, val transitioned: Boolean)
+
 class VersionNotFoundException(mapId: UUID, version: Int) :
     RuntimeException("no version $version of map $mapId")
 
@@ -100,8 +105,23 @@ interface MapVersionRepository {
         bySub: String,
     ): MapVersionRecord
 
+    /**
+     * Compatibility default for repositories that do not distinguish idempotent duplicate results.
+     */
+    fun acceptSuccessOutcome(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): DeriveAcceptance = DeriveAcceptance(acceptSuccess(identity, facts, bySub), true)
+
     /** Persists one terminal worker failure, or returns it for an identical duplicate result. */
     fun acceptFailure(identity: DeriveIdentity, failure: DerivedFailure): MapVersionRecord
+
+    /**
+     * Compatibility default for repositories that do not distinguish idempotent duplicate results.
+     */
+    fun acceptFailureOutcome(identity: DeriveIdentity, failure: DerivedFailure): DeriveAcceptance =
+        DeriveAcceptance(acceptFailure(identity, failure), true)
 
     /** Versions whose derive Jobs need reconciliation. */
     fun listReconcileCandidates(): List<MapVersionRecord>
