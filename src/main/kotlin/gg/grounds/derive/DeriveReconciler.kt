@@ -21,9 +21,6 @@ import jakarta.inject.Inject
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.jboss.logging.Logger
 
@@ -35,12 +32,10 @@ constructor(
     private val coordinator: DeriveCoordinator,
     private val jobs: DeriveJobGateway,
     private val blobs: DeriveArtifactStore,
+    private val scheduler: ReconciliationScheduler = ExecutorReconciliationScheduler(),
+    private val metrics: DeriveReconciliationMetrics? = null,
 ) {
     private val log = Logger.getLogger(DeriveReconciler::class.java)
-    private val scheduler: ScheduledExecutorService =
-        Executors.newSingleThreadScheduledExecutor { task ->
-            Thread(task, "derive-reconciliation").apply { isDaemon = true }
-        }
     private val reconciling = AtomicBoolean(false)
     private val pendingRetries = ConcurrentHashMap.newKeySet<DeriveIdentity>()
     private val retryCounts = ConcurrentHashMap<DeriveIdentity, Int>()
@@ -60,7 +55,9 @@ constructor(
         if (!reconciling.compareAndSet(false, true)) return
         val integrityFailures = mutableListOf<DeriveResultIntegrityException>()
         try {
-            versions.listReconcileCandidates().forEach { record ->
+            val candidates = versions.listReconcileCandidates()
+            metrics?.activeCandidates(candidates.size)
+            candidates.forEach { record ->
                 try {
                     when (record.state) {
                         VersionState.DRAFT -> coordinator.coordinate(record.mapId, record.version)
@@ -98,7 +95,10 @@ constructor(
         val status = jobs.find(identity)
         when (status) {
             null,
-            DeriveJobStatus.MISSING -> coordinator.ensure(record, status)
+            DeriveJobStatus.MISSING -> {
+                coordinator.ensure(record, status)
+                metrics?.repair()
+            }
             DeriveJobStatus.FAILED ->
                 versions.acceptFailure(
                     identity,
@@ -140,18 +140,15 @@ constructor(
             return
         }
         val delay = RETRY_DELAYS[failures - 1]
+        metrics?.retry()
         log.warnf(
             "derive_reconcile scope=attempt outcome=retry code=TRANSIENT delay_seconds=%d",
             delay.seconds,
         )
-        scheduler.schedule(
-            {
-                pendingRetries.remove(identity)
-                reconcile()
-            },
-            delay.toMillis(),
-            TimeUnit.MILLISECONDS,
-        )
+        scheduler.schedule(delay) {
+            pendingRetries.remove(identity)
+            reconcile()
+        }
     }
 
     private fun openWatch() {
@@ -172,7 +169,7 @@ constructor(
         if (closed.get()) return
         val delay = WATCH_DELAYS[watchReconnects.coerceAtMost(WATCH_DELAYS.lastIndex)]
         watchReconnects++
-        scheduler.schedule(::openWatch, delay.toMillis(), TimeUnit.MILLISECONDS)
+        scheduler.schedule(delay, ::openWatch)
         log.warnf("derive_watch outcome=closed delay_seconds=%d", delay.seconds)
     }
 
@@ -180,7 +177,7 @@ constructor(
     fun close() {
         closed.set(true)
         runCatching { watch?.close() }
-        scheduler.shutdownNow()
+        scheduler.close()
     }
 
     private fun acceptResult(identity: DeriveIdentity) {

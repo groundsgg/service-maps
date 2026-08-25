@@ -64,6 +64,7 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-opentelemetry")
+    implementation("io.quarkus:quarkus-micrometer")
     // Real probes rather than a TCP check: the readiness probe then also fails when the
     // database is unreachable, which is the failure a tcpSocket probe reports as healthy.
     implementation("io.quarkus:quarkus-smallrye-health")

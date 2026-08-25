@@ -24,6 +24,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.math.BigInteger
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
@@ -94,6 +95,10 @@ constructor(
 
     override fun watch(onEvent: () -> Unit, onClose: (Throwable?) -> Unit): AutoCloseable? {
         if (!enabled) return null
+        val notified = AtomicBoolean(false)
+        fun closed(cause: Throwable?) {
+            if (notified.compareAndSet(false, true)) onClose(cause)
+        }
         val watch =
             client
                 .batch()
@@ -105,10 +110,13 @@ constructor(
                         override fun eventReceived(action: Watcher.Action, resource: Job) =
                             onEvent()
 
-                        override fun onClose(cause: WatcherException?) = onClose(cause)
+                        override fun onClose(cause: WatcherException?) = closed(cause)
                     }
                 )
-        return AutoCloseable { watch.close() }
+        return AutoCloseable {
+            watch.close()
+            closed(null)
+        }
     }
 
     private fun job(name: String, request: DeriveJobRequest): Job {

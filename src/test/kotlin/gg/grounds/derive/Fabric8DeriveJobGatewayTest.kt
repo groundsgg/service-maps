@@ -10,6 +10,9 @@ import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -17,6 +20,38 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 class Fabric8DeriveJobGatewayTest {
+    @Test
+    fun `watch delivers a loopback Job event and reports stream closure`() {
+        val event = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val cause = AtomicReference<Throwable?>()
+        loopback { exchange, _ ->
+                assertEquals("GET", exchange.requestMethod)
+                assertTrue(exchange.requestURI.query.orEmpty().contains("watch=true"))
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                val body =
+                    """{"type":"MODIFIED","object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"derive"}}}""" +
+                        "\n"
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.use { it.write(body.toByteArray()) }
+            }
+            .use { client ->
+                val watch =
+                    gateway(client.client)
+                        .watch(
+                            { event.countDown() },
+                            { failure ->
+                                cause.set(failure)
+                                closed.countDown()
+                            },
+                        )!!
+                assertTrue(event.await(2, TimeUnit.SECONDS))
+                watch.close()
+                assertTrue(closed.await(2, TimeUnit.SECONDS))
+            }
+        assertEquals(null, cause.get())
+    }
+
     @Test
     fun `enabled configuration requires a worker image`() {
         assertThrows<IllegalArgumentException> {
