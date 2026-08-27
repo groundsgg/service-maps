@@ -16,3 +16,5 @@ permissions:
 jobs:
   reusable:
     uses: groundsgg/.github/.github/workflows/docker-gradle-build-push.yml@main
+    secrets:
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}

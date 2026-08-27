@@ -9,6 +9,8 @@ on:
 jobs:
   reusable:
     uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
+    secrets:
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
 
   chart:
     runs-on: arc-linux
@@ -18,6 +20,7 @@ jobs:
       - name: Lint and render
         run: |
           helm lint chart/
+          ./scripts/chart-render-assertions.sh chart/
           # `config.r2.endpoint` is deliberately required, so rendering without it must fail;
           # a chart that renders with no object endpoint would deploy a service that cannot
           # reach R2 and would only say so at the first upload.

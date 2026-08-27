@@ -2,8 +2,12 @@ package gg.grounds.api
 
 import gg.grounds.authz.Authorizer
 import gg.grounds.blob.BlobStore
+import gg.grounds.derive.DeriveCompatibility
+import gg.grounds.derive.DeriveCoordinator
+import gg.grounds.derive.DeriveJobCreationException
 import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
+import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.Digest
 import gg.grounds.domain.EnvironmentName
 import gg.grounds.domain.ForkOrigin
@@ -56,6 +60,8 @@ constructor(
     private val pinFiles: PinFilePublisher,
     private val authz: Authorizer,
     private val identity: SecurityIdentity,
+    private val derive: DeriveCompatibility,
+    private val coordinator: DeriveCoordinator,
 ) {
 
     @Operation(
@@ -195,6 +201,26 @@ constructor(
                                 "uploadId is not an upload id: $uploadId",
                             )
                 }
+            if (request.derive && !derive.enabled) {
+                return@withMap problem(
+                    Response.Status.CONFLICT,
+                    "derivation is disabled; retry without derive or enable grounds.maps.derive.enabled",
+                )
+            }
+            val sourceBacked = sourceKey != null
+            if (derive.required && sourceBacked && !request.derive) {
+                return@withMap problem(
+                    Response.Status.CONFLICT,
+                    "derivation is required for uploaded sources; commit again with derive=true",
+                )
+            }
+            val deriveRequested = derive.enabled && sourceBacked && request.derive
+            if (deriveRequested && !Digest.isValid(request.sourceSha256)) {
+                return@withMap problem(
+                    Response.Status.BAD_REQUEST,
+                    "sourceSha256 must be 64 lowercase hex characters when derivation runs",
+                )
+            }
             // The schema now refuses provenance that names no version; catch it here so it
             // is a 400 about the field rather than a constraint violation surfacing as a 500.
             if (
@@ -207,15 +233,28 @@ constructor(
                 )
             }
             val committed =
-                versions.commit(
+                versions.commitWithDeriveRequest(
                     mapId = map.id,
                     sourceSha256 = request.sourceSha256,
                     sourceKey = sourceKey,
+                    deriveRequested = deriveRequested,
                     parentVersion = request.parentVersion,
                     note = request.note,
                     bySub = identity.principal.name,
                 )
-            Response.status(Response.Status.CREATED).entity(committed.toDto()).build()
+            // Commit is its own transaction. Job creation may fail after it, but that must never
+            // erase an immutable version or make the caller believe it was published; the
+            // reconciler owns repairing the persisted DRAFT/DERIVING candidate.
+            val response =
+                if (deriveRequested)
+                    try {
+                        coordinator.coordinate(map.id, committed.version)
+                        versions.find(map.id, committed.version) ?: committed
+                    } catch (_: DeriveJobCreationException) {
+                        versions.find(map.id, committed.version) ?: committed
+                    }
+                else committed
+            Response.status(Response.Status.CREATED).entity(response.toDto()).build()
         }
 
     /**
@@ -255,6 +294,65 @@ constructor(
     @Path("/{address:.+}/versions")
     fun listVersions(@PathParam("address") address: String): Response =
         withMap(address) { map -> Response.ok(versions.list(map.id).map { it.toDto() }).build() }
+
+    @Tag(name = "Versions")
+    @Operation(
+        summary = "Read an exact version",
+        description =
+            "Returns the current asynchronous derive state for polling a committed version.",
+    )
+    @GET
+    @Path("/{address:.+}/versions/{version}")
+    fun getVersion(
+        @PathParam("address") address: String,
+        @PathParam("version") version: Int,
+    ): Response =
+        withVisibleMap(address) { map ->
+            val found =
+                versions.find(map.id, version)
+                    ?: return@withVisibleMap problem(
+                        Response.Status.NOT_FOUND,
+                        "no version $version of $address",
+                    )
+            Response.ok(found.toDto()).build()
+        }
+
+    @Tag(name = "Versions")
+    @Operation(
+        summary = "Retry a failed derivation",
+        description =
+            "Restarts only retryable SYSTEM failures. The returned DERIVING version can be polled " +
+                "with the exact-version endpoint.",
+    )
+    @POST
+    @Path("/{address:.+}/versions/{version}/derive/retry")
+    fun retryDerive(
+        @PathParam("address") address: String,
+        @PathParam("version") version: Int,
+    ): Response =
+        withVisibleMap(address) { map ->
+            if (!authz.mayPublish(map.address))
+                return@withVisibleMap denied("retry derivation for a version of $address")
+            if (!derive.enabled)
+                return@withVisibleMap problem(
+                    Response.Status.CONFLICT,
+                    "derivation is disabled; enable grounds.maps.derive.enabled before retrying",
+                )
+            try {
+                val retried = versions.retrySystemFailure(map.id, version)
+                try {
+                    coordinator.ensure(retried)
+                } catch (_: Exception) {
+                    // The transaction already created a durable reconciliation candidate.
+                }
+                val current = versions.find(map.id, version) ?: retried
+                Response.status(Response.Status.ACCEPTED).entity(current.toDto()).build()
+            } catch (e: VersionNotFoundException) {
+                problem(Response.Status.NOT_FOUND, e.message ?: "no such version")
+            } catch (e: DeriveResultRejectedException) {
+                problem(Response.Status.CONFLICT, e.message ?: "version cannot be retried")
+            }
+        }
 
     /**
      * Records what the bundle turned out to be and makes the version usable.
@@ -305,6 +403,12 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
+            if (existing.deriveRequested) {
+                return@withMap problem(
+                    Response.Status.CONFLICT,
+                    "source-backed versions derive asynchronously; poll the exact version instead of /publish",
+                )
+            }
             // No uploaded object is not an error: a fork's first version carries the digest of
             // a bundle that was promoted when the source was published, and copies no bytes by
             // design. Only an upload that was referenced and then vanished is a problem.
@@ -503,6 +607,19 @@ constructor(
         return block(found)
     }
 
+    /** Version reads keep creator maps private just like map reads do. */
+    private fun withVisibleMap(address: String, block: (MapRecord) -> Response): Response {
+        val parsed =
+            MapAddress.parse(address)
+                ?: return problem(Response.Status.BAD_REQUEST, "not a valid map address: $address")
+        val found =
+            maps.find(parsed) ?: return problem(Response.Status.NOT_FOUND, "no such map: $parsed")
+        if (!authz.maySee(found.ownerSub, found.address.namespace)) {
+            return problem(Response.Status.NOT_FOUND, "no such map: $parsed")
+        }
+        return block(found)
+    }
+
     private fun denied(what: String): Response =
         problem(Response.Status.FORBIDDEN, "not allowed to $what")
 
@@ -539,6 +656,8 @@ data class UploadDto(val uploadId: String, val key: String, val url: String)
 data class CommitVersionRequest(
     val uploadId: String? = null,
     val sourceSha256: String? = null,
+    /** Compatibility signal while derive rollout is enabled but not yet required. */
+    val derive: Boolean = false,
     /** What the editor started from, for provenance. */
     val parentVersion: Int? = null,
     val note: String? = null,
@@ -571,9 +690,33 @@ data class VersionDto(
     val sizeBytes: Long?,
     val presentChunks: Int?,
     val estLoadedMib: Int?,
+    val deriveAttempt: UUID?,
+    val deriveFailureScope: String?,
+    val deriveRetryable: Boolean,
+    val scene: SceneDto,
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
+)
+
+data class SceneDto(
+    val status: String,
+    val schemaVersion: String?,
+    val sha256: String?,
+    val assetCatalog: CatalogReferenceDto?,
+    val actionCatalog: CatalogReferenceDto?,
+    val requiredActionIds: List<String>,
+    val problems: List<DeriveProblemDto>,
+)
+
+data class CatalogReferenceDto(val id: String, val version: String)
+
+data class DeriveProblemDto(
+    val scope: String,
+    val path: String?,
+    val code: String,
+    val qualifiedIdentity: String?,
+    val message: String,
 )
 
 /**
@@ -611,6 +754,28 @@ private fun MapVersionRecord.toDto(): VersionDto =
         sizeBytes = sizeBytes,
         presentChunks = presentChunks,
         estLoadedMib = estLoadedMib,
+        deriveAttempt = deriveAttempt,
+        deriveFailureScope = deriveFailureScope?.name,
+        deriveRetryable = deriveRetryable,
+        scene =
+            SceneDto(
+                status = scene.status.name,
+                schemaVersion = scene.schemaVersion,
+                sha256 = scene.sha256,
+                assetCatalog = scene.assetCatalog?.let { CatalogReferenceDto(it.id, it.version) },
+                actionCatalog = scene.actionCatalog?.let { CatalogReferenceDto(it.id, it.version) },
+                requiredActionIds = scene.requiredActions,
+                problems =
+                    scene.problems.map {
+                        DeriveProblemDto(
+                            scope = it.scope.name,
+                            path = it.path,
+                            code = it.code,
+                            qualifiedIdentity = it.qualifiedIdentity,
+                            message = it.message,
+                        )
+                    },
+            ),
         publishedBySub = publishedBySub,
         note = note,
         createdAt = createdAt,

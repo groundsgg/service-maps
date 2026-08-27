@@ -39,9 +39,17 @@ data class MapVersionRecord(
     val sizeBytes: Long?,
     val presentChunks: Int?,
     val estLoadedMib: Int?,
+    val deriveAttempt: UUID?,
+    val deriveFailureScope: DeriveFailureScope?,
+    val deriveRetryable: Boolean,
+    val scene: SceneProjection,
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
+    /** Whether this version explicitly opted into asynchronous derivation at commit time. */
+    val deriveRequested: Boolean = false,
+    /** Owning map trust decides which isolated public bucket receives a derived bundle. */
+    val trust: MapTrust = MapTrust.FIRST_PARTY,
 )
 
 /** What a publish supplies about the assembled bundle. */
@@ -52,6 +60,11 @@ data class BundleFacts(
     val presentChunks: Int?,
     val estLoadedMib: Int?,
 )
+
+/**
+ * Whether a terminal derive acceptance changed persistent state rather than matched a duplicate.
+ */
+data class DeriveAcceptance(val record: MapVersionRecord, val transitioned: Boolean)
 
 class VersionNotFoundException(mapId: UUID, version: Int) :
     RuntimeException("no version $version of map $mapId")
@@ -79,8 +92,60 @@ interface MapVersionRepository {
         bySub: String,
     ): MapVersionRecord
 
+    /**
+     * Records whether this immutable version opted into asynchronous derivation during the
+     * compatibility rollout. The default keeps older repository implementations source-compatible.
+     */
+    fun commitWithDeriveRequest(
+        mapId: UUID,
+        sourceSha256: String?,
+        sourceKey: String?,
+        deriveRequested: Boolean,
+        parentVersion: Int?,
+        note: String?,
+        bySub: String,
+    ): MapVersionRecord = commit(mapId, sourceSha256, sourceKey, parentVersion, note, bySub)
+
     /** Marks a version published and records what the bundle turned out to be. */
     fun publish(mapId: UUID, version: Int, facts: BundleFacts, bySub: String): MapVersionRecord
+
+    /**
+     * Claims a draft version for exactly one derive Job, or returns null when it is not a draft.
+     */
+    fun claimForDerive(mapId: UUID, version: Int, attempt: UUID): MapVersionRecord?
+
+    /**
+     * Accepts one promoted worker result, or returns an identical outcome for a duplicate result.
+     */
+    fun acceptSuccess(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): MapVersionRecord
+
+    /**
+     * Compatibility default for repositories that do not distinguish idempotent duplicate results.
+     */
+    fun acceptSuccessOutcome(
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+        bySub: String,
+    ): DeriveAcceptance = DeriveAcceptance(acceptSuccess(identity, facts, bySub), true)
+
+    /** Persists one terminal worker failure, or returns it for an identical duplicate result. */
+    fun acceptFailure(identity: DeriveIdentity, failure: DerivedFailure): MapVersionRecord
+
+    /**
+     * Compatibility default for repositories that do not distinguish idempotent duplicate results.
+     */
+    fun acceptFailureOutcome(identity: DeriveIdentity, failure: DerivedFailure): DeriveAcceptance =
+        DeriveAcceptance(acceptFailure(identity, failure), true)
+
+    /** Versions whose derive Jobs need reconciliation. */
+    fun listReconcileCandidates(): List<MapVersionRecord>
+
+    /** Restarts only a retryable system failure with a fresh attempt identity. */
+    fun retrySystemFailure(mapId: UUID, version: Int): MapVersionRecord
 
     fun find(mapId: UUID, version: Int): MapVersionRecord?
 

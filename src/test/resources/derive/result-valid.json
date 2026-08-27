@@ -1,0 +1,20 @@
+{
+  "kind": "SUCCESS",
+  "schemaVersion": 1,
+  "mapId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "version": 1,
+  "attempt": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "bundleSha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "bundleSize": 42,
+  "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000003",
+  "manifestSize": 9,
+  "scene": {
+    "present": true,
+    "schemaVersion": "1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "assetCatalog": { "id": "assets", "version": "2026.08" },
+    "actionCatalog": { "id": "grounds", "version": "1" },
+    "requiredActions": ["a.action", "z.action"]
+  }
+}

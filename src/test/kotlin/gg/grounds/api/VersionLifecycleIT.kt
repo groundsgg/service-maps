@@ -3,11 +3,16 @@ package gg.grounds.api
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.MinioResource
 import gg.grounds.PostgresResource
+import gg.grounds.domain.MapAddress
+import gg.grounds.domain.MapRepository
+import gg.grounds.domain.MapVersionRepository
+import gg.grounds.domain.SceneStatus
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
+import jakarta.inject.Inject
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -25,6 +30,10 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 @QuarkusTestResource(MinioResource::class)
 @TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class VersionLifecycleIT {
+
+    @Inject lateinit var maps: MapRepository
+
+    @Inject lateinit var versions: MapVersionRepository
 
     private val json = ObjectMapper()
 
@@ -240,6 +249,13 @@ class VersionLifecycleIT {
             .body("[0].bundleSha256", equalTo(digest(2)))
 
         assertEquals(before, listPublic().size, "a fork must not write objects")
+
+        val fork = requireNotNull(maps.find(MapAddress("skywars", "origin-winter")))
+        assertEquals(
+            SceneStatus.NONE,
+            requireNotNull(versions.find(fork.id, 1)).scene.status,
+            "a fork carries the source version's inspected no-scene projection",
+        )
 
         given()
             .contentType(ContentType.JSON)

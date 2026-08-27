@@ -62,6 +62,24 @@ Tests start a real Postgres with Testcontainers and run the Flyway migration int
 the schema and its constraints are under test rather than stubbed. `@TestSecurity`
 supplies the identity; there is no Keycloak in a test run.
 
+## Asynchronous source derivation
+
+`MAPS_DERIVE_ENABLED=false` is the compatibility default. With it enabled, every commit that
+names a private uploaded source is accepted as a DRAFT, then moves to `DERIVING`; clients poll
+`GET /v1/maps/{address}/versions/{version}` until it reaches a terminal state. The returned
+version includes derive attempt/failure fields plus a `scene` projection (`PENDING`, `INVALID`,
+`NONE`, or `VALID`) with catalog references, ordered required actions, and ordered diagnostics.
+
+`POST /v1/maps/{address}/versions/{version}/derive/retry` is for retryable SYSTEM failures only
+and requires the normal publish authority. It returns `202` and a new DERIVING attempt; a failed
+Job submission remains a reconciliation candidate rather than becoming a falsely published map.
+
+During rollout, `derive: true` is accepted on a commit. Setting `MAPS_DERIVE_REQUIRED=true`
+requires `MAPS_DERIVE_ENABLED=true` and rejects source-backed commits that omit `derive: true`.
+Once derivation is enabled, the legacy `/publish` endpoint rejects source-backed versions: forks
+and source-less compatibility versions may still use it, but uploaded source bytes are never
+promoted by that path.
+
 ## Not yet true, and load-bearing
 
 <!-- Both of these are why there is no chart and no Argo application in this repository. -->
