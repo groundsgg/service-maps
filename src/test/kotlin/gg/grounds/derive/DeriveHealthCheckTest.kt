@@ -1,5 +1,6 @@
 package gg.grounds.derive
 
+import java.util.Optional
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -30,6 +31,14 @@ class DeriveHealthCheckTest {
     fun `enabled health reports unavailable Job API`() {
         val check = DeriveHealthCheck(true, "registry/service-maps@sha256:abc", gateway(false))
         assertEquals("DOWN", check.call().status.name)
+    }
+
+    @Test
+    fun `enabled health reports a missing worker image as unconfigured`() {
+        val check = DeriveHealthCheck(true, Optional.empty(), gateway(true))
+        val response = check.call()
+        assertEquals("DOWN", response.status.name)
+        assertEquals("image is not configured", response.data.orElseThrow()["reason"])
     }
 
     @Test

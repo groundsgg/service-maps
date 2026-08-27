@@ -24,22 +24,28 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.math.BigInteger
 import java.nio.ByteBuffer
+import java.util.Optional
 import java.util.concurrent.atomic.AtomicBoolean
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
 @ApplicationScoped
-class Fabric8DeriveJobGateway
-@Inject
-constructor(
+class Fabric8DeriveJobGateway(
     private val client: KubernetesClient,
-    @ConfigProperty(name = "grounds.maps.derive.namespace") private val namespace: String,
-    @ConfigProperty(name = "grounds.maps.derive.image", defaultValue = "")
+    private val namespace: String,
     private val image: String,
-    @ConfigProperty(name = "grounds.maps.derive.service-account")
     private val serviceAccount: String,
-    @ConfigProperty(name = "grounds.maps.derive.enabled", defaultValue = "false")
     private val enabled: Boolean,
 ) : DeriveJobGateway {
+    @Inject
+    constructor(
+        client: KubernetesClient,
+        @ConfigProperty(name = "grounds.maps.derive.namespace") namespace: String,
+        @ConfigProperty(name = "grounds.maps.derive.image") image: Optional<String>,
+        @ConfigProperty(name = "grounds.maps.derive.service-account") serviceAccount: String,
+        @ConfigProperty(name = "grounds.maps.derive.enabled", defaultValue = "false")
+        enabled: Boolean,
+    ) : this(client, namespace, image.orElse(""), serviceAccount, enabled)
+
     init {
         require(!enabled || namespace.isNotBlank()) {
             "derive namespace is required when derive is enabled"

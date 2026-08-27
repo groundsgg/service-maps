@@ -10,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -101,6 +102,11 @@ class Fabric8DeriveJobGatewayTest {
         assertThrows<IllegalArgumentException> {
             Fabric8DeriveJobGateway(client(), "maps", "", "worker", true)
         }
+    }
+
+    @Test
+    fun `disabled configuration permits an absent worker image`() {
+        Fabric8DeriveJobGateway(client(), "maps", Optional.empty(), "worker", false)
     }
 
     @Test
