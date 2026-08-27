@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/groundsgg/service-maps/compare/v1.3.0...v1.4.0) (2026-08-27)
+
+
+### Features
+
+* add asynchronous scene map derivation ([#43](https://github.com/groundsgg/service-maps/issues/43)) ([60f9497](https://github.com/groundsgg/service-maps/commit/60f9497da93983d3d9179eddb74659e9c60e9184))
+
 ## [1.3.0](https://github.com/groundsgg/service-maps/compare/v1.2.0...v1.3.0) (2026-08-02)
 
 
