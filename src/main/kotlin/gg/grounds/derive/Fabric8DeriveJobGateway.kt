@@ -33,7 +33,8 @@ class Fabric8DeriveJobGateway
 constructor(
     private val client: KubernetesClient,
     @ConfigProperty(name = "grounds.maps.derive.namespace") private val namespace: String,
-    @ConfigProperty(name = "grounds.maps.derive.image") private val image: String,
+    @ConfigProperty(name = "grounds.maps.derive.image", defaultValue = "")
+    private val image: String,
     @ConfigProperty(name = "grounds.maps.derive.service-account")
     private val serviceAccount: String,
     @ConfigProperty(name = "grounds.maps.derive.enabled", defaultValue = "false")
