@@ -37,7 +37,7 @@ jobs:
           mkdir -p ~/.gradle
           {
             echo "github.user=${{ github.actor }}"
-            echo "github.token=${{ secrets.GITHUB_TOKEN }}"
+            echo "github.token=${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}"
           } > ~/.gradle/gradle.properties
 
       - name: Generate OpenAPI snapshot
