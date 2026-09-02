@@ -3,10 +3,7 @@ package gg.grounds.derive
 import com.github.luben.zstd.ZstdOutputStream
 import gg.grounds.catalog.CatalogContentException
 import gg.grounds.catalog.CatalogTransferException
-import gg.grounds.scene.format.ActionCatalog
-import gg.grounds.scene.format.AssetCatalog
-import gg.grounds.scene.format.CatalogId
-import gg.grounds.scene.format.CatalogVersionRange
+import gg.grounds.scene.format.*
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -218,6 +215,46 @@ class SceneDeriverTest {
         assertEquals(true, Files.readAllBytes(entries.getValue("scene.json").file).isNotEmpty())
     }
 
+    @Test
+    fun `revision two navigator scene is valid and retains its exact catalog reference`() {
+        val result = deriveNavigatorScene("2")
+
+        val valid = assertInstanceOf(SceneDerivationOutcome.Valid::class.java, result)
+        assertEquals("grounds:actions", valid.scene.actionCatalog?.id)
+        assertEquals("2", valid.scene.actionCatalog?.version)
+        assertEquals(listOf("grounds:lobby/open_navigator"), valid.scene.requiredActions)
+    }
+
+    @Test
+    fun `revision one empty action catalog scene remains valid`() {
+        val result = deriveNavigatorScene("1", includeNavigator = false)
+
+        val valid = assertInstanceOf(SceneDerivationOutcome.Valid::class.java, result)
+        assertEquals("1", valid.scene.actionCatalog?.version)
+        assertEquals(emptyList<String>(), valid.scene.requiredActions)
+    }
+
+    @Test
+    fun `wrong navigator key and nonempty navigator arguments are scene invalid`() {
+        listOf(
+                ApplicationAction(ActionKey("grounds:lobby/wrong"), emptyMap()),
+                ApplicationAction(
+                    ActionKey("grounds:lobby/open_navigator"),
+                    mapOf(LocalId("unexpected") to StringArgument("value")),
+                ),
+            )
+            .zip(listOf("UNKNOWN_ACTION", "INVALID_ACTION_ARGUMENT"))
+            .forEach { (action, code) ->
+                val invalid =
+                    assertInstanceOf(
+                        SceneDerivationOutcome.Invalid::class.java,
+                        deriveNavigatorScene("2", action),
+                    )
+                assertEquals("CONTENT", invalid.problems.single().scope.name)
+                assertEquals(code, invalid.problems.single().code)
+            }
+    }
+
     private fun archive(files: Map<String, ByteArray>): ByteArray {
         val tar = ByteArrayOutputStream()
         TarArchiveOutputStream(tar).use { output ->
@@ -234,6 +271,98 @@ class SceneDeriverTest {
 
     private fun digest(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun deriveNavigatorScene(
+        revision: String,
+        action: ApplicationAction =
+            ApplicationAction(ActionKey("grounds:lobby/open_navigator"), emptyMap()),
+        includeNavigator: Boolean = true,
+    ): SceneDerivationOutcome {
+        val document =
+            SceneDocument(
+                1,
+                SceneId("grounds:lobby"),
+                SceneMetadata("Lobby", null, emptySet()),
+                SceneCatalogReferences(
+                    CatalogReference(CatalogId("grounds:assets"), "1"),
+                    CatalogReference(CatalogId("grounds:actions"), revision),
+                ),
+                emptyList(),
+                if (includeNavigator)
+                    listOf(
+                        Npc(
+                            LocalId("navigator"),
+                            null,
+                            Transform(ORIGIN, ZERO_ROTATION, Vec3(1.0, 1.0, 1.0)),
+                            body = AssetKey("grounds:navigator"),
+                            label = null,
+                            labelOffset = ORIGIN,
+                            look = LookBehavior.Fixed,
+                            initialAnimation = null,
+                            interactionBounds = LocalBounds(ORIGIN, Vec3(1.0, 1.0, 1.0)),
+                            proximity = null,
+                            bindings =
+                                listOf(
+                                    TriggerBinding(
+                                        SceneTrigger.RIGHT_CLICK,
+                                        emptyList(),
+                                        0,
+                                        0,
+                                        listOf(action),
+                                    )
+                                ),
+                        )
+                    )
+                else emptyList(),
+            )
+        val bytes =
+            assertInstanceOf(SceneEncodeResult.Success::class.java, SceneJson.encode(document))
+                .bytes
+        return SceneDeriver(
+                SceneCatalogResolver {
+                    ResolvedSceneCatalogs(navigatorAssets, navigatorActions(revision))
+                }
+            )
+            .derive(
+                ByteArrayInputStream(archive(mapOf("scene.json" to bytes))),
+                "a".repeat(64),
+                Files.createTempDirectory("derive"),
+            )
+    }
+
+    private val navigatorAssets =
+        AssetCatalog(
+            CatalogId("grounds:assets"),
+            "1",
+            CatalogVersionRange(CatalogId("grounds:assets"), "1", "1"),
+            mapOf(
+                AssetKey("grounds:navigator") to
+                    AssetDefinition(
+                        AssetKey("grounds:navigator"),
+                        AssetKind.NPC_BODY,
+                        emptySet(),
+                        null,
+                        emptyMap(),
+                    )
+            ),
+        )
+
+    private fun navigatorActions(revision: String) =
+        ActionCatalog(
+            CatalogId("grounds:actions"),
+            revision,
+            if (revision == "2")
+                mapOf(
+                    ActionKey("grounds:lobby/open_navigator") to
+                        ActionDefinition(
+                            ActionKey("grounds:lobby/open_navigator"),
+                            "Open navigator",
+                            "",
+                            emptyMap(),
+                        )
+                )
+            else emptyMap(),
+        )
 
     private val emptyCatalogResolver = SceneCatalogResolver {
         error("scene catalog should not resolve")

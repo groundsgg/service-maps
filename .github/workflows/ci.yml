@@ -13,7 +13,10 @@ jobs:
       PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
 
   chart:
-    runs-on: arc-linux
+    runs-on: >-
+      ${{ github.event.repository.visibility == 'public'
+          && 'ubuntu-24.04'
+          || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5

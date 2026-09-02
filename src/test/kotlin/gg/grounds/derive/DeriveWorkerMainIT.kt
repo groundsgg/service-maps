@@ -51,7 +51,7 @@ class DeriveWorkerMainIT {
     }
 
     @Test
-    fun `valid generated catalog resolves grounds actions and uploads canonical scene artifacts`() {
+    fun `valid generated catalog resolves exact grounds actions and uploads canonical scene artifacts`() {
         val catalog = generatedCatalogJar()
         val version = "37"
         val source =
@@ -62,6 +62,10 @@ class DeriveWorkerMainIT {
                             .replace(
                                 "\"id\":\"grounds:assets\",\"version\":\"1\"",
                                 "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                            )
+                            .replace(
+                                "\"id\":\"grounds:actions\",\"version\":\"1\"",
+                                "\"id\":\"grounds:actions\",\"version\":\"2\"",
                             )
                             .encodeToByteArray()
                 )
@@ -105,7 +109,7 @@ class DeriveWorkerMainIT {
             assertEquals("grounds:assets", result.scene.assetCatalog?.id)
             assertEquals(version, result.scene.assetCatalog?.version)
             assertEquals("grounds:actions", result.scene.actionCatalog?.id)
-            assertEquals("1", result.scene.actionCatalog?.version)
+            assertEquals("2", result.scene.actionCatalog?.version)
             assertTrue(result.scene.present)
             assertEquals("1", result.scene.schemaVersion)
             assertEquals(emptyList<String>(), result.scene.requiredActions)
@@ -114,6 +118,10 @@ class DeriveWorkerMainIT {
                     .replace(
                         "\"id\":\"grounds:assets\",\"version\":\"1\"",
                         "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                    )
+                    .replace(
+                        "\"id\":\"grounds:actions\",\"version\":\"1\"",
+                        "\"id\":\"grounds:actions\",\"version\":\"2\"",
                     )
                     .encodeToByteArray()
             val manifest = CanonicalJson.readManifest(uploads[1].second)
@@ -126,6 +134,10 @@ class DeriveWorkerMainIT {
             assertEquals(
                 "grounds:assets",
                 CanonicalJson.readManifest(uploads[1].second).scene.assetCatalog?.id,
+            )
+            assertEquals(
+                "2",
+                CanonicalJson.readManifest(uploads[1].second).scene.actionCatalog?.version,
             )
             assertEquals(
                 uploads[1].second.toList(),
@@ -370,41 +382,46 @@ class DeriveWorkerMainIT {
     }
 
     @Test
-    fun `unsupported action namespace and action catalog mismatch are nonretryable content`() {
+    fun `unsupported action namespace and unknown action catalogs are nonretryable scene content`() {
         val catalog = generatedCatalogJar()
-        val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
-        catalogWorkerServer(source, catalog) { server, uploads, _ ->
-            val candidate =
-                AssetCatalogCandidate(
-                    "stable",
-                    "grounds:assets",
-                    "1",
-                    "coord",
-                    "catalog.jar",
-                    URI("http://127.0.0.1:${server.address.port}/catalog"),
-                    digest(catalog),
-                    catalog.size.toLong(),
-                )
-            listOf(
-                    validGroundsScene.replace("grounds:actions", "other:actions"),
-                    validGroundsScene.replace(
-                        "\"version\":\"1\"}},\"groups\"",
-                        "\"version\":\"2\"}},\"groups\"",
-                    ),
-                )
-                .forEach { scene ->
-                    uploads.clear()
-                    val altered = archive(mapOf("scene.json" to scene.encodeToByteArray()))
+        listOf(
+                validGroundsScene.replace("grounds:actions", "other:actions") to
+                    "scene catalog could not be resolved: action catalog namespace is invalid",
+                validGroundsScene.replace("grounds:actions", "grounds:unknown") to
+                    "scene catalog could not be resolved: action catalog is invalid",
+                validGroundsScene.replace(
+                    "\"version\":\"1\"}},\"groups\"",
+                    "\"version\":\"999\"}},\"groups\"",
+                ) to "scene catalog could not be resolved: action catalog is invalid",
+            )
+            .forEach { (scene, diagnostic) ->
+                val altered = archive(mapOf("scene.json" to scene.encodeToByteArray()))
+                catalogWorkerServer(altered, catalog) { server, uploads, requests ->
+                    val candidate =
+                        AssetCatalogCandidate(
+                            "stable",
+                            "grounds:assets",
+                            "1",
+                            "coord",
+                            "catalog.jar",
+                            URI("http://127.0.0.1:${server.address.port}/catalog"),
+                            digest(catalog),
+                            catalog.size.toLong(),
+                        )
                     run(
                         server,
                         request(server, digest(altered)).copy(catalogCandidates = listOf(candidate)),
                     )
+                    assertEquals(listOf("/source", "/catalog", "/result"), requests)
                     assertEquals(listOf("/result"), uploads.map { it.first })
                     val marker = CanonicalJson.readResult(uploads.single().second) as DeriveFailure
                     assertEquals("CONTENT", marker.scope.name)
                     assertFalse(marker.retryable)
+                    assertEquals("SCENE", marker.problems.single().code)
+                    assertEquals("scene.json", marker.problems.single().path)
+                    assertEquals(diagnostic, marker.problems.single().message)
                 }
-        }
+            }
     }
 
     @Test
