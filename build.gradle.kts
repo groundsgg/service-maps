@@ -56,7 +56,7 @@ dependencies {
     implementation("gg.grounds:scene-format:0.1.0")
     implementation("gg.grounds:plugin-lobby-scene-catalog:1.13.1")
     implementation("gg.grounds:resourcepacks-client:0.5.1")
-    implementation("tools.jackson.core:jackson-databind:3.1.5")
+    implementation("tools.jackson.core:jackson-databind:3.2.2")
     implementation("tools.jackson.module:jackson-module-kotlin:3.1.5")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
     // server lives on the grounds-dev spoke while this runs on core, and a k8s
