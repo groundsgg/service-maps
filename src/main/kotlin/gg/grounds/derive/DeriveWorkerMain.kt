@@ -141,9 +141,19 @@ object DeriveWorkerMain {
                 throw ContentFailure("asset catalog is invalid")
             }
         val namespace = references.actions.id.value.substringBefore(':')
+        if (namespace != "grounds" || !references.actions.id.value.startsWith("$namespace:")) {
+            throw ContentFailure("action catalog namespace is invalid")
+        }
+        val requested = references.actions
         ResolvedSceneCatalogs(
             assets,
-            actions.resolve(namespace, CatalogReference(asset.id.value, asset.version)).catalog,
+            actions
+                .resolve(
+                    namespace,
+                    CatalogReference(asset.id.value, asset.version),
+                    CatalogReference(requested.id.value, requested.version),
+                )
+                .catalog,
         )
     }
 

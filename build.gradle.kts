@@ -54,6 +54,7 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:1.5.7-6")
     implementation("gg.grounds:scene-format:0.1.0")
+    implementation("gg.grounds:plugin-lobby-scene-catalog:1.13.1")
     implementation("gg.grounds:resourcepacks-client:0.5.1")
     implementation("tools.jackson.core:jackson-databind:3.1.5")
     implementation("tools.jackson.module:jackson-module-kotlin:3.1.5")

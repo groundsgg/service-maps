@@ -51,7 +51,7 @@ class DeriveWorkerMainIT {
     }
 
     @Test
-    fun `valid generated catalog resolves grounds actions and uploads canonical scene artifacts`() {
+    fun `valid generated catalog resolves exact grounds actions and uploads canonical scene artifacts`() {
         val catalog = generatedCatalogJar()
         val version = "37"
         val source =
@@ -62,6 +62,10 @@ class DeriveWorkerMainIT {
                             .replace(
                                 "\"id\":\"grounds:assets\",\"version\":\"1\"",
                                 "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                            )
+                            .replace(
+                                "\"id\":\"grounds:actions\",\"version\":\"1\"",
+                                "\"id\":\"grounds:actions\",\"version\":\"2\"",
                             )
                             .encodeToByteArray()
                 )
@@ -105,7 +109,7 @@ class DeriveWorkerMainIT {
             assertEquals("grounds:assets", result.scene.assetCatalog?.id)
             assertEquals(version, result.scene.assetCatalog?.version)
             assertEquals("grounds:actions", result.scene.actionCatalog?.id)
-            assertEquals("1", result.scene.actionCatalog?.version)
+            assertEquals("2", result.scene.actionCatalog?.version)
             assertTrue(result.scene.present)
             assertEquals("1", result.scene.schemaVersion)
             assertEquals(emptyList<String>(), result.scene.requiredActions)
@@ -114,6 +118,10 @@ class DeriveWorkerMainIT {
                     .replace(
                         "\"id\":\"grounds:assets\",\"version\":\"1\"",
                         "\"id\":\"grounds:assets\",\"version\":\"$version\"",
+                    )
+                    .replace(
+                        "\"id\":\"grounds:actions\",\"version\":\"1\"",
+                        "\"id\":\"grounds:actions\",\"version\":\"2\"",
                     )
                     .encodeToByteArray()
             val manifest = CanonicalJson.readManifest(uploads[1].second)
@@ -126,6 +134,10 @@ class DeriveWorkerMainIT {
             assertEquals(
                 "grounds:assets",
                 CanonicalJson.readManifest(uploads[1].second).scene.assetCatalog?.id,
+            )
+            assertEquals(
+                "2",
+                CanonicalJson.readManifest(uploads[1].second).scene.actionCatalog?.version,
             )
             assertEquals(
                 uploads[1].second.toList(),
