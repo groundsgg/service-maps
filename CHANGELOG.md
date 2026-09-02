@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/groundsgg/service-maps/compare/v1.4.0...v1.5.0) (2026-09-02)
+
+
+### Features
+
+* resolve exact lobby action catalogs during map derivation ([#48](https://github.com/groundsgg/service-maps/issues/48)) ([46a3980](https://github.com/groundsgg/service-maps/commit/46a3980e6256ee48d6ca830b04d86cf01a7f60ff))
+
 ## [1.4.0](https://github.com/groundsgg/service-maps/compare/v1.3.0...v1.4.0) (2026-08-27)
 
 
