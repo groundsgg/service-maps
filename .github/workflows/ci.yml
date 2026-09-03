@@ -9,6 +9,10 @@ on:
 jobs:
   reusable:
     uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
+    with:
+      runner: >-
+        ${{ github.event.repository.visibility == 'public'
+            && '' || 'grounds-service-maps' }}
     secrets:
       PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
 
@@ -16,7 +20,7 @@ jobs:
     runs-on: >-
       ${{ github.event.repository.visibility == 'public'
           && 'ubuntu-24.04'
-          || 'blacksmith-2vcpu-ubuntu-2404' }}
+          || 'grounds-service-maps' }}
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
