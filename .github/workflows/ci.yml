@@ -7,6 +7,18 @@ on:
     branches: [main]
 
 jobs:
+  # Stays on the default (hosted / Blacksmith) runner while the rest of this
+  # repo moves to hbr1. The tests here use Testcontainers, whose docker-java
+  # client asks the daemon for API 1.32; the ARC runner's dind sidecar is Docker
+  # 29, which refuses anything below 1.40:
+  #
+  #   client version 1.32 is too old.
+  #   Minimum supported API version is 1.40
+  #
+  # DOCKER_API_VERSION does not help -- that is the Docker CLI's variable, not
+  # docker-java's. Fixing it properly means either upgrading the client here or
+  # pinning an older Docker in the runner's dind sidecar, neither of which
+  # belongs in a runner move.
   reusable:
     uses: groundsgg/.github/.github/workflows/gradle-ci.yml@main
     secrets:
@@ -16,7 +28,7 @@ jobs:
     runs-on: >-
       ${{ github.event.repository.visibility == 'public'
           && 'ubuntu-24.04'
-          || 'blacksmith-2vcpu-ubuntu-2404' }}
+          || 'grounds-service-maps' }}
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
