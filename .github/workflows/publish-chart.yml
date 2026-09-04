@@ -23,7 +23,7 @@ jobs:
     runs-on: >-
       ${{ github.event.repository.visibility == 'public'
           && 'ubuntu-24.04'
-          || 'grounds-service-maps' }}
+          || 'service-maps' }}
     steps:
       - uses: actions/checkout@v7
 
