@@ -51,7 +51,7 @@ class DeriveWorkerMainIT {
     }
 
     @Test
-    fun `valid generated catalog resolves exact grounds actions and uploads canonical scene artifacts`() {
+    fun `packset catalog artifact resolves its exact asset catalog and uploads canonical scene artifacts`() {
         val catalog = generatedCatalogJar()
         val version = "37"
         val source =
@@ -79,7 +79,7 @@ class DeriveWorkerMainIT {
                             listOf(
                                 AssetCatalogCandidate(
                                     "stable",
-                                    "grounds:assets",
+                                    "grounds:resourcepacks",
                                     "1",
                                     "gg.grounds:resourcepacks-catalog:1",
                                     "catalog.jar",
@@ -91,6 +91,7 @@ class DeriveWorkerMainIT {
                     )
 
             System.setProperty("grounds.catalog.fixture.version", version)
+            System.setProperty("grounds.catalog.fixture.compatibility", "grounds:resourcepacks")
             try {
                 run(
                     server,
@@ -101,6 +102,7 @@ class DeriveWorkerMainIT {
                 )
             } finally {
                 System.clearProperty("grounds.catalog.fixture.version")
+                System.clearProperty("grounds.catalog.fixture.compatibility")
             }
 
             assertEquals(listOf("/source", "/catalog", "/bundle", "/manifest", "/result"), requests)
