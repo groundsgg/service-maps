@@ -232,7 +232,13 @@ class CatalogJarLoader(
                         ?: throw CatalogContentException(
                             "Catalog owner did not return an AssetCatalog."
                         )
-                if (catalog.id.value != candidate.id || catalog.version != candidate.version) {
+                val compatibility = catalog.resourcePackCompatibility
+                if (
+                    catalog.version != candidate.version ||
+                        compatibility.catalog.value != candidate.id ||
+                        compatibility.minInclusive != candidate.version ||
+                        compatibility.maxInclusive != candidate.version
+                ) {
                     throw CatalogContentException(
                         "Catalog identity does not match the validated candidate."
                     )

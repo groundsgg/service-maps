@@ -131,15 +131,17 @@ object DeriveWorkerMain {
     ) = SceneCatalogResolver { references: SceneCatalogReferences ->
         val asset = references.assets
         val candidate =
-            request.catalogCandidates.singleOrNull {
-                it.id == asset.id.value && it.version == asset.version
-            } ?: throw ContentFailure("no exact asset catalog candidate")
+            request.catalogCandidates.singleOrNull { it.version == asset.version }
+                ?: throw ContentFailure("no exact asset catalog candidate")
         val assets =
             try {
                 loader.load(candidate)
             } catch (e: IllegalArgumentException) {
                 throw ContentFailure("asset catalog is invalid")
             }
+        if (assets.id.value != asset.id.value || assets.version != asset.version) {
+            throw ContentFailure("asset catalog identity does not match")
+        }
         val namespace = references.actions.id.value.substringBefore(':')
         if (namespace != "grounds" || !references.actions.id.value.startsWith("$namespace:")) {
             throw ContentFailure("action catalog namespace is invalid")

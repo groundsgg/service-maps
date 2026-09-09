@@ -780,10 +780,12 @@ object CatalogJarLoaderFixtures {
     @JvmStatic
     fun catalog(): AssetCatalog {
         val version = System.getProperty("grounds.catalog.fixture.version", "1")
+        val compatibility =
+            System.getProperty("grounds.catalog.fixture.compatibility", "grounds:assets")
         return AssetCatalog(
             CatalogId("grounds:assets"),
             version,
-            CatalogVersionRange(CatalogId("grounds:assets"), version, version),
+            CatalogVersionRange(CatalogId(compatibility), version, version),
             emptyMap(),
         )
     }
