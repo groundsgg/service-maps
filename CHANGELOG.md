@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/groundsgg/service-maps/compare/v1.5.1...v1.5.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* use numeric runtime container user ([#55](https://github.com/groundsgg/service-maps/issues/55)) ([89c855a](https://github.com/groundsgg/service-maps/commit/89c855a16960e2ad00ba5fcfd99be89f4d95324b))
+
 ## [1.5.1](https://github.com/groundsgg/service-maps/compare/v1.5.0...v1.5.1) (2026-09-09)
 
 
