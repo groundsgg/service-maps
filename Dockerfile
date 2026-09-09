@@ -26,7 +26,7 @@ FROM gcr.io/distroless/java25-debian13 AS runtime
 
 WORKDIR /deployments/quarkus-app
 
-USER nonroot:nonroot
+USER 65532:65532
 
 COPY --from=build --chown=nonroot:nonroot /workspace/build/quarkus-app/ ./
 
