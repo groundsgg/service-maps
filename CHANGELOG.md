@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/groundsgg/service-maps/compare/v1.5.2...v1.5.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* resolve asset catalogs from packset artifacts ([#57](https://github.com/groundsgg/service-maps/issues/57)) ([19785f5](https://github.com/groundsgg/service-maps/commit/19785f573496a442adacbb057cf6d2f2cb042e11))
+
 ## [1.5.2](https://github.com/groundsgg/service-maps/compare/v1.5.1...v1.5.2) (2026-09-09)
 
 
