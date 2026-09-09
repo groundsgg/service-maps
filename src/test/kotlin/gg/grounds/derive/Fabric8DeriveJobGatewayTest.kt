@@ -203,6 +203,15 @@ class Fabric8DeriveJobGatewayTest {
     }
 
     @Test
+    fun `manifest runs derive worker with the deployed non-root UID and group`() {
+        val securityContext = gateway().buildJob(request()).spec.template.spec.securityContext
+
+        assertEquals(65532L, securityContext.runAsUser)
+        assertEquals(65532L, securityContext.runAsGroup)
+        assertEquals(65532L, securityContext.fsGroup)
+    }
+
+    @Test
     fun `job identity encodes complete map version and attempt within DNS length`() {
         val first =
             request(
