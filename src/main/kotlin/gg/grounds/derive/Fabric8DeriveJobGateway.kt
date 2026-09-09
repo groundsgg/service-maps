@@ -141,6 +141,9 @@ class Fabric8DeriveJobGateway(
                 .withSecurityContext(
                     PodSecurityContextBuilder()
                         .withRunAsNonRoot(true)
+                        .withRunAsUser(65532)
+                        .withRunAsGroup(65532)
+                        .withFsGroup(65532)
                         .withSeccompProfile(
                             io.fabric8.kubernetes.api.model
                                 .SeccompProfileBuilder()
