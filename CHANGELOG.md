@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/groundsgg/service-maps/compare/v1.5.0...v1.5.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* run derive workers as numeric non-root user ([#53](https://github.com/groundsgg/service-maps/issues/53)) ([aa96186](https://github.com/groundsgg/service-maps/commit/aa9618634cc666434f963b3af1719d420e27900b))
+
 ## [1.5.0](https://github.com/groundsgg/service-maps/compare/v1.4.0...v1.5.0) (2026-09-02)
 
 
