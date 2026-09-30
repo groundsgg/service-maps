@@ -16,7 +16,7 @@ jobs:
     runs-on: >-
       ${{ github.event.repository.visibility == 'public'
           && 'ubuntu-24.04'
-          || 'service-maps' }}
+          || 'grounds-runners' }}
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
