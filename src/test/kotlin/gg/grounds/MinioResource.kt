@@ -22,12 +22,13 @@ class MinioResource : QuarkusTestResourceLifecycleManager {
 
     override fun start(): Map<String, String> {
         container =
-            GenericContainer("minio/minio:RELEASE.2025-09-07T16-13-09Z")
-                .withEnv("MINIO_ROOT_USER", KEY)
-                .withEnv("MINIO_ROOT_PASSWORD", SECRET)
-                .withCommand("server", "/data", "--address", ":9000")
+            // RustFS rather than MinIO: MinIO withdrew its public images (every tag on Docker
+            // Hub and quay answers 401 since 2026-09), and RustFS is what the platform runs.
+            GenericContainer("rustfs/rustfs:1.0.0")
+                .withEnv("RUSTFS_ACCESS_KEY", KEY)
+                .withEnv("RUSTFS_SECRET_KEY", SECRET)
                 .withExposedPorts(9000)
-                .waitingFor(Wait.forHttp("/minio/health/live").forPort(9000))
+                .waitingFor(Wait.forHttp("/health").forPort(9000))
         container.start()
 
         endpoint = "http://${container.host}:${container.getMappedPort(9000)}"
