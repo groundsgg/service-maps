@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4](https://github.com/groundsgg/service-maps/compare/v1.5.3...v1.5.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* read the 26.3 pack set with resourcepacks-client 1.0.0 ([#60](https://github.com/groundsgg/service-maps/issues/60)) ([0628e8c](https://github.com/groundsgg/service-maps/commit/0628e8cddf04fbe02b2e4f0716680315190d3863))
+
 ## [1.5.3](https://github.com/groundsgg/service-maps/compare/v1.5.2...v1.5.3) (2026-09-09)
 
 
