@@ -335,8 +335,8 @@ class PackSetCatalogProviderTest {
             "version": "$version"
           },
           "minecraft": {
-            "resourcePackFormat": 88,
-            "version": "26.2"
+            "resourcePackFormat": 97,
+            "version": "26.3"
           },
           "packSet": "${source.packSet}",
           "packs": [
@@ -344,7 +344,7 @@ class PackSetCatalogProviderTest {
               "id": "grounds-content",
               "order": 0,
               "required": true,
-              "resourcePackFormat": 88,
+              "resourcePackFormat": 97,
               "role": "content",
               "sha1": "${"b".repeat(40)}",
               "sha256": "${"c".repeat(64)}",
@@ -356,7 +356,7 @@ class PackSetCatalogProviderTest {
               "id": "grounds-platform",
               "order": 1,
               "required": true,
-              "resourcePackFormat": 88,
+              "resourcePackFormat": 97,
               "role": "platform",
               "sha1": "${"d".repeat(40)}",
               "sha256": "${"e".repeat(64)}",
