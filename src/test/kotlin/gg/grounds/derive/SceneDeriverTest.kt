@@ -235,6 +235,50 @@ class SceneDeriverTest {
     }
 
     @Test
+    fun `authored collision survives production derivation and canonical bundling`() {
+        val authored =
+            """{
+              "schemaVersion":1,"id":"grounds:collision",
+              "metadata":{"name":"Collision","description":null,"tags":[]},
+              "catalogs":{"assets":{"id":"grounds:assets","version":"1"},
+                          "actions":{"id":"grounds:actions","version":"2"}},
+              "groups":[],"elements":[{"type":"npc","id":"navigator","group":null,
+                "transform":{"position":{"x":0,"y":0,"z":0},
+                             "rotation":{"yaw":0,"pitch":0,"roll":0},
+                             "scale":{"x":1,"y":1,"z":1}},
+                "visible":true,"activation":"AUTOMATIC","body":"grounds:navigator",
+                "label":null,"labelOffset":{"x":0,"y":0,"z":0},"look":{"type":"fixed"},
+                "initialAnimation":null,"proximity":null,"bindings":[],
+                "interactionBounds":{"center":{"x":0,"y":0.9,"z":0},
+                                     "size":{"x":0.6,"y":1.8,"z":0.6}},
+                "collision":{"mode":"bounce","bounceStrength":12.5}}]
+            }"""
+        val outcome =
+            SceneDeriver(
+                    SceneCatalogResolver {
+                        ResolvedSceneCatalogs(navigatorAssets, navigatorActions("2"))
+                    }
+                )
+                .derive(
+                    ByteArrayInputStream(
+                        archive(mapOf("scene.json" to authored.encodeToByteArray()))
+                    ),
+                    "a".repeat(64),
+                    Files.createTempDirectory("derive"),
+                )
+        val result =
+            assertInstanceOf(SceneDerivationOutcome.Valid::class.java, outcome, outcome.toString())
+        val entries =
+            SafeTarZstdReader()
+                .read(Files.newInputStream(result.bundle.path), Files.createTempDirectory("bundle"))
+                .associateBy { it.path }
+        val canonical = Files.readAllBytes(entries.getValue("scene.json").file)
+        assertEquals(true, canonical.decodeToString().contains("\"mode\": \"bounce\""))
+        assertEquals(true, canonical.decodeToString().contains("\"bounceStrength\": 12.5"))
+        assertEquals(digest(canonical), result.scene.sha256)
+    }
+
+    @Test
     fun `wrong navigator key and nonempty navigator arguments are scene invalid`() {
         listOf(
                 ApplicationAction(ActionKey("grounds:lobby/wrong"), emptyMap()),
