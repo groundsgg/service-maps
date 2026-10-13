@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/groundsgg/service-maps/compare/v1.5.4...v1.6.0) (2026-10-13)
+
+
+### Features
+
+* derive scenes with optional NPC collision ([#62](https://github.com/groundsgg/service-maps/issues/62)) ([780ee70](https://github.com/groundsgg/service-maps/commit/780ee70a146c62e14846752e465261af000af506))
+
 ## [1.5.4](https://github.com/groundsgg/service-maps/compare/v1.5.3...v1.5.4) (2026-10-07)
 
 
