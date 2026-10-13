@@ -236,6 +236,11 @@ class SceneDeriverTest {
 
     @Test
     fun `authored collision survives production derivation and canonical bundling`() {
+        assertCollisionSurvivesDerivation("bounceStrength", 12.5)
+        assertCollisionSurvivesDerivation("bounceDistance", 0.5)
+    }
+
+    private fun assertCollisionSurvivesDerivation(field: String, value: Double) {
         val authored =
             """{
               "schemaVersion":1,"id":"grounds:collision",
@@ -251,7 +256,7 @@ class SceneDeriverTest {
                 "initialAnimation":null,"proximity":null,"bindings":[],
                 "interactionBounds":{"center":{"x":0,"y":0.9,"z":0},
                                      "size":{"x":0.6,"y":1.8,"z":0.6}},
-                "collision":{"mode":"bounce","bounceStrength":12.5}}]
+                "collision":{"mode":"bounce","$field":$value}}]
             }"""
         val outcome =
             SceneDeriver(
@@ -274,7 +279,7 @@ class SceneDeriverTest {
                 .associateBy { it.path }
         val canonical = Files.readAllBytes(entries.getValue("scene.json").file)
         assertEquals(true, canonical.decodeToString().contains("\"mode\": \"bounce\""))
-        assertEquals(true, canonical.decodeToString().contains("\"bounceStrength\": 12.5"))
+        assertEquals(true, canonical.decodeToString().contains("\"$field\": $value"))
         assertEquals(digest(canonical), result.scene.sha256)
     }
 
