@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/groundsgg/service-maps/compare/v1.6.0...v1.7.0) (2026-10-13)
+
+
+### Features
+
+* derive scenes with fractional NPC bounce distance ([#64](https://github.com/groundsgg/service-maps/issues/64)) ([76331b6](https://github.com/groundsgg/service-maps/commit/76331b61bd19ee84ff54837a2bae88566997b8cb))
+
 ## [1.6.0](https://github.com/groundsgg/service-maps/compare/v1.5.4...v1.6.0) (2026-10-13)
 
 
