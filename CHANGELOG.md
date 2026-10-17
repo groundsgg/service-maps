@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/groundsgg/service-maps/compare/v1.7.0...v1.7.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **build:** resolve dependencies through the runner mirror in Docker builds ([#66](https://github.com/groundsgg/service-maps/issues/66)) ([eae2194](https://github.com/groundsgg/service-maps/commit/eae2194f2e5d03ee9087c165d3abfd88e886f852))
+
 ## [1.7.0](https://github.com/groundsgg/service-maps/compare/v1.6.0...v1.7.0) (2026-10-13)
 
 
