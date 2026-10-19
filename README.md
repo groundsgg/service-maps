@@ -80,6 +80,25 @@ Once derivation is enabled, the legacy `/publish` endpoint rejects source-backed
 and source-less compatibility versions may still use it, but uploaded source bytes are never
 promoted by that path.
 
+## Lit copies
+
+Converted maps carry no light, and a game server that lights a map itself does it on the tick
+while players wait. With derivation enabled (`MAPS_LIT_ENABLED`, default true), every **pinned**
+bundle gets a lit copy once per light format: the lit worker (`lit-worker/`, a plain JVM
+program in the same image, run as a Job like the derive worker) lights it with
+grounds-minestom-runtime's `MapLight` — the code and Minestom build the game servers use — and
+the copy is published content-addressed beside the bundle. The pin file entry then carries
+
+```json
+"lit": {"format": 1, "bundleSha256": "…", "bundleUrl": "https://…/bundle/sha256/…tar.zst"}
+```
+
+and every environment pinning that bundle has its pin file republished. Versions and pins never
+change. Lit copies live in `map_lit`, keyed by bundle digest and light format; one bundle is lit
+at a time, a failure is retried up to three times, and lighting fills `present_chunks` and
+`est_loaded_mib` of the bundle's versions. `MAPS_LIT_FORMAT` must equal the worker's
+`MapLight.FORMAT`; raising both lights every pinned bundle again.
+
 ## Not yet true, and load-bearing
 
 <!-- Both of these are why there is no chart and no Argo application in this repository. -->

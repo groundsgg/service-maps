@@ -127,6 +127,23 @@ constructor(
             .url()
             .toExternalForm()
 
+    /**
+     * A URL that lets a lighting worker read one published bundle. Bundles are public anyway; a
+     * presigned read reaches the bucket directly instead of going through the CDN.
+     */
+    fun presignGetPublic(key: String, trust: MapTrust, ttl: Duration = PRESIGN_TTL): String =
+        presigner
+            .presignGetObject(
+                GetObjectPresignRequest.builder()
+                    .signatureDuration(ttl)
+                    .getObjectRequest(
+                        GetObjectRequest.builder().bucket(publicBucketFor(trust)).key(key).build()
+                    )
+                    .build()
+            )
+            .url()
+            .toExternalForm()
+
     override fun headPrivate(key: String): BlobMetadata? = artifactAccess {
         head(privateBucket, key)
     }

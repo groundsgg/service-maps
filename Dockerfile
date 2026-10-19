@@ -8,6 +8,7 @@ WORKDIR /workspace
 COPY gradle/ gradle/
 COPY gradlew build.gradle.kts settings.gradle.kts ./
 COPY src/ src/
+COPY lit-worker/ lit-worker/
 
 # Use locked caches to avoid corruption on parallel builds
 RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
@@ -20,7 +21,7 @@ RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
       ./gradlew --no-daemon --stacktrace \
         -Pgithub.user="${GITHUB_USER}" \
         -Pgithub.token="${token}" \
-        quarkusBuild -x test \
+        quarkusBuild :lit-worker:installDist -x test \
     '
 
 FROM gcr.io/distroless/java25-debian13 AS runtime
@@ -30,6 +31,9 @@ WORKDIR /deployments/quarkus-app
 USER 65532:65532
 
 COPY --from=build --chown=nonroot:nonroot /workspace/build/quarkus-app/ ./
+# The lit worker: a plain JVM program with Minestom, run as a Job from this same image. Kept out
+# of the service's classpath, whose Quarkus platform pins libraries Minestom needs newer.
+COPY --from=build --chown=nonroot:nonroot /workspace/lit-worker/build/install/lit-worker/ /deployments/lit-worker/
 
 EXPOSE 9000
 # The default remains the service; callers can override CMD with the standalone worker command.
