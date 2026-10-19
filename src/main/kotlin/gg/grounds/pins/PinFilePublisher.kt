@@ -1,10 +1,13 @@
 package gg.grounds.pins
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.blob.BlobStore
+import gg.grounds.domain.MapLitRepository
 import gg.grounds.domain.MapPinRepository
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.jboss.logging.Logger
 
 /**
@@ -27,6 +30,8 @@ constructor(
     private val pins: MapPinRepository,
     private val blobs: BlobStore,
     private val json: ObjectMapper,
+    private val lits: MapLitRepository,
+    @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "1") private val litFormat: Int,
 ) {
 
     private val log = Logger.getLogger(PinFilePublisher::class.java)
@@ -49,6 +54,7 @@ constructor(
                         // Snapshot and serialisation are inside the try as well: a failure in
                         // either is still a failed projection, and letting it escape would turn
                         // an applied pin move into a 500.
+                        val litCopies = lits.litCopies(litFormat)
                         val body =
                             json.writeValueAsString(
                                 PinFile(
@@ -68,6 +74,17 @@ constructor(
                                                             BlobStore.bundleKey(pin.bundleSha256),
                                                     sizeBytes = pin.sizeBytes,
                                                     estLoadedMib = pin.estLoadedMib,
+                                                    lit =
+                                                        litCopies[pin.bundleSha256]?.let { lit ->
+                                                            LitEntry(
+                                                                format = litFormat,
+                                                                bundleSha256 = lit,
+                                                                bundleUrl =
+                                                                    blobs.publicBaseFor(pin.trust) +
+                                                                        "/" +
+                                                                        BlobStore.bundleKey(lit),
+                                                            )
+                                                        },
                                                 )
                                         },
                                 )
@@ -104,4 +121,12 @@ data class PinnedEntry(
     val bundleUrl: String,
     val sizeBytes: Long?,
     val estLoadedMib: Int?,
+    /**
+     * The same map with its light computed once (game servers then light nothing). Left out, not
+     * null, while there is none: servers before the field existed read every key they find.
+     */
+    @get:JsonInclude(JsonInclude.Include.NON_NULL) val lit: LitEntry? = null,
 )
+
+/** A lit copy of a pinned bundle, in the light format game servers of that [format] read. */
+data class LitEntry(val format: Int, val bundleSha256: String, val bundleUrl: String)
