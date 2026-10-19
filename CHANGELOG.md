@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.0](https://github.com/groundsgg/service-maps/compare/v1.7.0...v1.8.0) (2026-10-19)
+
+
+### Features
+
+* **lit:** light every pinned bundle once and publish the lit copy ([#74](https://github.com/groundsgg/service-maps/issues/74)) ([d626433](https://github.com/groundsgg/service-maps/commit/d62643309c72ec05596657a2373dfd9fe9baa9b0))
+
+
+### Bug Fixes
+
+* **build:** resolve dependencies through the runner mirror in Docker builds ([#66](https://github.com/groundsgg/service-maps/issues/66)) ([eae2194](https://github.com/groundsgg/service-maps/commit/eae2194f2e5d03ee9087c165d3abfd88e886f852))
+
 ## [1.7.0](https://github.com/groundsgg/service-maps/compare/v1.6.0...v1.7.0) (2026-10-13)
 
 
