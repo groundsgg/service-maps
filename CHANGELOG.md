@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/groundsgg/service-maps/compare/v1.8.0...v1.9.0) (2026-10-23)
+
+
+### Features
+
+* keep buildserver working copies ([#75](https://github.com/groundsgg/service-maps/issues/75)) ([7e28104](https://github.com/groundsgg/service-maps/commit/7e281045a88e4df9b81f7bb8f60adb894e56798b))
+
 ## [1.8.0](https://github.com/groundsgg/service-maps/compare/v1.7.0...v1.8.0) (2026-10-19)
 
 
