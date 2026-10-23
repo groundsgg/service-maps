@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/groundsgg/service-maps/compare/v1.9.0...v1.10.0) (2026-10-23)
+
+
+### Features
+
+* **pins:** announce pin file changes on NATS ([#77](https://github.com/groundsgg/service-maps/issues/77)) ([1fe9c31](https://github.com/groundsgg/service-maps/commit/1fe9c314681310755c45e78d12ae2da1aa4f2e1d))
+
 ## [1.9.0](https://github.com/groundsgg/service-maps/compare/v1.8.0...v1.9.0) (2026-10-23)
 
 
