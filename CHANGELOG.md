@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/groundsgg/service-maps/compare/v1.10.0...v1.10.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **pins:** connect to NATS at boot ([#79](https://github.com/groundsgg/service-maps/issues/79)) ([d397aec](https://github.com/groundsgg/service-maps/commit/d397aec9f734d608e30728ae8cab18f567d3cefb))
+
 ## [1.10.0](https://github.com/groundsgg/service-maps/compare/v1.9.0...v1.10.0) (2026-10-23)
 
 
