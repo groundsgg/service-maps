@@ -35,7 +35,7 @@ dependencies {
     implementation("net.minestom:minestom:2026.10.10-26.3-grounds")
     implementation("com.google.code.gson:gson:2.13.2")
     implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-6")
+    implementation("com.github.luben:zstd-jni:1.5.7-23")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.17")
 
     testImplementation(kotlin("test"))
