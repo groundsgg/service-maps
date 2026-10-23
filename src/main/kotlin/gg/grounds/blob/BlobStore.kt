@@ -7,6 +7,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.net.URI
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -18,9 +19,11 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.S3Configuration
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.GetObjectResponse
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import software.amazon.awssdk.services.s3.model.S3Exception
@@ -301,6 +304,19 @@ constructor(
         )
     }
 
+    /** Every private object under [prefix] with when it was last written, for retention sweeps. */
+    fun listPrivate(prefix: String): List<Pair<String, Instant>> =
+        client
+            .listObjectsV2Paginator(
+                ListObjectsV2Request.builder().bucket(privateBucket).prefix(prefix).build()
+            )
+            .contents()
+            .map { it.key() to it.lastModified() }
+
+    fun deletePrivate(key: String) {
+        client.deleteObject(DeleteObjectRequest.builder().bucket(privateBucket).key(key).build())
+    }
+
     private fun head(bucket: String, key: String): BlobMetadata? =
         try {
             val response =
@@ -362,6 +378,16 @@ constructor(
         fun bundleKey(sha256: String): String = "bundle/sha256/${sha256.take(2)}/$sha256.tar.zst"
 
         /** The one deliberately mutable object in the design. */
+        /**
+         * A working-copy blob. Its own prefix, apart from `bundle/`: the registry's orphan
+         * collection only knows map manifests and would delete these, and working-copy retention is
+         * time-based, which the registry rules out for map content.
+         */
+        fun workspaceBlobKey(server: String, sha256: String): String =
+            "workspace/$server/blob/$sha256"
+
+        fun workspaceBlobPrefix(server: String): String = "workspace/$server/blob/"
+
         fun pinFileKey(environment: String): String = "pins/$environment.json"
     }
 }
