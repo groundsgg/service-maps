@@ -48,6 +48,12 @@ service:
 # puts them in the release history.
 existingSecret: service-maps-secrets
 
+# Secret with a NATS_URL key (credentials in the URL) for announcing pin changes on
+# maps.pins.<env>. Empty sends no announcements; servers then only see a new pin when they
+# next read the pin file.
+nats:
+  existingSecret: ""
+
 # Secret CNPG generates for the application user.
 database:
   existingSecret: service-maps-db-app

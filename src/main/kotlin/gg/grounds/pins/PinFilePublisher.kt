@@ -31,6 +31,7 @@ constructor(
     private val blobs: BlobStore,
     private val json: ObjectMapper,
     private val lits: MapLitRepository,
+    private val events: PinEvents,
     @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "1") private val litFormat: Int,
 ) {
 
@@ -97,6 +98,9 @@ constructor(
                             // must not be cached for a year. Everything it points at is immutable.
                             cacheControl = "public, max-age=30",
                         )
+                        // Inside the lock, so announcements go out in the order the uploads
+                        // landed and the last one heard is the file the CDN holds.
+                        events.published(environment, body)
                         true
                     } catch (e: Exception) {
                         log.errorf(

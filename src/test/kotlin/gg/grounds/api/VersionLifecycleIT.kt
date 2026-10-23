@@ -2,11 +2,13 @@ package gg.grounds.api
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.MinioResource
+import gg.grounds.NatsResource
 import gg.grounds.PostgresResource
 import gg.grounds.domain.MapAddress
 import gg.grounds.domain.MapRepository
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneStatus
+import io.nats.client.Nats
 import io.quarkus.test.common.QuarkusTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
@@ -17,6 +19,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.notNullValue
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -28,6 +31,7 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 @QuarkusTest
 @QuarkusTestResource(PostgresResource::class)
 @QuarkusTestResource(MinioResource::class)
+@QuarkusTestResource(NatsResource::class)
 @TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class VersionLifecycleIT {
 
@@ -106,7 +110,10 @@ class VersionLifecycleIT {
             .then()
             .statusCode(409)
 
-        // 6. Now it pins, and the pin file is rewritten.
+        // 6. Now it pins, and the pin file is rewritten — and announced to running servers.
+        val nats = Nats.connect(NatsResource.url)
+        val announcements = nats.subscribe("maps.pins.stage")
+        nats.flush(Duration.ofSeconds(5))
         given()
             .contentType(ContentType.JSON)
             .body("""{"version":1}""")
@@ -118,6 +125,13 @@ class VersionLifecycleIT {
             .body("pinFilePublished", equalTo(true))
 
         val pinFile = readPublic("pins/stage.json")
+        val announced = announcements.nextMessage(Duration.ofSeconds(5))
+        nats.close()
+        assertEquals(
+            pinFile,
+            announced?.data?.decodeToString(),
+            "the announcement is the pin file itself, so a server need not re-read the CDN",
+        )
         val tree = json.readTree(pinFile)
         val entry = tree["maps"]["bedwars/crater"]
         assertEquals(1, entry["version"].asInt())
