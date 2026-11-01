@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.2](https://github.com/groundsgg/service-maps/compare/v1.10.1...v1.10.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** release the published NPC scene action catalogue ([#82](https://github.com/groundsgg/service-maps/issues/82)) ([cd1b8ab](https://github.com/groundsgg/service-maps/commit/cd1b8ab101eda15b319b25b599eef3a030ca1058))
+
 ## [1.10.1](https://github.com/groundsgg/service-maps/compare/v1.10.0...v1.10.1) (2026-10-23)
 
 
