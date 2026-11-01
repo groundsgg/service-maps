@@ -1,10 +1,20 @@
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Delete
 
+buildscript {
+    configurations.named("classpath") {
+        // Grounds root 0.1.1 uses Kotlin 2.3.0. Quarkus also brings a daemon client through
+        // its BOM; keep that client compatible with the compiler runner supplied by Grounds.
+        resolutionStrategy.force("org.jetbrains.kotlin:kotlin-daemon-client:2.3.0")
+    }
+}
+
 plugins {
     id("gg.grounds.root") version "0.1.1"
     alias(libs.plugins.quarkus)
 }
+
+val zstdVersion = "1.5.7-25"
 
 val cleanProductionOpenApi =
     tasks.register<Delete>("cleanProductionOpenApi") {
@@ -52,7 +62,7 @@ dependencies {
     // constructor metadata rather than relying on the application-managed ObjectMapper.
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-25")
+    implementation("com.github.luben:zstd-jni:$zstdVersion")
     implementation("gg.grounds:scene-format:0.4.0")
     // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
     // Ship this dependency in the API and derive-worker images together.
@@ -90,11 +100,13 @@ dependencies {
     // Version comes from the Quarkus BOM. Pinning one here is how you end up asking
     // Maven Central for a testcontainers release that does not exist while the BOM
     // quietly resolves a different one.
-    testImplementation("org.testcontainers:postgresql")
-    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:testcontainers-postgresql")
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 }
 
 configurations.configureEach {
+    // Keep API and lit worker on the same Zstd patch despite the Quarkus BOM's older pin.
+    resolutionStrategy.force("com.github.luben:zstd-jni:$zstdVersion")
     // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
     resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
 }
