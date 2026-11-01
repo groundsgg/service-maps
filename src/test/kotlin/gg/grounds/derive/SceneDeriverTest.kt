@@ -19,6 +19,52 @@ import org.junit.jupiter.api.Test
 
 class SceneDeriverTest {
     @Test
+    fun `NPC queues derive with the production revision three catalog and invalid modes are rejected`() {
+        val catalog =
+            gg.grounds.catalog
+                .DefaultNamespaceCatalogResolver()
+                .resolve(
+                    "grounds",
+                    gg.grounds.domain.CatalogReference("grounds:assets", "1"),
+                    gg.grounds.domain.CatalogReference("grounds:actions", "3"),
+                )
+                .catalog
+        val valid =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                deriveNavigatorScene(
+                    "3",
+                    ApplicationAction(
+                        ActionKey("grounds:lobby/toggle_queue"),
+                        mapOf(LocalId("mode") to StringArgument("keystone-2x1")),
+                    ),
+                    catalog = catalog,
+                ),
+            )
+        assertEquals("3", valid.scene.actionCatalog?.version)
+        assertEquals(listOf("grounds:lobby/toggle_queue"), valid.scene.requiredActions)
+        assertInstanceOf(
+            SceneDerivationOutcome.Invalid::class.java,
+            deriveNavigatorScene(
+                "3",
+                ApplicationAction(
+                    ActionKey("grounds:lobby/toggle_queue"),
+                    mapOf(LocalId("mode") to StringArgument("queue leave")),
+                ),
+                catalog = catalog,
+            ),
+        )
+        assertInstanceOf(
+            SceneDerivationOutcome.Valid::class.java,
+            deriveNavigatorScene(
+                "3",
+                ApplicationAction(ActionKey("grounds:lobby/open_duel_menu"), emptyMap()),
+                catalog = catalog,
+            ),
+        )
+    }
+
+    @Test
     fun `propagates archive source io failures as system failures`() {
         val source =
             object : ByteArrayInputStream(ByteArray(0)) {
@@ -326,6 +372,7 @@ class SceneDeriverTest {
         action: ApplicationAction =
             ApplicationAction(ActionKey("grounds:lobby/open_navigator"), emptyMap()),
         includeNavigator: Boolean = true,
+        catalog: ActionCatalog = navigatorActions(revision),
     ): SceneDerivationOutcome {
         val document =
             SceneDocument(
@@ -368,9 +415,7 @@ class SceneDeriverTest {
             assertInstanceOf(SceneEncodeResult.Success::class.java, SceneJson.encode(document))
                 .bytes
         return SceneDeriver(
-                SceneCatalogResolver {
-                    ResolvedSceneCatalogs(navigatorAssets, navigatorActions(revision))
-                }
+                SceneCatalogResolver { ResolvedSceneCatalogs(navigatorAssets, catalog) }
             )
             .derive(
                 ByteArrayInputStream(archive(mapOf("scene.json" to bytes))),
