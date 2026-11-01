@@ -60,14 +60,14 @@ dependencies {
     // constructor metadata rather than relying on the application-managed ObjectMapper.
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-6")
+    implementation("com.github.luben:zstd-jni:1.5.7-25")
     implementation("gg.grounds:scene-format:0.4.0")
     // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
     // Ship this dependency in the API and derive-worker images together.
     implementation("gg.grounds:plugin-lobby-scene-catalog:2.23.0")
     implementation("gg.grounds:resourcepacks-client:1.0.0")
-    implementation("tools.jackson.core:jackson-databind:3.1.5")
-    implementation("tools.jackson.module:jackson-module-kotlin:3.1.5")
+    implementation("tools.jackson.core:jackson-databind:3.2.4")
+    implementation("tools.jackson.module:jackson-module-kotlin:3.2.4")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
     // server lives on the grounds-dev spoke while this runs on core, and a k8s
     // SA token from one cluster means nothing to the other cluster's JWKS.
@@ -103,6 +103,6 @@ dependencies {
 }
 
 configurations.configureEach {
-    // scene-format uses Jackson 3.1, whose compatibility annotations require 2.21.
-    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.21")
+    // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
+    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
 }

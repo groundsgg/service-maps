@@ -101,9 +101,12 @@ class LitWorkerTest {
         val bundle = bundle(unlitWorld())
         served["/source"] = bundle
 
-        worker().run(request(sha(bundle)))
-        val first = result().litSha256
-        worker().run(request(sha(bundle)))
+        assertEquals(0, worker().run(request(sha(bundle))))
+        val first = assertNotNull(result().litSha256)
+        // Anvil region headers record save times in seconds. Cross a clock tick so this
+        // checks reproducibility across real runs, even when lighting finishes quickly.
+        Thread.sleep(1100)
+        assertEquals(0, worker().run(request(sha(bundle))))
 
         assertEquals(first, result().litSha256)
     }

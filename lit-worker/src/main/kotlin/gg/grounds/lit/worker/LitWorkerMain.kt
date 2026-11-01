@@ -9,9 +9,12 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.FileTime
 import java.security.DigestInputStream
 import java.security.MessageDigest
@@ -124,6 +127,7 @@ class LitWorker(private val work: Path, private val http: HttpClient) {
         if (MinecraftServer.process() == null) MinecraftServer.init()
         val lit = work.resolve("lit")
         val kept = MapLight.bake(raw, lit)
+        clearRegionTimestamps(lit)
 
         val bundle = work.resolve("lit.tar.zst")
         pack(lit, bundle)
@@ -178,6 +182,24 @@ class LitWorker(private val work: Path, private val http: HttpClient) {
         val actual = HexFormat.of().formatHex(digest.digest())
         require(actual.equals(sha256, ignoreCase = true)) {
             "bundle digest is $actual, not $sha256"
+        }
+    }
+
+    /** Anvil's second header sector holds wall-clock save times, not chunk or lighting data. */
+    private fun clearRegionTimestamps(world: Path) {
+        val region = world.resolve("region")
+        if (!Files.isDirectory(region)) return
+        Files.list(region).use { paths ->
+            paths
+                .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".mca") }
+                .forEach { path ->
+                    FileChannel.open(path, StandardOpenOption.WRITE).use { channel ->
+                        require(channel.size() >= 8192) { "invalid Anvil region header: $path" }
+                        channel.position(4096)
+                        val timestamps = ByteBuffer.allocate(4096)
+                        while (timestamps.hasRemaining()) channel.write(timestamps)
+                    }
+                }
         }
     }
 
