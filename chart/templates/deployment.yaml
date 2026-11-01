@@ -90,6 +90,11 @@ spec:
               value: {{ .Values.config.authz.goliveGroups | quote }}
             - name: MAPS_REVIEW_GROUPS
               value: {{ .Values.config.authz.reviewGroups | quote }}
+            {{- if .Values.nats.existingSecret }}
+            - name: NATS_URL
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.nats.existingSecret }}, key: NATS_URL }
+            {{- end }}
             - name: OTEL_SDK_DISABLED
               value: {{ .Values.config.otel.disabled | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
