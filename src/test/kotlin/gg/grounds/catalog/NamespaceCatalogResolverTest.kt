@@ -8,6 +8,31 @@ import org.junit.jupiter.api.Test
 
 class NamespaceCatalogResolverTest {
     @Test
+    fun `grounds resolves the NPC action revision without changing revision two`() {
+        val resolver = DefaultNamespaceCatalogResolver()
+        val catalog =
+            resolver
+                .resolve(
+                    "grounds",
+                    CatalogReference("grounds:assets", "1"),
+                    CatalogReference("grounds:actions", "3"),
+                )
+                .catalog
+        assertEquals(
+            setOf(
+                ActionKey("grounds:lobby/open_navigator"),
+                ActionKey("grounds:lobby/toggle_queue"),
+                ActionKey("grounds:lobby/open_duel_menu"),
+            ),
+            catalog.actions.keys,
+        )
+        assertEquals(
+            setOf(gg.grounds.scene.format.LocalId("mode")),
+            catalog.actions.getValue(ActionKey("grounds:lobby/toggle_queue")).parameters.keys,
+        )
+    }
+
+    @Test
     fun `grounds namespace resolves the requested legacy action catalog`() {
         val resolver: NamespaceCatalogResolver = DefaultNamespaceCatalogResolver()
         val resolution =
