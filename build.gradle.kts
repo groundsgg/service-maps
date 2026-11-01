@@ -1,6 +1,14 @@
 import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Delete
 
+buildscript {
+    configurations.named("classpath") {
+        // Grounds root 0.1.1 uses Kotlin 2.3.0. Quarkus also brings a daemon client through
+        // its BOM; keep that client compatible with the compiler runner supplied by Grounds.
+        resolutionStrategy.force("org.jetbrains.kotlin:kotlin-daemon-client:2.3.0")
+    }
+}
+
 plugins {
     id("gg.grounds.root") version "0.1.1"
     alias(libs.plugins.quarkus)
@@ -90,8 +98,8 @@ dependencies {
     // Version comes from the Quarkus BOM. Pinning one here is how you end up asking
     // Maven Central for a testcontainers release that does not exist while the BOM
     // quietly resolves a different one.
-    testImplementation("org.testcontainers:postgresql")
-    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:testcontainers-postgresql")
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 }
 
 configurations.configureEach {

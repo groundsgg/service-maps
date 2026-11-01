@@ -1,7 +1,7 @@
 package gg.grounds
 
 import io.quarkus.test.common.QuarkusTestResourceLifecycleManager
-import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.postgresql.PostgreSQLContainer
 import org.testcontainers.utility.DockerImageName
 
 /**
@@ -10,7 +10,7 @@ import org.testcontainers.utility.DockerImageName
  */
 class PostgresResource : QuarkusTestResourceLifecycleManager {
 
-    private lateinit var container: PostgreSQLContainer<*>
+    private lateinit var container: PostgreSQLContainer
 
     override fun start(): Map<String, String> {
         container = PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"))
