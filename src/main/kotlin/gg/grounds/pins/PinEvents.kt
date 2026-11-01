@@ -3,6 +3,7 @@ package gg.grounds.pins
 import io.nats.client.Connection
 import io.nats.client.Nats
 import io.nats.client.Options
+import io.quarkus.runtime.Startup
 import jakarta.annotation.PreDestroy
 import jakarta.enterprise.context.ApplicationScoped
 import java.time.Duration
@@ -22,7 +23,11 @@ import org.jboss.logging.Logger
  *
  * Without `NATS_URL` nothing is sent. A failed publish is logged and never fails the pin move, for
  * the same reason a failed pin file upload does not: the move is the fact, this is a projection.
+ *
+ * Connected at boot rather than on the first pin move, so a credential or network problem shows in
+ * the startup log and in NATS's connection list instead of first surfacing during a pin.
  */
+@Startup
 @ApplicationScoped
 class PinEvents(@ConfigProperty(name = "grounds.maps.nats.url") natsUrl: Optional<String>) {
 

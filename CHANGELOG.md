@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.10.2](https://github.com/groundsgg/service-maps/compare/v1.10.1...v1.10.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** release the published NPC scene action catalogue ([#82](https://github.com/groundsgg/service-maps/issues/82)) ([cd1b8ab](https://github.com/groundsgg/service-maps/commit/cd1b8ab101eda15b319b25b599eef3a030ca1058))
+
+## [1.10.1](https://github.com/groundsgg/service-maps/compare/v1.10.0...v1.10.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **pins:** connect to NATS at boot ([#79](https://github.com/groundsgg/service-maps/issues/79)) ([d397aec](https://github.com/groundsgg/service-maps/commit/d397aec9f734d608e30728ae8cab18f567d3cefb))
+
+## [1.10.0](https://github.com/groundsgg/service-maps/compare/v1.9.0...v1.10.0) (2026-10-23)
+
+
+### Features
+
+* **pins:** announce pin file changes on NATS ([#77](https://github.com/groundsgg/service-maps/issues/77)) ([1fe9c31](https://github.com/groundsgg/service-maps/commit/1fe9c314681310755c45e78d12ae2da1aa4f2e1d))
+
 ## [1.9.0](https://github.com/groundsgg/service-maps/compare/v1.8.0...v1.9.0) (2026-10-23)
 
 
