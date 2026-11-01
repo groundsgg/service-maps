@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.10.2](https://github.com/groundsgg/service-maps/compare/v1.10.1...v1.10.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** release the published NPC scene action catalogue ([#82](https://github.com/groundsgg/service-maps/issues/82)) ([cd1b8ab](https://github.com/groundsgg/service-maps/commit/cd1b8ab101eda15b319b25b599eef3a030ca1058))
+
+## [1.10.1](https://github.com/groundsgg/service-maps/compare/v1.10.0...v1.10.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **pins:** connect to NATS at boot ([#79](https://github.com/groundsgg/service-maps/issues/79)) ([d397aec](https://github.com/groundsgg/service-maps/commit/d397aec9f734d608e30728ae8cab18f567d3cefb))
+
+## [1.10.0](https://github.com/groundsgg/service-maps/compare/v1.9.0...v1.10.0) (2026-10-23)
+
+
+### Features
+
+* **pins:** announce pin file changes on NATS ([#77](https://github.com/groundsgg/service-maps/issues/77)) ([1fe9c31](https://github.com/groundsgg/service-maps/commit/1fe9c314681310755c45e78d12ae2da1aa4f2e1d))
+
+## [1.9.0](https://github.com/groundsgg/service-maps/compare/v1.8.0...v1.9.0) (2026-10-23)
+
+
+### Features
+
+* keep buildserver working copies ([#75](https://github.com/groundsgg/service-maps/issues/75)) ([7e28104](https://github.com/groundsgg/service-maps/commit/7e281045a88e4df9b81f7bb8f60adb894e56798b))
+
+## [1.8.0](https://github.com/groundsgg/service-maps/compare/v1.7.0...v1.8.0) (2026-10-19)
+
+
+### Features
+
+* **lit:** light every pinned bundle once and publish the lit copy ([#74](https://github.com/groundsgg/service-maps/issues/74)) ([d626433](https://github.com/groundsgg/service-maps/commit/d62643309c72ec05596657a2373dfd9fe9baa9b0))
+
+
+### Bug Fixes
+
+* **build:** resolve dependencies through the runner mirror in Docker builds ([#66](https://github.com/groundsgg/service-maps/issues/66)) ([eae2194](https://github.com/groundsgg/service-maps/commit/eae2194f2e5d03ee9087c165d3abfd88e886f852))
+
 ## [1.7.0](https://github.com/groundsgg/service-maps/compare/v1.6.0...v1.7.0) (2026-10-13)
 
 

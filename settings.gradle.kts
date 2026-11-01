@@ -12,3 +12,6 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
+// The lit worker (see lit-worker/build.gradle.kts): built into the same image, run as a Job.
+include("lit-worker")

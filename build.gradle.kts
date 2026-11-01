@@ -54,7 +54,9 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:1.5.7-6")
     implementation("gg.grounds:scene-format:0.4.0")
-    implementation("gg.grounds:plugin-lobby-scene-catalog:1.13.1")
+    // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
+    // Ship this dependency in the API and derive-worker images together.
+    implementation("gg.grounds:plugin-lobby-scene-catalog:2.23.0")
     implementation("gg.grounds:resourcepacks-client:1.0.0")
     implementation("tools.jackson.core:jackson-databind:3.1.5")
     implementation("tools.jackson.module:jackson-module-kotlin:3.1.5")
@@ -80,6 +82,7 @@ dependencies {
     implementation(platform("software.amazon.awssdk:bom:2.31.6"))
     implementation("software.amazon.awssdk:s3")
     implementation("software.amazon.awssdk:url-connection-client")
+    implementation("io.nats:jnats:2.26.0")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-test-security")

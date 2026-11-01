@@ -65,6 +65,13 @@ constructor(
      */
     fun mayGoLive(): Boolean = inAny(goliveGroups)
 
+    /**
+     * Read and write a buildserver's working copy. The author groups, because the buildserver's
+     * service account already authors maps; a working copy holds every world on that server, so
+     * ownership grants nothing here.
+     */
+    fun mayKeepWorkspace(): Boolean = inAny(authorGroups)
+
     /** Reading someone else's work needs a group; reading your own never does. */
     fun maySee(ownerSub: String, namespace: String): Boolean =
         ownerSub == subject || !namespace.startsWith("u/") || inAny(reviewGroups)
