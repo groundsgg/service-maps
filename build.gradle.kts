@@ -52,7 +52,7 @@ dependencies {
     // constructor metadata rather than relying on the application-managed ObjectMapper.
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-6")
+    implementation("com.github.luben:zstd-jni:1.5.7-25")
     implementation("gg.grounds:scene-format:0.4.0")
     // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
     // Ship this dependency in the API and derive-worker images together.
