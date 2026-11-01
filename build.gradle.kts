@@ -14,6 +14,8 @@ plugins {
     alias(libs.plugins.quarkus)
 }
 
+val zstdVersion = "1.5.7-25"
+
 val cleanProductionOpenApi =
     tasks.register<Delete>("cleanProductionOpenApi") {
         delete(layout.buildDirectory.dir("generated/openapi"))
@@ -60,7 +62,7 @@ dependencies {
     // constructor metadata rather than relying on the application-managed ObjectMapper.
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-25")
+    implementation("com.github.luben:zstd-jni:$zstdVersion")
     implementation("gg.grounds:scene-format:0.4.0")
     // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
     // Ship this dependency in the API and derive-worker images together.
@@ -104,7 +106,7 @@ dependencies {
 
 configurations.configureEach {
     // Keep API and lit worker on the same Zstd patch despite the Quarkus BOM's older pin.
-    resolutionStrategy.force("com.github.luben:zstd-jni:1.5.7-25")
+    resolutionStrategy.force("com.github.luben:zstd-jni:$zstdVersion")
     // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
     resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
 }
