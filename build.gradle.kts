@@ -49,6 +49,7 @@ repositories {
 }
 
 dependencies {
+    compileOnly("org.graalvm.sdk:nativeimage")
     implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-kotlin")
