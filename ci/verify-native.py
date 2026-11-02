@@ -348,6 +348,48 @@ def contracts(c):
     c.request(path + '/versions/' + str(failed['version']) + '/derive/retry', 'POST', token=staff, status=409)
     print('Maps: polymorphic failure result, persisted problems and nonretryable content failure passed')
 
+    # Isolate API deserialization/persistence of populated Scene facts from the JVM's scene compiler.
+    version = c.request(path + '/versions', 'POST', {'uploadId': uploaded['uploadId'],
+                        'sourceSha256': digest(bundle), 'derive': True}, staff, 201)
+    job = c.jobs('service-maps-derive')[-1]
+    descriptor = job['spec']['template']['spec']['containers'][0]
+    request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
+    scene = {'present': True, 'schemaVersion': '1', 'sha256': digest(b'scene fixture'),
+             'assetCatalog': {'id': 'grounds:resourcepacks', 'version': '1.2.3'},
+             'actionCatalog': {'id': 'grounds:lobby', 'version': '2.23.0'},
+             'requiredActions': ['grounds:queue', 'grounds:teleport']}
+    manifest = encoded({'schemaVersion': 1, 'sourceSha256': digest(bundle),
+                        'bundleDigestInputs': ['region/r.0.0.mca', 'scene.json'], 'scene': scene})
+    result = {key: request[key] for key in ('schemaVersion', 'mapId', 'version', 'attempt', 'sourceSha256')}
+    result.update({'kind': 'SUCCESS', 'bundleSha256': digest(bundle), 'bundleSize': len(bundle),
+                   'manifestSha256': digest(manifest), 'manifestSize': len(manifest), 'scene': scene})
+    # Exhausted Job backoff must permit an explicit retry under a fresh immutable attempt.
+    c.request('/contract/complete/' + job['metadata']['name'], 'POST', {'failed': True}, service='control')
+    def job_failed():
+        response = c.request(path + '/versions/' + str(version['version']), token=staff)
+        assert response['state'] == 'DERIVE_FAILED', response
+        return response
+    rejected = eventually(job_failed)
+    assert rejected['deriveFailureScope'] == 'SYSTEM' and rejected['deriveRetryable'] is True
+    retried = c.request(path + '/versions/' + str(version['version']) + '/derive/retry', 'POST', token=staff, status=202)
+    assert retried['deriveAttempt'] != version['deriveAttempt']
+    job = c.jobs('service-maps-derive')[-1]
+    descriptor = job['spec']['template']['spec']['containers'][0]
+    request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
+    result['attempt'] = request['attempt']
+    for key, value in [('bundleUrl', bundle), ('manifestUrl', manifest), ('resultUrl', encoded(result))]:
+        c.presigned(request[key], 'PUT', value)
+    c.request('/contract/complete/' + job['metadata']['name'], 'POST', {}, service='control')
+    def scene_read():
+        response = c.request(path + '/versions/' + str(version['version']), token=staff)
+        assert response['state'] == 'PUBLISHED', response
+        return response['scene']
+    stored = eventually(scene_read)
+    assert stored['status'] == 'VALID' and stored['assetCatalog'] == scene['assetCatalog']
+    assert stored['actionCatalog'] == scene['actionCatalog'] and stored['requiredActionIds'] == scene['requiredActions']
+    print('Maps: populated Scene result marker, both catalog references and nonempty required-action persistence passed')
+    print('Maps: exhausted worker Job failure is retryable; explicit retry uses a fresh attempt and succeeds')
+
 
 def main():
     worker_image()
@@ -377,6 +419,7 @@ def main():
             contract.s3('/public', 'PUT')
             contract.s3('/ugc', 'PUT')
             contract.run('broker', 'nats:2.11-alpine', ports=(4222,))
+            eventually(lambda: docker('exec', contract.name + '-database', 'pg_isready', '-h', '127.0.0.1', '-U', 'maps', '-d', 'maps'))
             env = {'POSTGRES_URL': 'jdbc:postgresql://database:5432/maps?currentSchema=maps',
                    'POSTGRES_USER': 'maps', 'POSTGRES_PASSWORD': 'contract', 'NATS_URL': 'nats://broker:4222',
                    'GROUNDS_OIDC_SERVER_URL': 'http://maps-fixtures:8080/realm',
@@ -394,6 +437,8 @@ def main():
             contract.run('api', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
                          ports=(9000,), env=env, command_args=arguments)
             def ready():
+                if docker('inspect', '-f', '{{.State.Running}}', contract.name + '-api') != 'true':
+                    raise RuntimeError('packaged API exited before becoming ready')
                 health = contract.request('/q/health/ready')
                 assert health['status'] == 'UP', health
             eventually(ready)

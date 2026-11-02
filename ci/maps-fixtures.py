@@ -96,7 +96,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path.startswith('/contract/complete/'):
             with LOCK:
                 job = JOBS[path.rsplit('/', 1)[1]]
-                job['status'] = {'succeeded': 1, 'conditions': [{'type': 'Complete', 'status': 'True'}]}
+                failed = json.loads(body or b'{}').get('failed', False)
+                job['status'] = ({'failed': 1, 'conditions': [{'type': 'Failed', 'status': 'True'}]} if failed else
+                                 {'succeeded': 1, 'conditions': [{'type': 'Complete', 'status': 'True'}]})
                 self.reply(200, job)
         elif '/namespaces/maps/jobs' in path:
             name = path.split('/jobs/', 1)[1] if '/jobs/' in path else None

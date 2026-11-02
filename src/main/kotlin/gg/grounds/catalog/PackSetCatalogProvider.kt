@@ -103,7 +103,9 @@ internal constructor(
             // The channel cache deliberately creates only its own root. On a fresh pod the
             // configured shared parent may be several levels below the writable /tmp mount.
             Files.createDirectories(cache.parent)
-            return PackSetClient(PackSetClientConfig(PackSetSource(baseUri, packSet, channel), cache))
+            return PackSetClient(
+                PackSetClientConfig(PackSetSource(baseUri, packSet, channel), cache)
+            )
         }
     }
 }
