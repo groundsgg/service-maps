@@ -205,7 +205,18 @@ def source_bundle():
     return b'\x28\xb5\x2f\xfd\xa0' + struct.pack('<I', len(data)) + ((len(data) << 3) | 1).to_bytes(3, 'little') + data
 
 
+def assert_prometheus_metrics(c, populated=False):
+    metrics = c.request('/q/metrics', headers={'Accept': 'text/plain'})
+    assert isinstance(metrics, bytes) and b'# TYPE ' in metrics, 'Prometheus text format is required'
+    if populated:
+        assert b'http_server_requests_seconds_count' in metrics, 'HTTP request metrics are required after API traffic'
+        for name in (b'derive_reconciliation_active_candidates', b'derive_reconciliation_attempts_total',
+                     b'derive_reconciliation_duration_seconds_count'):
+            assert name in metrics, 'Populated derive metric missing: ' + name.decode()
+
+
 def contracts(c):
+    assert_prometheus_metrics(c)
     staff = c.token()
     creator = c.token('creator', ())
     other = c.token('other', ())
@@ -389,6 +400,8 @@ def contracts(c):
     assert stored['actionCatalog'] == scene['actionCatalog'] and stored['requiredActionIds'] == scene['requiredActions']
     print('Maps: populated Scene result marker, both catalog references and nonempty required-action persistence passed')
     print('Maps: exhausted worker Job failure is retryable; explicit retry uses a fresh attempt and succeeds')
+    assert_prometheus_metrics(c, populated=True)
+    print('Maps: unauthenticated Prometheus endpoint exports HTTP and populated derive metrics')
 
 
 def main():

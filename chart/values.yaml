@@ -100,8 +100,11 @@ resources:
   limits:
     memory: 1Gi
 
-# No ServiceMonitor: nothing here exports Prometheus metrics yet, and a template pointing at
-# an endpoint that 404s is worse than no template. Tracing goes to Alloy over OTLP.
+# Requires Prometheus Operator CRDs only when explicitly enabled.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
 
 nodeSelector: {}
 tolerations: []
