@@ -17,10 +17,12 @@ RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
     --mount=type=secret,id=gradle_init,target=/root/.gradle/init.d/grounds-maven-mirror.init.gradle.kts,required=false \
     /bin/sh -euc '\
       : "${GITHUB_USER:?GITHUB_USER build arg is required}"; \
-      token="$(cat /run/secrets/github_token)"; \
+      umask 077; \
+      trap "rm -f /root/.gradle/gradle.properties" EXIT; \
+      printf "github.token=%s\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g\n" "$(cat /run/secrets/github_token)" > /root/.gradle/gradle.properties; \
       ./gradlew --no-daemon --stacktrace \
         -Pgithub.user="${GITHUB_USER}" \
-        -Pgithub.token="${token}" \
+        -Pkotlin.compiler.execution.strategy=in-process \
         quarkusBuild :lit-worker:installDist -x test \
     '
 
