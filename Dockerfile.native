@@ -9,8 +9,8 @@ COPY src/main/ src/main/
 # settings includes the JVM worker; configure it without putting it in the Native API image.
 COPY lit-worker/build.gradle.kts lit-worker/build.gradle.kts
 # The API exchanges object metadata and presigned URLs. Archive codecs run only in the
-# separately published JVM workers. Exclude their archive providers and Zstd FFM binding;
-# Netty then also cannot detect a worker-only optional compressor in the Native API.
+# separately published JVM workers; excluding their Zstd FFM binding also prevents Netty
+# from detecting an optional compressor the Native API does not support.
 RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
     --mount=type=cache,target=/root/.gradle/wrapper,sharing=locked \
     --mount=type=secret,id=github_token,required=true \
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \
         -Pgithub.user="${GITHUB_USER}" \
         -Pkotlin.compiler.execution.strategy=in-process \
         quarkusBuild -Dquarkus.native.enabled=true \
-        -Dquarkus.class-loading.removed-artifacts=com.github.luben:zstd-jni,org.apache.commons:commons-compress \
+        -Dquarkus.class-loading.removed-artifacts=com.github.luben:zstd-jni \
         -Dquarkus.package.jar.enabled=false -Dquarkus.native.native-image-xmx=8g; \
       mkdir -p /artifacts; \
       cp build/*-runner /artifacts/application; \

@@ -313,7 +313,7 @@ def contracts(c):
     completed = eventually(derived)
     assert completed['bundleSha256'] and completed['sizeBytes'] > 0
     assert completed['scene']['status'] == 'NONE' and completed['publishedBySub'] == 'derive-worker'
-    print('Maps: enabled PackSet HTTPS refresh, Kubernetes derive Job serialization, real JVM derivation, Native result reconciliation passed')
+    print('Maps: enabled PackSet HTTPS refresh, Kubernetes derive Job serialization, real JVM derivation, API result reconciliation passed')
 
     litjob = eventually(lambda: c.job('service-maps-lit'))
     litcommand = litjob['spec']['template']['spec']['containers'][0]['command']
@@ -328,7 +328,7 @@ def contracts(c):
     litentry = eventually(lit)
     assert litentry['bundleSha256'] != digest(bundle)
     assert c.s3('/public/bundle/sha256/' + litentry['bundleSha256'][:2] + '/' + litentry['bundleSha256'] + '.tar.zst')
-    print('Maps: real standalone JVM lighting worker, Native result acceptance, S3 promotion and nested lit pin projection passed')
+    print('Maps: real standalone JVM lighting worker, API result acceptance, S3 promotion and nested lit pin projection passed')
 
     # Failure contracts use a syntactically invalid archive but a valid source digest.
     upload = c.request(path + '/uploads', 'POST', token=staff)
