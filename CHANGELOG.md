@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/groundsgg/service-maps/compare/v1.10.2...v1.11.0) (2026-11-02)
+
+
+### Features
+
+* publish Native Maps API alongside JVM workers ([#89](https://github.com/groundsgg/service-maps/issues/89)) ([b76d43e](https://github.com/groundsgg/service-maps/commit/b76d43e0c60977e608e04122b825886474609796))
+
 ## [1.10.2](https://github.com/groundsgg/service-maps/compare/v1.10.1...v1.10.2) (2026-11-01)
 
 
