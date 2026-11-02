@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/groundsgg/service-maps/compare/v1.11.0...v1.11.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **metrics:** expose Maps Prometheus metrics ([#91](https://github.com/groundsgg/service-maps/issues/91)) ([88a539e](https://github.com/groundsgg/service-maps/commit/88a539ef5f9cf496d323b2c811d7518f1bb9d033))
+
 ## [1.11.0](https://github.com/groundsgg/service-maps/compare/v1.10.2...v1.11.0) (2026-11-02)
 
 
