@@ -49,6 +49,7 @@ repositories {
 }
 
 dependencies {
+    compileOnly("org.graalvm.sdk:nativeimage")
     implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")
     implementation("io.quarkus:quarkus-kotlin")
@@ -77,7 +78,7 @@ dependencies {
     implementation("io.quarkus:quarkus-jdbc-postgresql")
     implementation("io.quarkus:quarkus-flyway")
     implementation("io.quarkus:quarkus-opentelemetry")
-    implementation("io.quarkus:quarkus-micrometer")
+    implementation("io.quarkus:quarkus-micrometer-registry-prometheus")
     // Real probes rather than a TCP check: the readiness probe then also fails when the
     // database is unreachable, which is the failure a tcpSocket probe reports as healthy.
     implementation("io.quarkus:quarkus-smallrye-health")

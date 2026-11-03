@@ -6,6 +6,7 @@ import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
 import io.restassured.http.ContentType
+import org.hamcrest.Matchers.containsString
 import org.hamcrest.Matchers.endsWith
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.hasItem
@@ -15,6 +16,17 @@ import org.junit.jupiter.api.Test
 @QuarkusTestResource(PostgresResource::class)
 @TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class MapsResourceIT {
+
+    @Test
+    fun `exposes Prometheus metrics`() {
+        given()
+            .accept("text/plain")
+            .`when`()
+            .get("/q/metrics")
+            .then()
+            .statusCode(200)
+            .body(containsString("# TYPE "))
+    }
 
     @Test
     fun `creates a map and reads it back by address`() {
