@@ -134,6 +134,12 @@ because a chart that mints secrets puts them in the release history:
 `replicas: 1` and `strategy: Recreate` are correctness settings, not capacity ones — see the
 note on ordering below.
 
+The API exposes Prometheus metrics at `/q/metrics` on its HTTP port (9000 by default),
+including HTTP requests and derive reconciliation counters, timers and active candidates.
+With Prometheus Operator installed, set `monitoring.serviceMonitor.enabled=true` to scrape
+the release's Service every 30 seconds. It defaults off so the chart also installs without
+the operator CRDs. The public API gateway only routes `/v1/maps` and `/v1/workspaces`.
+
 ## Status
 
 Phase 1. Implemented: the schema; create, list and read for maps; presigned uploads;
