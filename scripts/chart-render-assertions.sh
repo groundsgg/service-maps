@@ -6,7 +6,8 @@ endpoint=https://acct.eu.r2.cloudflarestorage.com
 digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 disabled=$(mktemp)
 enabled=$(mktemp)
-trap 'rm -f "$disabled" "$enabled"' EXIT
+metrics=$(mktemp)
+trap 'rm -f "$disabled" "$enabled" "$metrics"' EXIT
 
 die() { echo "chart render assertion failed: $*" >&2; exit 1; }
 expect() { grep -F -- "$1" "$2" >/dev/null || die "missing $1"; }
@@ -42,6 +43,25 @@ service_token_is_disabled "$disabled" || die 'service account token automount is
 reject 'name: service-maps-derive-worker' "$disabled"
 reject 'name: kube-api-access' "$disabled"
 reject 'name: MAPS_DERIVE_ENABLED' "$disabled"
+reject 'kind: ServiceMonitor' "$disabled"
+
+helm template t "$chart_dir" --namespace maps-monitor-test --set image.tag=test \
+  --set config.r2.endpoint="$endpoint" --set monitoring.serviceMonitor.enabled=true >"$metrics"
+expect 'kind: ServiceMonitor' "$metrics"
+[ "$(grep -c '^kind: ServiceMonitor$' "$metrics")" -eq 1 ] || die 'expected exactly one ServiceMonitor'
+awk '
+  /^---$/ { in_monitor=0; in_selector=0; in_endpoints=0 }
+  /^kind: ServiceMonitor$/ { in_monitor=1 }
+  in_monitor && /namespace: maps-monitor-test$/ { namespace=1 }
+  in_monitor && /^  selector:$/ { in_selector=1 }
+  in_monitor && /^  endpoints:$/ { in_selector=0; in_endpoints=1 }
+  in_selector && /app.kubernetes.io\/name: service-maps$/ { name=1 }
+  in_selector && /app.kubernetes.io\/instance: t$/ { instance=1 }
+  in_endpoints && /port: http$/ { port=1 }
+  in_endpoints && /path: \/q\/metrics$/ { path=1 }
+  in_endpoints && /interval: 30s$/ { interval=1 }
+  END { exit !(namespace && name && instance && port && path && interval) }
+' "$metrics" || die 'ServiceMonitor must select the release Service and scrape its named HTTP metrics endpoint'
 
 helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" \
   --set derive.enabled=true --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" >"$enabled"
