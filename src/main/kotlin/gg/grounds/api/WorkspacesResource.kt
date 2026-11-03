@@ -29,8 +29,6 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag
  * an unchanged region file is uploaded once and then never again. A snapshot only becomes the head
  * on commit, after every blob it introduced is confirmed present: a restore gets either the last
  * complete snapshot or nothing.
- *
- * See docs/superpowers/specs/2026-10-23-buildserver-working-copy-design.md.
  */
 @Tag(name = "Workspaces")
 @Path("/v1/workspaces/{server}")
