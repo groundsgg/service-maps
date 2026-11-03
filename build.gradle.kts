@@ -93,7 +93,7 @@ dependencies {
     implementation(platform("software.amazon.awssdk:bom:2.57.7"))
     implementation("software.amazon.awssdk:s3")
     implementation("software.amazon.awssdk:url-connection-client")
-    implementation("io.nats:jnats:2.26.0")
+    implementation("io.nats:jnats:2.26.4")
 
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-test-security")
