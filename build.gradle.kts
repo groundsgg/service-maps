@@ -68,7 +68,7 @@ dependencies {
     // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
     // Ship this dependency in the API and derive-worker images together.
     implementation("gg.grounds:plugin-lobby-scene-catalog:2.23.0")
-    implementation("gg.grounds:resourcepacks-client:1.0.0")
+    implementation("gg.grounds:resourcepacks-client:1.3.0")
     implementation("tools.jackson.core:jackson-databind:3.2.4")
     implementation("tools.jackson.module:jackson-module-kotlin:3.2.4")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
