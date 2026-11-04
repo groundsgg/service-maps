@@ -36,7 +36,7 @@ dependencies {
     implementation("com.google.code.gson:gson:2.15.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:1.5.7-25")
-    runtimeOnly("org.slf4j:slf4j-simple:2.0.17")
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.20")
 
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
