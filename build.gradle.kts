@@ -90,7 +90,7 @@ dependencies {
     // Plain AWS SDK v2 against R2, the same way grounds-lod's generator talks to it.
     // UrlConnectionHttpClient rather than the Netty async client: every call here is a
     // presign or a small metadata write, so an event loop buys nothing.
-    implementation(platform("software.amazon.awssdk:bom:2.57.7"))
+    implementation(platform("software.amazon.awssdk:bom:2.57.8"))
     implementation("software.amazon.awssdk:s3")
     implementation("software.amazon.awssdk:url-connection-client")
     implementation("io.nats:jnats:2.26.4")
