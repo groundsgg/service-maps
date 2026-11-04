@@ -5,6 +5,10 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    # This client must match the compiler supplied by gg.grounds.root.
+    # Upgrade them together; a standalone bump breaks daemon compilation.
+    ignore:
+      - dependency-name: "org.jetbrains.kotlin:kotlin-daemon-client"
     groups:
       # One PR for the shared Quarkus version in gradle/libs.versions.toml.
       # Separate plugin and BOM bumps fail the build.
