@@ -5,7 +5,7 @@ buildscript {
     configurations.named("classpath") {
         // Grounds root 0.1.1 uses Kotlin 2.3.0. Quarkus also brings a daemon client through
         // its BOM; keep that client compatible with the compiler runner supplied by Grounds.
-        resolutionStrategy.force("org.jetbrains.kotlin:kotlin-daemon-client:2.3.0")
+        resolutionStrategy.force("org.jetbrains.kotlin:kotlin-daemon-client:2.4.21")
     }
 }
 
