@@ -27,6 +27,43 @@ import org.junit.jupiter.api.Test
 
 class PackSetCatalogProviderTest {
     @Test
+    fun `operator pin augments live channels and a refreshed conflicting channel keeps readiness`() {
+        LoopbackCatalogServer().use { server ->
+            val stable = server.source(PackSetChannel.STABLE)
+            val edge = server.source(PackSetChannel.EDGE)
+            server.publish(stable, "1.2.3", 1)
+            server.publish(edge, edgeVersion(1), 1)
+            val version = edgeVersion(42)
+            val sha = "9".repeat(64)
+            val base = URI("https://cdn.example.test")
+            val json =
+                """[{"channel":"pinned","id":"grounds:resourcepacks","version":"$version","coordinate":"gg.grounds:resourcepacks-catalog:$version","file":"catalog.jar","uri":"$base/resourcepacks/catalog-pins/npc-stage/$version/$sha/catalog.jar","sha256":"$sha","size":1234}]"""
+            val pins = PinnedCatalogs.parse(json, base)
+            val (provider, _, edgeClient) =
+                provider(server, Files.createTempDirectory("pinned-catalogs"), pins)
+            provider.use {
+                assertFalse(provider.ready())
+                provider.start()
+                await { provider.candidates().size == 3 }
+                assertEquals(
+                    listOf("1.2.3", edgeVersion(1), version),
+                    provider.candidates().map { it.version },
+                )
+                assertEquals(1, provider.pinState().configured)
+                assertTrue(provider.pinState().conflicts.isEmpty())
+                server.publish(edge, version, 2)
+                edgeClient.refreshNow().toCompletableFuture().get(2, TimeUnit.SECONDS)
+                await { provider.pinState().conflicts == listOf(version) }
+                assertEquals(2, provider.candidates().size)
+                assertTrue(provider.ready())
+                val health = PackSetCatalogReadiness(provider, true).call()
+                assertEquals(HealthCheckResponse.Status.UP, health.status)
+                assertEquals(version, health.data.orElseThrow()["pins.conflicts"])
+            }
+        }
+    }
+
+    @Test
     fun `enabled provider starts down then activates stable and edge from their channel routes`() {
         LoopbackCatalogServer().use { server ->
             val root = Files.createTempDirectory("packset-catalogs")
@@ -138,10 +175,14 @@ class PackSetCatalogProviderTest {
         }
     }
 
-    private fun provider(server: LoopbackCatalogServer, root: Path): ProviderClients {
+    private fun provider(
+        server: LoopbackCatalogServer,
+        root: Path,
+        pins: PinnedCatalogs = PinnedCatalogs.empty(),
+    ): ProviderClients {
         val stable = client(server.source(PackSetChannel.STABLE), root.resolve("stable"), server)
         val edge = client(server.source(PackSetChannel.EDGE), root.resolve("edge"), server)
-        return ProviderClients(PackSetCatalogProvider(stable, edge), stable, edge)
+        return ProviderClients(PackSetCatalogProvider(stable, edge, pins), stable, edge)
     }
 
     private fun client(source: PackSetSource, cache: Path, server: LoopbackCatalogServer) =

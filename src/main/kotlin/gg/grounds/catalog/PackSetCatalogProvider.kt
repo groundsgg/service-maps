@@ -17,21 +17,25 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
-/** The only source of runtime catalogs: validated PackSet snapshots for Stable then Edge. */
+/** Validated Stable/Edge snapshots plus explicitly pinned operator-owned catalogs. */
 @ApplicationScoped
 class PackSetCatalogProvider
 internal constructor(
     private val stableClient: PackSetClient,
     private val edgeClient: PackSetClient,
+    private val pinned: PinnedCatalogs = PinnedCatalogs.empty(),
 ) : AutoCloseable {
     @Inject
     constructor(
         @ConfigProperty(name = "grounds.maps.catalogs.base-uri") baseUri: String,
         @ConfigProperty(name = "grounds.maps.catalogs.pack-set") packSet: String,
         @ConfigProperty(name = "grounds.maps.catalogs.cache-root") cacheRoot: String,
+        @ConfigProperty(name = "grounds.maps.catalogs.pinned-json", defaultValue = "[]")
+        pinnedJson: String,
     ) : this(
         client(URI(baseUri), packSet, PackSetChannel.STABLE, Path.of(cacheRoot, "stable")),
         client(URI(baseUri), packSet, PackSetChannel.EDGE, Path.of(cacheRoot, "edge")),
+        PinnedCatalogs.parse(pinnedJson, URI(baseUri)),
     )
 
     fun onStart(@Observes event: StartupEvent) = start()
@@ -43,13 +47,18 @@ internal constructor(
         edgeClient.start()
     }
 
-    fun candidates(): List<AssetCatalogCandidate> =
+    private fun channelCandidates(): List<AssetCatalogCandidate> =
         listOfNotNull(
             candidate("stable", stableClient.state()),
             candidate("edge", edgeClient.state()),
         )
 
-    fun ready(): Boolean = candidates().isNotEmpty()
+    fun candidates(): List<AssetCatalogCandidate> = pinned.merge(channelCandidates()).candidates
+
+    fun ready(): Boolean = channelCandidates().isNotEmpty()
+
+    fun pinState(): CatalogPinState =
+        CatalogPinState(pinned.entries.size, pinned.merge(channelCandidates()).conflicts)
 
     fun channelStates(): Map<String, CatalogChannelState> =
         mapOf("stable" to stateOf(stableClient.state()), "edge" to stateOf(edgeClient.state()))
@@ -111,3 +120,5 @@ internal constructor(
 }
 
 data class CatalogChannelState(val available: Boolean, val status: String, val lastError: String?)
+
+data class CatalogPinState(val configured: Int, val conflicts: List<String>)

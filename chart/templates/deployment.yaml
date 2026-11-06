@@ -122,6 +122,8 @@ spec:
               value: {{ .Values.derive.catalog.packSet | quote }}
             - name: MAPS_CATALOGS_CACHE_ROOT
               value: {{ .Values.derive.catalog.cacheRoot | quote }}
+            - name: MAPS_CATALOGS_PINNED_JSON
+              value: {{ .Values.derive.catalog.pinned | default list | toJson | quote }}
             {{- end }}
           startupProbe:
             # Flyway runs at boot, so the first readiness can be slower than the steady state.

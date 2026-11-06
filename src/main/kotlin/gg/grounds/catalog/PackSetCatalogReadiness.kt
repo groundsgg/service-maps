@@ -20,6 +20,9 @@ class PackSetCatalogReadiness(
             response.withData("$channel.status", state.status)
             state.lastError?.let { response.withData("$channel.lastError", it) }
         }
+        val pins = provider.pinState()
+        response.withData("pins.configured", pins.configured.toLong())
+        response.withData("pins.conflicts", pins.conflicts.joinToString(","))
         return if (provider.ready()) response.up().build() else response.down().build()
     }
 }

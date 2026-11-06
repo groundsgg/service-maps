@@ -80,6 +80,33 @@ Once derivation is enabled, the legacy `/publish` endpoint rejects source-backed
 and source-less compatibility versions may still use it, but uploaded source bytes are never
 promoted by that path.
 
+## Explicit immutable catalog metadata
+
+The normal derivation candidates remain the current Stable and Edge PackSet catalogs. To retain
+an exact private or historical catalog independently of moving channels, operators may configure
+at most two additional references in `derive.catalog.pinned` (or `MAPS_CATALOGS_PINNED_JSON`).
+Each entry has the worker candidate fields `channel`, `id`, `version`, `coordinate`, `file`,
+`uri`, `sha256`, and `size`:
+
+- `channel` is `pinned`; `id` is `grounds:resourcepacks`.
+- `coordinate` is exactly `gg.grounds:resourcepacks-catalog:<version>`.
+- `size` is positive and at most 32 MiB; `sha256` is 64 lowercase hexadecimal characters.
+- `file` is a safe JAR basename. The trusted HTTPS CDN URI has the form
+  `<baseUri>/resourcepacks/catalog-pins/<scope>/<version>/<sha256>/<file>`, without query,
+  fragment, user information, explicit port, percent escapes, or path traversal.
+
+The full JSON is bounded to 64 KiB. Identical candidate identities/content collapse while
+preserving channel precedence. Conflicting configured pins fail startup. If a channel refresh
+conflicts with a pin, the pin is withheld and the existing channel candidates remain available;
+the `packset-catalogs` readiness data reports `pins.configured` and `pins.conflicts`. Readiness
+continues to depend on a validated channel, not merely configured metadata.
+
+These references are trusted executable catalog JARs, not client-supplied URLs. Only publish
+neutral metadata at a new immutable path and use a distinct identity when private definitions
+differ from a public catalog. Existing digest, archive, owner, scene and action validation is
+unchanged. This adds metadata to the shared derivation service; map/environment pins still
+control where a map is deployed. No PackSet channel or Minecraft client pack is changed.
+
 ## Lit copies
 
 Converted maps carry no light, and a game server that lights a map itself does it on the tick
