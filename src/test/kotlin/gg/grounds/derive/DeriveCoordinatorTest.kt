@@ -11,6 +11,30 @@ import org.junit.jupiter.api.Test
 
 class DeriveCoordinatorTest {
     @Test
+    fun `third immutable catalog reaches the worker request without channel clipping`() {
+        val version = version()
+        val repository = FakeVersions(version)
+        val jobs = RecordingJobs()
+        val candidates =
+            (1..3).map { number ->
+                AssetCatalogCandidate(
+                    "pinned",
+                    "grounds:resourcepacks",
+                    "$number.0.0",
+                    "gg.grounds:resourcepacks-catalog:$number.0.0",
+                    "catalog.jar",
+                    java.net.URI("https://cdn.example.test/catalog.jar"),
+                    "a".repeat(64),
+                    1234,
+                )
+            }
+        DeriveCoordinator(repository, jobs, candidates = { candidates }, enabled = true)
+            .coordinate(version.mapId, version.version)
+        val request = CanonicalJson.readRequest(jobs.requests.single().requestJson.toByteArray())
+        assertEquals(candidates, request.catalogCandidates)
+    }
+
+    @Test
     fun `enabled coordinator claims once and creates a request-only job`() {
         val version = version()
         val repository = FakeVersions(version)

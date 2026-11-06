@@ -109,7 +109,7 @@ constructor(
                     bundleUrl = URI("https://example.test/bundle"),
                     manifestUrl = URI("https://example.test/manifest"),
                     resultUrl = URI("https://example.test/result"),
-                    catalogCandidates = test().take(2),
+                    catalogCandidates = test(),
                 )
             else
                 DeriveRequest(
@@ -142,7 +142,7 @@ constructor(
                                     urlTtl,
                                 )
                         ),
-                    catalogCandidates = requireNotNull(catalogs).candidates().take(2),
+                    catalogCandidates = requireNotNull(catalogs).candidates(),
                 )
         jobs.create(DeriveJobRequest(identity, CanonicalJson.write(request).decodeToString()))
     }

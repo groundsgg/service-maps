@@ -39,6 +39,9 @@ derive:
     baseUri: https://cdn.grounds.gg
     packSet: grounds-global
     cacheRoot: /tmp/service-maps/packsets
+    # Additional immutable catalog metadata; operator configuration, never map input.
+    # At most two entries. Each URI is under <baseUri>/resourcepacks/catalog-pins/.
+    pinned: []
 
 service:
   port: 9000
