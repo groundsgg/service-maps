@@ -327,14 +327,17 @@ def contracts(c):
     print('Maps: enabled PackSet HTTPS refresh, Kubernetes derive Job serialization, real JVM derivation, API result reconciliation passed')
 
     litjob = eventually(lambda: c.job('service-maps-lit'))
-    litcommand = litjob['spec']['template']['spec']['containers'][0]['command']
+    litcontainer = litjob['spec']['template']['spec']['containers'][0]
+    litrequest = json.loads(next(e['value'] for e in litcontainer['env'] if e['name'] == 'LIT_REQUEST_JSON'))
+    assert litrequest['format'] == 2, litrequest
+    litcommand = litcontainer['command']
     assert litcommand == ['java', '-Xmx1g', '-Djava.io.tmpdir=/work', '-cp',
                           '/deployments/lit-worker/lib/*', 'gg.grounds.lit.worker.LitWorkerMainKt']
     c.execute(litjob)
     def lit():
         pinfile = c.s3('/public/pins/stage.json')
         entry = pinfile['maps'][address]
-        assert entry.get('lit', {}).get('format') == 1, entry
+        assert entry.get('lit', {}).get('format') == 2, entry
         return entry['lit']
     litentry = eventually(lit)
     assert litentry['bundleSha256'] != digest(bundle)
