@@ -16,6 +16,7 @@ import net.minestom.server.instance.palette.Palette
 /** Encodes protocol-20 column bodies, without a Minecraft connection or any cloud I/O. */
 class LssColumnEncoder {
     private data class State(val identity: String, val air: Boolean, val fluid: Boolean)
+
     private data class SectionData(
         val y: Int,
         val blocks: IntArray,
@@ -30,7 +31,11 @@ class LssColumnEncoder {
 
     fun encode(chunk: Chunk): ByteArray {
         chunk.lockReadLock()
-        return try { encodeLocked(chunk) } finally { chunk.unlockReadLock() }
+        return try {
+            encodeLocked(chunk)
+        } finally {
+            chunk.unlockReadLock()
+        }
     }
 
     private fun encodeLocked(chunk: Chunk): ByteArray {
@@ -47,8 +52,13 @@ class LssColumnEncoder {
                     if (state.fluid) fluids++
                 }
                 SectionData(
-                    y, blocks, values(section.biomePalette()), nonAir, fluids,
-                    light(section.blockLight()), light(section.skyLight()),
+                    y,
+                    blocks,
+                    values(section.biomePalette()),
+                    nonAir,
+                    fluids,
+                    light(section.blockLight()),
+                    light(section.skyLight()),
                 )
             }
         val content = sections.filter { it.nonAir > 0 }
@@ -56,21 +66,27 @@ class LssColumnEncoder {
         val high = content.maxOfOrNull { it.y }
         val included =
             sections.filter {
-                it.nonAir > 0 || it.blockLight != null ||
+                it.nonAir > 0 ||
+                    it.blockLight != null ||
                     (it.skyLight != null && low != null && it.y >= low - 1 && it.y <= high!! + 1)
             }
         val dictionary = IdentityDictionary()
         val encoded =
             included.map {
                 WireSection(
-                    it.y, it.nonAir, it.fluids,
+                    it.y,
+                    it.nonAir,
+                    it.fluids,
                     container(it.blocks, 4, dictionary) { id -> state(id).identity },
                     container(it.biomes, 1, dictionary) { id ->
                         requireNotNull(MinecraftServer.getBiomeRegistry().getKey(id)) {
-                            "unknown biome id: $id"
-                        }.key().asString()
+                                "unknown biome id: $id"
+                            }
+                            .key()
+                            .asString()
                     },
-                    it.blockLight, it.skyLight,
+                    it.blockLight,
+                    it.skyLight,
                 )
             }
         val result = WireSectionCursor.emit(WireColumn(dictionary.entries(), encoded), Layout.V20)
@@ -83,16 +99,15 @@ class LssColumnEncoder {
             val block = requireNotNull(Block.fromStateId(id)) { "unknown block state id: $id" }
             State(
                 IdentityCodec.canonical(block.key().asString(), block.properties()),
-                block.isAir, block.isFluid,
+                block.isAir,
+                block.isFluid,
             )
         }
 
     private fun values(palette: Palette): IntArray {
         val dimension = palette.dimension()
         return IntArray(dimension * dimension * dimension).also { result ->
-            palette.getAll { x, y, z, value ->
-                result[(y * dimension + z) * dimension + x] = value
-            }
+            palette.getAll { x, y, z, value -> result[(y * dimension + z) * dimension + x] = value }
         }
     }
 
@@ -103,15 +118,14 @@ class LssColumnEncoder {
         identity: (Int) -> String,
     ): WireContainer {
         val palette = LinkedHashMap<Int, Int>()
-        val indices = IntArray(values.size) { i ->
-            palette.getOrPut(values[i]) { palette.size }
-        }
+        val indices = IntArray(values.size) { i -> palette.getOrPut(values[i]) { palette.size } }
         val entries = palette.keys.map { dictionary.indexOf(identity(it)) }.toIntArray()
         val bits =
             if (entries.size == 1) 0
             else maxOf(minimumBits, 32 - Integer.numberOfLeadingZeros(entries.size - 1))
         return WireContainer(
-            bits, entries,
+            bits,
+            entries,
             if (bits == 0) LongArray(0) else WireSectionCursor.pack(indices, bits),
         )
     }

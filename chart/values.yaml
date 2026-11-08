@@ -112,3 +112,13 @@ monitoring:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Explicit finite LOD job selection; finished artifacts stay private until separately enabled.
+lod:
+  enabled: false
+  publication:
+    enabled: false
+  runId: ""
+  # Existing hostname only: these jobs must never trigger creation of another node.
+  node: ""
+  pollInterval: 30s

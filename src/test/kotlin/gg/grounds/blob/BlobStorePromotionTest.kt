@@ -129,6 +129,22 @@ class BlobStorePromotionTest {
         }
     }
 
+    @Test
+    fun `verified LOD promotion rejects a source version changed after hashing`() {
+        CopyScript(recoverySize = 6).use { script ->
+            assertThrows(BlobCopyPreconditionException::class.java) {
+                script.blobs.copyPrivateToPublic(
+                    "source",
+                    "destination",
+                    6,
+                    MapTrust.FIRST_PARTY,
+                    "previously-verified-version",
+                )
+            }
+            script.assertNoCopy()
+        }
+    }
+
     private class CopyScript(private val recoverySize: Long?) : AutoCloseable {
         private val failure = AtomicReference<Throwable?>()
         private var destinationHeads = 0
@@ -205,6 +221,10 @@ class BlobStorePromotionTest {
             exchange.responseHeaders.add("Content-Length", size.toString())
             exchange.responseHeaders.add("ETag", etag)
             exchange.sendResponseHeaders(200, -1)
+        }
+
+        fun assertNoCopy() {
+            assertEquals(0, copyRequests)
         }
 
         fun assertConditionalCopy() {

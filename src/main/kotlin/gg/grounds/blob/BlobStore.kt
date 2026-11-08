@@ -210,6 +210,7 @@ constructor(
         destinationKey: String,
         expectedSizeBytes: Long,
         trust: MapTrust,
+        expectedSourceETag: String? = null,
     ) {
         require(expectedSizeBytes >= 0) { "expected size must be non-negative" }
         val destinationBucket = publicBucketFor(trust)
@@ -225,6 +226,9 @@ constructor(
 
         val source = headPrivate(sourceKey) ?: throw noSuchPrivateObject(sourceKey)
         requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
+        if (expectedSourceETag != null && source.eTag != expectedSourceETag) {
+            throw BlobCopyPreconditionException("private source version changed after verification")
+        }
         val sourceVersionToken =
             source.eTag
                 ?: throw BlobCopyPreconditionException(

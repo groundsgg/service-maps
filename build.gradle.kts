@@ -49,6 +49,8 @@ repositories {
 }
 
 dependencies {
+    implementation(project(":lod-format"))
+    testImplementation(kotlin("test"))
     compileOnly("org.graalvm.sdk:nativeimage")
     implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")

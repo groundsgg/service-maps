@@ -132,12 +132,42 @@ at a time, a failure is retried up to three times, and lighting fills `present_c
 column tiles. It verifies the input bundle, rejects unsupported archive metadata and chunk
 schemas, and publishes a local output directory atomically. It has no listener or cloud
 credentials. The pinned upstream codec and MIT license are documented in
-`lod-worker/UPSTREAM.md`.
+`lod-worker/UPSTREAM.md`; the unchanged wire code and MIT license ship in `lod-format/`.
 
 Build with `./gradlew :lod-worker:test :lod-worker:installDist`, then run the installed
 `lod-worker` command with `--bundle <map.tar.zst> --sha256 <digest> --output <new-directory>`.
 Input is ordinary USTAR; GNU/PAX extension headers require explicit bounded support.
-Scheduling, remote publication and real-client compatibility are separate integration steps.
+The `--identity` command reports the immutable source/dependency generator fingerprint and
+registry fingerprint without generating terrain. With no CLI arguments, the same executable
+accepts `LOD_REQUEST_JSON`: one scoped input GET and exactly three scoped output PUTs (bundle,
+manifest, result-last); it carries no R2 credentials and performs no automatic retry.
+
+LOD scheduling and public publication default off independently (`lod.enabled`,
+`lod.publication.enabled`). Admission needs both an existing hostname in `lod.node` and an
+explicit `lod.runId` registered using `scripts/register-lod-pilot.sql`. That script accepts
+only the measured stage Lobby v13 canonical and prelit hashes and never resets existing
+campaign counters. No boot, join, pin change or client request registers a run or backfills maps.
+The immutable worker image must contain this worker; obtain its generator/registry fingerprints
+using `--identity` before registration. Registration expires after 30 minutes.
+
+PostgreSQL reserves at most two cloud jobs and one GiB of maximum retained outputs per campaign;
+reservations survive failures/restarts and are never refunded automatically. Only one generator
+is admitted globally. Jobs are created suspended, activated under the current database claim with
+UID/revision fencing, and constrained to 2 CPUs, 2 GiB RAM, 4 GiB scratch and 900 seconds with no
+Kubernetes retries. A stopped job keeps the global slot until both the Job and its pods are gone.
+The scoped service Role must additionally allow Job patch/delete and pod list before admission.
+
+A verified result can remain private. Public promotion is separate and preserves own/UGC trust
+buckets; only a published artifact matching the exact canonical **and current prelit** source
+appears as optional `lod.artifacts[]`. Entries without LOD retain their existing JSON shape.
+Projection retries are durable. Optional LOD lookup failure still publishes the base map pin.
+The existing pin publisher remains single-replica; global generator admission does not change
+that deployment requirement. Public LOD HTTP qualification, runtime delivery limits and real
+Voxy/DH client acceptance remain separate integration steps; keep public publication off until
+those paths have been qualified. Finished artifacts are not deleted by an age-based lifecycle.
+
+The populated `ci/verify-native.py` contract runs the packaged Native API, actual JVM LOD worker,
+TLS object storage, PostgreSQL and a Kubernetes fixture through source-pinned publication.
 
 ## Not yet true, and load-bearing
 

@@ -13,6 +13,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "service-maps.validateDerive" -}}
+{{- if .Values.lod.enabled -}}
+{{- if not .Values.derive.enabled -}}{{- fail "lod.enabled requires derive.enabled for scoped Kubernetes access" -}}{{- end -}}
+{{- $node := required "lod.node must name an existing worker hostname" .Values.lod.node -}}
+{{- $run := required "lod.runId must name an explicit persistent run" .Values.lod.runId -}}
+{{- if not (regexMatch "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$" $run) -}}
+{{- fail "lod.runId must be a lowercase UUID" -}}
+{{- end -}}
+{{- end -}}
+
 {{- if and .Values.derive.required (not .Values.derive.enabled) -}}
 {{- fail "derive.required=true requires derive.enabled=true" -}}
 {{- end -}}

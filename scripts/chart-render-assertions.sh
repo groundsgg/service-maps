@@ -79,3 +79,18 @@ done
 must_fail helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" --set derive.required=true
 must_fail helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" --set derive.enabled=true
 must_fail helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" --set derive.enabled=true --set derive.worker.image=ghcr.io/groundsgg/service-maps:latest
+
+# LOD admission is independent and off by default; it requires a concrete existing node and run.
+expect 'name: MAPS_LOD_ENABLED' "$disabled"
+expect 'name: MAPS_LOD_PUBLICATION_ENABLED' "$disabled"
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.enabled=true
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set derive.enabled=true \
+  --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" --set lod.enabled=true
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set derive.enabled=true \
+  --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" --set lod.enabled=true --set lod.node=existing-node --set lod.runId=invalid
+helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set derive.enabled=true \
+  --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" --set lod.enabled=true --set lod.node=existing-node \
+  --set lod.runId=12345678-1234-1234-1234-123456789abc >"$enabled"
+expect 'name: MAPS_LOD_RUN_ID' "$enabled"
+expect 'value: "existing-node"' "$enabled"
+awk '/name: MAPS_LOD_PUBLICATION_ENABLED/ { getline; if ($0 !~ /value: "false"/) exit 1; found=1 } END { if (!found) exit 1 }' "$enabled" || die 'LOD artifacts must remain private by default'

@@ -99,6 +99,16 @@ spec:
               value: {{ .Values.config.otel.disabled | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otel.endpoint | quote }}
+            - name: MAPS_LOD_ENABLED
+              value: {{ .Values.lod.enabled | quote }}
+            - name: MAPS_LOD_PUBLICATION_ENABLED
+              value: {{ .Values.lod.publication.enabled | quote }}
+            - name: MAPS_LOD_RUN_ID
+              value: {{ .Values.lod.runId | quote }}
+            - name: MAPS_LOD_NODE
+              value: {{ .Values.lod.node | quote }}
+            - name: MAPS_LOD_POLL_INTERVAL
+              value: {{ .Values.lod.pollInterval | quote }}
             {{- if .Values.derive.enabled }}
             - name: MAPS_DERIVE_ENABLED
               value: "true"

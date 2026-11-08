@@ -25,7 +25,11 @@ class LssColumnEncoderTest {
 
     private fun DynamicChunk.place(x: Int, y: Int, z: Int, block: Block) {
         lockWriteLock()
-        try { setBlock(x, y, z, block) } finally { unlockWriteLock() }
+        try {
+            setBlock(x, y, z, block)
+        } finally {
+            unlockWriteLock()
+        }
     }
 
     @Test
@@ -42,7 +46,8 @@ class LssColumnEncoderTest {
         val section = decoded.sections().single()
         assertEquals(1, section.nonEmptyBlockCount())
         assertEquals(0, section.fluidCount())
-        val values = WireSectionCursor.unpack(section.blocks().data(), section.blocks().bits(), 4096)
+        val values =
+            WireSectionCursor.unpack(section.blocks().data(), section.blocks().bits(), 4096)
         val palette = section.blocks().palette()
         assertEquals("minecraft:stone", decoded.dictionary()[palette[values[5 * 256 + 7 * 16 + 3]]])
         assertEquals("minecraft:air", decoded.dictionary()[palette[values[0]]])
@@ -104,6 +109,8 @@ class LssColumnEncoderTest {
     companion object {
         @JvmStatic
         @BeforeAll
-        fun initialize() { MinecraftServer.init() }
+        fun initialize() {
+            MinecraftServer.init()
+        }
     }
 }

@@ -33,7 +33,13 @@ import gg.grounds.domain.WorkspaceBlob
 import gg.grounds.domain.WorkspaceFile
 import gg.grounds.lit.LitRequest
 import gg.grounds.lit.LitResult
+import gg.grounds.lod.format.LodJobRequest
+import gg.grounds.lod.format.LodJobResult
+import gg.grounds.lod.format.LodManifest
+import gg.grounds.lod.format.LodTile
 import gg.grounds.pins.LitEntry
+import gg.grounds.pins.LodArtifactRef
+import gg.grounds.pins.LodEntry
 import gg.grounds.pins.PinFile
 import gg.grounds.pins.PinnedEntry
 import io.quarkus.runtime.annotations.RegisterForReflection
@@ -68,6 +74,12 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             PinFile::class,
             PinnedEntry::class,
             LitEntry::class,
+            LodEntry::class,
+            LodArtifactRef::class,
+            LodManifest::class,
+            LodTile::class,
+            LodJobRequest::class,
+            LodJobResult::class,
             LitRequest::class,
             LitResult::class,
             DeriveRequest::class,

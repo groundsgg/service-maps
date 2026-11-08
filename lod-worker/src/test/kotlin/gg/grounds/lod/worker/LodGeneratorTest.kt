@@ -35,8 +35,11 @@ class LodGeneratorTest {
         positions.forEach { (x, z) ->
             val chunk = DynamicChunk(instance, x, z)
             chunk.lockWriteLock()
-            try { chunk.setBlock(x * 16, 64, z * 16, Block.STONE) }
-            finally { chunk.unlockWriteLock() }
+            try {
+                chunk.setBlock(x * 16, 64, z * 16, Block.STONE)
+            } finally {
+                chunk.unlockWriteLock()
+            }
             loader.saveChunk(chunk)
             loader.unloadChunk(chunk)
         }
@@ -77,9 +80,15 @@ class LodGeneratorTest {
         val a = temp.resolve("a")
         val b = temp.resolve("b")
         LodGenerator().generate(input, a, SHA)
-        Files.setLastModifiedTime(input.resolve("region/r.0.0.mca"), java.nio.file.attribute.FileTime.fromMillis(0))
+        Files.setLastModifiedTime(
+            input.resolve("region/r.0.0.mca"),
+            java.nio.file.attribute.FileTime.fromMillis(0),
+        )
         LodGenerator().generate(input, b, SHA)
-        assertContentEquals(Files.readAllBytes(a.resolve("manifest.json")), Files.readAllBytes(b.resolve("manifest.json")))
+        assertContentEquals(
+            Files.readAllBytes(a.resolve("manifest.json")),
+            Files.readAllBytes(b.resolve("manifest.json")),
+        )
     }
 
     @Test
@@ -123,12 +132,22 @@ class LodGeneratorTest {
 
     @Test
     fun `unknown source block names are rejected before the runtime loader can replace them`() {
-        val palette = ListBinaryTag.from(listOf(CompoundBinaryTag.builder().putString("id", "missing:block").build()))
-        val sections = ListBinaryTag.from(listOf(
-            CompoundBinaryTag.builder().putByte("Y", 0).put(
-                "block_states", CompoundBinaryTag.builder().put("palette", palette).build()
-            ).build()
-        ))
+        val palette =
+            ListBinaryTag.from(
+                listOf(CompoundBinaryTag.builder().putString("id", "missing:block").build())
+            )
+        val sections =
+            ListBinaryTag.from(
+                listOf(
+                    CompoundBinaryTag.builder()
+                        .putByte("Y", 0)
+                        .put(
+                            "block_states",
+                            CompoundBinaryTag.builder().put("palette", palette).build(),
+                        )
+                        .build()
+                )
+            )
         val chunk = CompoundBinaryTag.builder().put("sections", sections).build()
         assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
     }
@@ -138,31 +157,50 @@ class LodGeneratorTest {
 
     @Test
     fun `protochunk status is refused instead of publishing an empty column`() {
-        val chunk = CompoundBinaryTag.builder().putString("status", "minecraft:noise")
-            .put("sections", ListBinaryTag.empty()).build()
+        val chunk =
+            CompoundBinaryTag.builder()
+                .putString("status", "minecraft:noise")
+                .put("sections", ListBinaryTag.empty())
+                .build()
         assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
     }
 
     @Test
     fun `wrong section element types cannot become an empty section list`() {
-        val chunk = CompoundBinaryTag.builder()
-            .put("sections", ListBinaryTag.from(listOf(net.kyori.adventure.nbt.StringBinaryTag.stringBinaryTag("bad")))).build()
+        val chunk =
+            CompoundBinaryTag.builder()
+                .put(
+                    "sections",
+                    ListBinaryTag.from(
+                        listOf(net.kyori.adventure.nbt.StringBinaryTag.stringBinaryTag("bad"))
+                    ),
+                )
+                .build()
         assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
     }
 
     @Test
     fun `duplicate section positions cannot overwrite earlier terrain`() {
         val section = CompoundBinaryTag.builder().putByte("Y", 0).build()
-        val chunk = CompoundBinaryTag.builder().put("sections", ListBinaryTag.from(listOf(section, section))).build()
+        val chunk =
+            CompoundBinaryTag.builder()
+                .put("sections", ListBinaryTag.from(listOf(section, section)))
+                .build()
         assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
     }
 
     @Test
     fun `out of range and boundary light sections require an explicit encoder policy`() {
         for (y in listOf(-5, 20, 100)) {
-            val section = CompoundBinaryTag.builder().putByte("Y", y.toByte())
-                .putByteArray("SkyLight", ByteArray(2048) { -1 }).build()
-            val chunk = CompoundBinaryTag.builder().put("sections", ListBinaryTag.from(listOf(section))).build()
+            val section =
+                CompoundBinaryTag.builder()
+                    .putByte("Y", y.toByte())
+                    .putByteArray("SkyLight", ByteArray(2048) { -1 })
+                    .build()
+            val chunk =
+                CompoundBinaryTag.builder()
+                    .put("sections", ListBinaryTag.from(listOf(section)))
+                    .build()
             assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
         }
     }
@@ -170,7 +208,8 @@ class LodGeneratorTest {
     @Test
     fun `wrong container types cannot be silently replaced by air`() {
         val section = CompoundBinaryTag.builder().putByte("Y", 0).putInt("block_states", 7).build()
-        val chunk = CompoundBinaryTag.builder().put("sections", ListBinaryTag.from(listOf(section))).build()
+        val chunk =
+            CompoundBinaryTag.builder().put("sections", ListBinaryTag.from(listOf(section))).build()
         assertFailsWith<IllegalArgumentException> { AnvilSource.validatePalettes(chunk) }
     }
 
@@ -186,6 +225,11 @@ class LodGeneratorTest {
 
     companion object {
         private val SHA = "a".repeat(64)
-        @JvmStatic @BeforeAll fun initialize() { MinecraftServer.init() }
+
+        @JvmStatic
+        @BeforeAll
+        fun initialize() {
+            MinecraftServer.init()
+        }
     }
 }
