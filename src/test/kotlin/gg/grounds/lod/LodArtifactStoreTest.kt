@@ -48,6 +48,17 @@ class LodArtifactStoreTest {
             return BlobMetadata(bytes.size.toLong(), "etag:${digest(bytes)}")
         }
 
+        override fun pinPrivate(
+            key: String,
+            destination: String,
+            size: Long,
+            expectedETag: String,
+        ) {
+            val bytes = files.getValue(key)
+            require(expectedETag == "etag:${digest(bytes)}" && bytes.size.toLong() == size)
+            files.putIfAbsent(destination, bytes)
+        }
+
         override fun promote(
             key: String,
             destination: String,
@@ -188,5 +199,16 @@ class LodArtifactStoreTest {
             assertFailsWith<LodInvalidResult> { LodArtifactStore(blobs, json).accept(claim) }
             assertTrue(blobs.promoted.isEmpty())
         }
+    }
+
+    @Test
+    fun `ready private artifacts survive removal of all temporary job objects`() {
+        val blobs = Blobs()
+        val facts = fixture(blobs)
+        val store = LodArtifactStore(blobs, json)
+        store.accept(claim)
+        blobs.files.keys.filter { it.startsWith("tmp/") }.toList().forEach(blobs.files::remove)
+        store.publish(claim.copy(facts = facts))
+        assertEquals(2, blobs.promoted.size)
     }
 }

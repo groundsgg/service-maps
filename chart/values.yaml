@@ -116,6 +116,8 @@ affinity: {}
 # Explicit finite LOD job selection; finished artifacts stay private until separately enabled.
 lod:
   enabled: false
+  pilot:
+    enabled: false
   publication:
     enabled: false
   runId: ""

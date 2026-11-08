@@ -10,7 +10,10 @@ import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** No redirects/retries. Independent disconnect deadline also bounds a stalled streaming body. */
+/**
+ * No redirects or application retries. JDK GET header failures can cause one transport retry;
+ * callers must reserve that envelope. The independent deadline also bounds stalled bodies.
+ */
 class LodHttp(
     private val allowLoopbackHttp: Boolean = false,
     private val timeout: Duration = Duration.ofMinutes(5),

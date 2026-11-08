@@ -101,6 +101,8 @@ spec:
               value: {{ .Values.config.otel.endpoint | quote }}
             - name: MAPS_LOD_ENABLED
               value: {{ .Values.lod.enabled | quote }}
+            - name: MAPS_LOD_PILOT_ENABLED
+              value: {{ .Values.lod.pilot.enabled | quote }}
             - name: MAPS_LOD_PUBLICATION_ENABLED
               value: {{ .Values.lod.publication.enabled | quote }}
             - name: MAPS_LOD_RUN_ID

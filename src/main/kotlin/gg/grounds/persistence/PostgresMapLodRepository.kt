@@ -213,7 +213,7 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
             )
             .use { ps ->
                 ps.setObject(1, attempt)
-                ps.executeQuery().use { rs -> if (rs.next()) record(rs) else null }
+                ps.executeQuery().use { rs -> if (rs.next()) readLodClaim(rs) else null }
             }
 
     override fun ready(): List<LodClaim> = rows("WHERE state='READY' AND NOT published")
@@ -251,33 +251,10 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { c ->
             c.createStatement().use {
                 it.executeQuery("SELECT * FROM map_lod $where ORDER BY started_at").use { rs ->
-                    buildList { while (rs.next()) add(record(rs)) }
+                    buildList { while (rs.next()) add(readLodClaim(rs)) }
                 }
             }
         }
-
-    private fun record(rs: ResultSet) =
-        LodClaim(
-            rs.getObject("attempt", UUID::class.java),
-            rs.getObject("run_id", UUID::class.java),
-            MapTrust.valueOf(rs.getString("trust")),
-            rs.getString("map_bundle_sha256"),
-            rs.getString("source_bundle_sha256"),
-            rs.getString("registry_sha256"),
-            rs.getString("generator_sha256"),
-            rs.getString("worker_image"),
-            rs.getTimestamp("started_at").toInstant(),
-            if (rs.getString("state") == "READY")
-                LodFacts(
-                    rs.getString("bundle_sha256"),
-                    rs.getLong("bundle_bytes"),
-                    rs.getString("manifest_sha256"),
-                    rs.getLong("manifest_bytes"),
-                    rs.getInt("columns"),
-                )
-            else null,
-            rs.getBoolean("published"),
-        )
 
     private fun <T> transaction(block: (Connection) -> T): T =
         dataSource.connection.use { c ->
@@ -303,8 +280,31 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
     )
 
     companion object {
-        // One private and one public bundle+manifest plus the bounded result marker, retained even
-        // after a failed run.
-        const val RESERVATION_BYTES = 2L * (128L * 1024 * 1024 + 1024 * 1024) + 64 * 1024
+        // Scratch, permanent private and public bundle+manifest plus the marker; no refunds after
+        // failure.
+        const val RESERVATION_BYTES = 3L * (128L * 1024 * 1024 + 1024 * 1024) + 64 * 1024
     }
 }
+
+internal fun readLodClaim(rs: ResultSet) =
+    LodClaim(
+        rs.getObject("attempt", UUID::class.java),
+        rs.getObject("run_id", UUID::class.java),
+        MapTrust.valueOf(rs.getString("trust")),
+        rs.getString("map_bundle_sha256"),
+        rs.getString("source_bundle_sha256"),
+        rs.getString("registry_sha256"),
+        rs.getString("generator_sha256"),
+        rs.getString("worker_image"),
+        rs.getTimestamp("started_at").toInstant(),
+        if (rs.getString("state") == "READY")
+            LodFacts(
+                rs.getString("bundle_sha256"),
+                rs.getLong("bundle_bytes"),
+                rs.getString("manifest_sha256"),
+                rs.getLong("manifest_bytes"),
+                rs.getInt("columns"),
+            )
+        else null,
+        rs.getBoolean("published"),
+    )

@@ -289,6 +289,31 @@ def lod_contract(c):
             assert digest(archive.read(tile['path']))==tile['sha256']
     assert len(c.jobs('service-maps-lod'))==1
     assert c.sql("SELECT jobs_reserved FROM map_lod_budget WHERE id='native-contract';").splitlines()[-1]=='1'
+    # Private one-use relay, not a reusable presigned R2 URL. Exercise Native response DTOs/streaming.
+    serving_id, player, request_id = (str(uuid.uuid4()) for _ in range(3))
+    capability = 'local-contract-capability-' + uuid.uuid4().hex
+    attempt = c.sql(f"SELECT attempt FROM map_lod WHERE run_id='{LOD_RUN_ID}' AND state='READY';").splitlines()[-1]
+    c.sql("INSERT INTO map_lod_serving_run(id,artifact_attempt,token_sha256,allowed_players,starts_at,expires_at,created_by) VALUES ("+
+          ','.join(map(quote,[serving_id,attempt,digest(capability.encode())]))+
+          f",ARRAY['{player}'::uuid],now(),now()+interval '30 minutes','contract-operator');")
+    control = f'/v1/maps/lod-pilots/{serving_id}'
+    headers = {'X-Grounds-Lod-Pilot': capability}
+    request = {'schemaVersion':1,'requestId':request_id,'mapBundleSha256':source_sha,'playerId':player}
+    c.request(control+'/source','POST',request,status=403)
+    source_grant = c.request(control+'/source','POST',request,headers=headers)
+    assert source_grant['bundleUrl'] == control+'/source/'+request_id
+    assert source_grant['bundleSha256'] == artifact['bundleSha256']
+    c.request(source_grant['bundleUrl'],'HEAD',headers=headers,status=405)
+    c.request(source_grant['bundleUrl'],headers={**headers,'Range':'bytes=0-1'},status=416)
+    assert c.request(source_grant['bundleUrl'],headers=headers) == terrain
+    c.request(source_grant['bundleUrl'],headers=headers,status=410)
+    c.request(control+'/source','POST',request,headers=headers,status=409)
+    assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='2'
+    credit=c.request(control+'/credits','POST',{**request,'requestId':str(uuid.uuid4()),'bytes':262144},headers=headers)
+    assert credit['bytes']==262144 and 0<credit['validForMillis']<=1000
+    c.sql(f"UPDATE map_lod_serving_run SET enabled=false WHERE id='{serving_id}';")
+    c.request(control+'/credits','POST',{**request,'requestId':str(uuid.uuid4()),'bytes':1},headers=headers,status=410)
+    print('Maps: Native one-use private relay, replay/HEAD/Range refusal, global debits and persistent kill switch passed')
     print('Maps: real LOD worker, suspended/UID-fenced admission, Native ZIP/manifest acceptance, immutable source-pinned LOD projection and permanent reservation passed')
 
 
@@ -313,6 +338,17 @@ def operator_registration_contract(c):
     c.sql(script,variables)
     assert c.sql("SELECT jobs_reserved FROM map_lod_budget WHERE id='lobby-v13-lss20-v1';").splitlines()[-1]=='1'
     assert len(c.jobs('service-maps-lod'))==1, 'registering a different run cannot silently change the admitted run'
+    serving_script=(ROOT/'scripts/register-lod-serving-pilot.sql').read_text()
+    serving_attempt, serving_id, serving_player=(str(uuid.uuid4()) for _ in range(3))
+    serving_vars={'run_id':serving_id,'artifact_attempt':serving_attempt,'token_sha256':'a'*64,'players':'{'+serving_player+'}'}
+    assert 'LOD serving selection refused' in c.sql(serving_script,serving_vars,check=False)
+    c.sql("INSERT INTO map_lod(attempt,run_id,identity_sha256,trust,map_bundle_sha256,source_bundle_sha256,registry_sha256,generator_sha256,worker_image,state,started_at,updated_at,bundle_sha256,bundle_bytes,manifest_sha256,manifest_bytes,columns) VALUES ("+
+          f"'{serving_attempt}','{variables['run_id']}','{'7'*64}','FIRST_PARTY','{canonical}','{prelit}','{'d'*64}','{'c'*64}','{WORKER_DIGEST}','READY',now(),now(),'{'8'*64}',4096,'{'9'*64}',256,1);")
+    assert 'Registered a 30-minute private Lobby pilot' in c.sql(serving_script,serving_vars)
+    c.sql(f"UPDATE map_lod_serving_run SET remote_reads_reserved=10 WHERE id='{serving_id}';")
+    assert 'ERROR' in c.sql(serving_script,serving_vars,check=False)
+    assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='10'
+    print('Maps: serving operator script refuses absent artifact and cannot reset an existing pilot passed')
     print('Maps: exact Lobby operator registration refuses changed input, rolls back empty selection and never resets an existing budget passed')
 
 
@@ -551,7 +587,7 @@ def main():
                    'MAPS_R2_ACCESS_KEY_ID': 'contract', 'MAPS_R2_SECRET_ACCESS_KEY': 'contract-secret',
                    'MAPS_R2_PRIVATE_BUCKET': 'private', 'MAPS_R2_PUBLIC_BUCKET': 'public', 'MAPS_R2_UGC_BUCKET': 'ugc',
                    'MAPS_DERIVE_ENABLED': 'true', 'MAPS_DERIVE_IMAGE': WORKER_DIGEST,
-                   'MAPS_LOD_ENABLED': 'true', 'MAPS_LOD_PUBLICATION_ENABLED': 'true',
+                   'MAPS_LOD_ENABLED': 'true', 'MAPS_LOD_PUBLICATION_ENABLED': 'true', 'MAPS_LOD_PILOT_ENABLED': 'true',
                    'MAPS_LOD_RUN_ID': LOD_RUN_ID, 'MAPS_LOD_NODE': 'contract-node', 'MAPS_LOD_POLL_INTERVAL': '1s',
                    'MAPS_DERIVE_POLL_INTERVAL': '1s', 'MAPS_LIT_POLL_INTERVAL': '1s',
                    'MAPS_CATALOGS_BASE_URI': 'https://maps-fixtures', 'MAPS_CATALOGS_PACK_SET': 'global',

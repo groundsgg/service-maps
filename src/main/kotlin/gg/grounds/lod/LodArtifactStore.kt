@@ -30,6 +30,8 @@ interface LodBlobs {
     /** Returns the exact source version observed on both sides of this bounded download. */
     fun download(key: String, into: Path, max: Long): BlobMetadata
 
+    fun pinPrivate(key: String, destination: String, size: Long, expectedETag: String)
+
     fun promote(key: String, destination: String, size: Long, trust: MapTrust, expectedETag: String)
 }
 
@@ -58,6 +60,9 @@ class R2LodBlobs @Inject constructor(private val blobs: BlobStore) : LodBlobs {
             throw LodInvalidResult("LOD output changed during verification")
         return before
     }
+
+    override fun pinPrivate(key: String, destination: String, size: Long, expectedETag: String) =
+        blobs.pinPrivateObject(key, destination, size, expectedETag)
 
     override fun promote(
         key: String,
@@ -102,14 +107,30 @@ class LodArtifactStore @Inject constructor(private val blobs: LodBlobs, json: Ob
 
     override fun requestJson(c: LodClaim): String = mapper.writeValueAsString(request(c))
 
-    override fun accept(c: LodClaim): LodFacts = verify(c).facts
+    override fun accept(c: LodClaim): LodFacts {
+        val verified = verify(c)
+        val facts = verified.facts
+        blobs.pinPrivate(
+            c.workKey("bundle.zip"),
+            privateBundleKey(c.trust, facts.bundleSha256),
+            facts.bundleBytes,
+            verified.bundleETag,
+        )
+        blobs.pinPrivate(
+            c.workKey("manifest.json"),
+            privateManifestKey(c.trust, facts.manifestSha256),
+            facts.manifestBytes,
+            verified.manifestETag,
+        )
+        return facts
+    }
 
     override fun publish(c: LodClaim) {
-        val verified = verify(c)
+        val verified = verify(c, pinned = true)
         require(verified.facts == c.facts) { "ready LOD facts changed" }
         val facts = verified.facts
         blobs.promote(
-            c.workKey("bundle.zip"),
+            privateBundleKey(c.trust, facts.bundleSha256),
             bundleKey(facts.bundleSha256),
             facts.bundleBytes,
             c.trust,
@@ -117,7 +138,7 @@ class LodArtifactStore @Inject constructor(private val blobs: LodBlobs, json: Ob
         )
         // Manifest is public last, then the DB projection becomes publishable.
         blobs.promote(
-            c.workKey("manifest.json"),
+            privateManifestKey(c.trust, facts.manifestSha256),
             manifestKey(facts.manifestSha256),
             facts.manifestBytes,
             c.trust,
@@ -125,39 +146,51 @@ class LodArtifactStore @Inject constructor(private val blobs: LodBlobs, json: Ob
         )
     }
 
-    private fun verify(c: LodClaim): Verified {
+    private fun verify(c: LodClaim, pinned: Boolean = false): Verified {
         val work = Files.createTempDirectory("lod-verify-")
         try {
-            val result: LodJobResult =
-                try {
-                    mapper.readValue(blobs.read(c.workKey("result.json"), 64L * 1024))
-                } catch (e: com.fasterxml.jackson.core.JacksonException) {
-                    throw LodInvalidResult("invalid LOD result JSON", e)
-                }
-            require(result.schemaVersion == 1 && result.format == "lss20" && result.error == null) {
-                "worker did not complete"
-            }
-            require(
-                result.attempt == c.attempt.toString() &&
-                    result.mapBundleSha256 == c.mapBundleSha256 &&
-                    result.sourceBundleSha256 == c.sourceBundleSha256 &&
-                    result.generatorSha256 == c.generatorSha256 &&
-                    result.workerImageSha256 == c.workerImageSha256 &&
-                    result.registrySha256 == c.registrySha256
-            ) {
-                "result identity mismatch"
-            }
             val facts =
-                LodFacts(
-                    requireNotNull(result.bundleSha256),
-                    requireNotNull(result.bundleBytes),
-                    requireNotNull(result.manifestSha256),
-                    requireNotNull(result.manifestBytes),
-                    requireNotNull(result.columns),
-                )
+                if (pinned) requireNotNull(c.facts) { "missing ready facts" }
+                else {
+                    val result: LodJobResult =
+                        try {
+                            mapper.readValue(blobs.read(c.workKey("result.json"), 64L * 1024))
+                        } catch (e: com.fasterxml.jackson.core.JacksonException) {
+                            throw LodInvalidResult("invalid LOD result JSON", e)
+                        }
+                    require(
+                        result.schemaVersion == 1 &&
+                            result.format == "lss20" &&
+                            result.error == null
+                    ) {
+                        "worker did not complete"
+                    }
+                    require(
+                        result.attempt == c.attempt.toString() &&
+                            result.mapBundleSha256 == c.mapBundleSha256 &&
+                            result.sourceBundleSha256 == c.sourceBundleSha256 &&
+                            result.generatorSha256 == c.generatorSha256 &&
+                            result.workerImageSha256 == c.workerImageSha256 &&
+                            result.registrySha256 == c.registrySha256
+                    ) {
+                        "result identity mismatch"
+                    }
+                    LodFacts(
+                        requireNotNull(result.bundleSha256),
+                        requireNotNull(result.bundleBytes),
+                        requireNotNull(result.manifestSha256),
+                        requireNotNull(result.manifestBytes),
+                        requireNotNull(result.columns),
+                    )
+                }
             val manifestFile = work.resolve("manifest.json")
             val manifestMeta =
-                blobs.download(c.workKey("manifest.json"), manifestFile, 1024L * 1024)
+                blobs.download(
+                    if (pinned) privateManifestKey(c.trust, facts.manifestSha256)
+                    else c.workKey("manifest.json"),
+                    manifestFile,
+                    1024L * 1024,
+                )
             require(
                 Files.size(manifestFile) == facts.manifestBytes &&
                     digest(manifestFile) == facts.manifestSha256
@@ -181,7 +214,12 @@ class LodArtifactStore @Inject constructor(private val blobs: LodBlobs, json: Ob
             }
             val bundleFile = work.resolve("bundle.zip")
             val bundleMeta =
-                blobs.download(c.workKey("bundle.zip"), bundleFile, LodBounds.MAX_BUNDLE_BYTES)
+                blobs.download(
+                    if (pinned) privateBundleKey(c.trust, facts.bundleSha256)
+                    else c.workKey("bundle.zip"),
+                    bundleFile,
+                    LodBounds.MAX_BUNDLE_BYTES,
+                )
             require(Files.size(bundleFile) == facts.bundleBytes) { "bundle size mismatch" }
             val bundle = LodBundle.open(bundleFile, facts.bundleSha256)
             require(bundle.manifest == manifest && bundle.manifestSha256 == facts.manifestSha256) {
@@ -210,6 +248,12 @@ class LodArtifactStore @Inject constructor(private val blobs: LodBlobs, json: Ob
     )
 
     companion object {
+        fun privateBundleKey(trust: MapTrust, sha: String) =
+            "lod/${trust.name.lowercase()}/lss20/$sha/bundle.zip"
+
+        fun privateManifestKey(trust: MapTrust, sha: String) =
+            "lod/${trust.name.lowercase()}/lss20/$sha/manifest.json"
+
         fun bundleKey(sha: String) = "lod/lss20/$sha/bundle.zip"
 
         fun manifestKey(sha: String) = "lod/lss20/$sha/manifest.json"

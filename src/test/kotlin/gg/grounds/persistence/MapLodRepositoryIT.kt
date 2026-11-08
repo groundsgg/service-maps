@@ -29,7 +29,11 @@ class MapLodRepositoryIT {
     @BeforeEach
     fun clear() {
         db.connection.use { c ->
-            c.createStatement().use { it.execute("TRUNCATE map_lod, map_lod_run, map_lod_budget") }
+            c.createStatement().use {
+                it.execute(
+                    "TRUNCATE map_lod_serving_debit,map_lod_serving_window,map_lod_serving_run,map_lod,map_lod_run,map_lod_budget"
+                )
+            }
         }
     }
 
