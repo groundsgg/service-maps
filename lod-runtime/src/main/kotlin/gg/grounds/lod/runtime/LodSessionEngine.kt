@@ -86,7 +86,7 @@ internal class LodSessionEngine(
         val epoch: Long,
         val world: Any,
         val negotiation: Long,
-        val request: ColumnPosition? = null,
+        val requests: List<ColumnPosition> = emptyList(),
         val configuration: Boolean? = null,
     )
 
@@ -142,7 +142,7 @@ internal class LodSessionEngine(
             if (channel == Lss20.BATCH_REQUEST) {
                 // LSS declares the COMPLETE want set, including an empty overload stop signal.
                 state.requests.clear()
-                if (state.prepared?.request != null) state.prepared = null
+                if (state.prepared?.requests?.isNotEmpty() == true) state.prepared = null
                 state.input.removeAll { it.channel == Lss20.BATCH_REQUEST }
             }
             if (state.input.size < 4) state.input.addLast(Input(channel, bytes.copyOf()))
@@ -190,7 +190,7 @@ internal class LodSessionEngine(
                         null
                     else {
                         state.prepared = null
-                        prepared.request?.let { state.requests.remove(it) }
+                        prepared.requests.forEach { state.requests.remove(it) }
                         val frame =
                             LodDelivery(
                                 prepared.reply,
@@ -302,13 +302,17 @@ internal class LodSessionEngine(
             return it
         }
         if (!validClient(state)) return null
-        fun frame(reply: LodReply, request: ColumnPosition? = null, config: Boolean? = null) =
+        fun frame(
+            reply: LodReply,
+            requests: List<ColumnPosition> = emptyList(),
+            config: Boolean? = null,
+        ) =
             Prepared(
                 reply,
                 state.epoch,
                 state.world.instanceKey,
                 state.negotiation,
-                request,
+                requests,
                 config,
             )
         val next =
@@ -336,8 +340,17 @@ internal class LodSessionEngine(
                     body?.let { frame(LodReply(Lss20.SUMMARY, it)) }
                 }
                 state.requests.isNotEmpty() -> {
-                    val request = state.requests.values.first()
-                    frame(Lss20.reply(state.source!!, request), request.position)
+                    val source = state.source!!
+                    val statuses =
+                        state.requests.values.take(64).takeWhile {
+                            Lss20.statusCode(source, it) != null
+                        }
+                    if (statuses.isNotEmpty())
+                        frame(Lss20.statusBatch(source, statuses), statuses.map { it.position })
+                    else {
+                        val request = state.requests.values.first()
+                        frame(Lss20.reply(source, request), listOf(request.position))
+                    }
                 }
                 else -> null
             }

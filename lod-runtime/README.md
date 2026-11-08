@@ -59,6 +59,9 @@ The source is not inferred from an Overworld dimension name or a proxy-local pla
 - Before each SessionConfig, a guarded `minecraft:register` advertises the inbound LSS channels,
   so Fabric can send terrain requests. Registration and config share the same permit and FIFO
   acknowledgement; cancelling either prevents configuration completion.
+- Cached/absent column statuses are coalesced in at most64 entries per LSS batch response
+  (577 body bytes), avoiding one status per Minestom tick. Fresh terrain preserves request
+  order and remains individually guarded. Queue and shared credit limits are unchanged.
 - Every frame reserves its payload plus512 bytes for conservative Minecraft framing/compression
   and the small channel advertisement.
   503/transport/parse failures disable this optional gate without polling. Per-UUID429/window

@@ -78,6 +78,26 @@ internal object Lss20 {
             else -> LodReply(VOXEL, voxel(source, request.position))
         }
 
+    fun statusCode(source: LoadedLod, request: LodColumnRequest): Int? =
+        when {
+            request.position !in source.columns -> 2
+            request.timestamp >= source.timestampSeconds -> 1
+            else -> null
+        }
+
+    fun statusBatch(source: LoadedLod, requests: List<LodColumnRequest>): LodReply {
+        require(requests.size in 1..64)
+        val writer = WireBytes.Writer(1 + requests.size * 9).writeVarInt(requests.size)
+        for (request in requests) {
+            val code = requireNotNull(statusCode(source, request))
+            val pos = request.position
+            writer
+                .writeByte(code)
+                .writeLong((pos.x.toLong() shl 32) or (pos.z.toLong() and 0xffffffffL))
+        }
+        return LodReply(BATCH_RESPONSE, writer.toByteArray())
+    }
+
     private fun status(pos: ColumnPosition, code: Int) =
         LodReply(
             BATCH_RESPONSE,

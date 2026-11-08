@@ -235,4 +235,64 @@ class LodSessionEngineTest {
             assertEquals(2, r.readUnsignedByte())
             assertEquals(2L, r.readLong())
         }
+
+    @Test
+    fun `cached and absent columns share bounded status packets without losing positions`() =
+        fixture { _, engine, peer, _, _ ->
+            handshake(engine, peer)
+            val input =
+                WireBytes.Writer(1610).writeVarInt(100).writeLong(0).writeLong(Long.MAX_VALUE)
+            for (x in 100..198) input.writeLong(x.toLong() shl 32).writeLong(0)
+            engine.receive(peer, Lss20.BATCH_REQUEST, input.toByteArray())
+            var index = 0
+            for (count in listOf(64, 36)) {
+                engine.pump()
+                val reply = assertNotNull(peer.flush())
+                assertEquals(Lss20.BATCH_RESPONSE, reply.channel)
+                val r = WireBytes.Reader(reply.body)
+                assertEquals(
+                    count,
+                    r.readVarInt(),
+                    "one status per tick delays warm cache validation",
+                )
+                repeat(count) {
+                    assertEquals(if (index == 0) 1 else 2, r.readUnsignedByte())
+                    assertEquals(
+                        if (index == 0) 0L else ((index + 99).toLong() shl 32),
+                        r.readLong(),
+                    )
+                    index++
+                }
+                assertEquals(0, r.remaining())
+            }
+            engine.pump()
+            assertTrue(peer.queued.isEmpty())
+        }
+
+    @Test
+    fun `status coalescing preserves fresh terrain between status groups`() =
+        fixture { _, engine, peer, _, _ ->
+            handshake(engine, peer)
+            val request =
+                WireBytes.Writer(50)
+                    .writeVarInt(3)
+                    .writeLong(1)
+                    .writeLong(0)
+                    .writeLong(0)
+                    .writeLong(0)
+                    .writeLong(2)
+                    .writeLong(0)
+                    .toByteArray()
+            engine.receive(peer, Lss20.BATCH_REQUEST, request)
+            engine.pump()
+            val first = assertNotNull(peer.flush())
+            assertContentEquals(byteArrayOf(1, 2, 0, 0, 0, 0, 0, 0, 0, 1), first.body)
+            engine.pump()
+            assertEquals(Lss20.VOXEL, peer.flush()?.channel)
+            engine.pump()
+            val last = assertNotNull(peer.flush())
+            assertContentEquals(byteArrayOf(1, 2, 0, 0, 0, 0, 0, 0, 0, 2), last.body)
+            engine.pump()
+            assertTrue(peer.queued.isEmpty())
+        }
 }
