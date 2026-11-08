@@ -126,6 +126,19 @@ at a time, a failure is retried up to three times, and lighting fills `present_c
 `est_loaded_mib` of the bundle's versions. `MAPS_LIT_FORMAT` must equal the worker's
 `MapLight.FORMAT`; raising both lights every pinned bundle again.
 
+## Offline LOD worker
+
+`lod-worker/` encodes stored overworld chunks into bounded, deterministic LSS protocol-20
+column tiles. It verifies the input bundle, rejects unsupported archive metadata and chunk
+schemas, and publishes a local output directory atomically. It has no listener or cloud
+credentials. The pinned upstream codec and MIT license are documented in
+`lod-worker/UPSTREAM.md`.
+
+Build with `./gradlew :lod-worker:test :lod-worker:installDist`, then run the installed
+`lod-worker` command with `--bundle <map.tar.zst> --sha256 <digest> --output <new-directory>`.
+Input is ordinary USTAR; GNU/PAX extension headers require explicit bounded support.
+Scheduling, remote publication and real-client compatibility are separate integration steps.
+
 ## Not yet true, and load-bearing
 
 <!-- Both of these are why there is no chart and no Argo application in this repository. -->
