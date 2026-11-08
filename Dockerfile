@@ -11,6 +11,7 @@ COPY src/ src/
 COPY lit-worker/ lit-worker/
 COPY lod-worker/ lod-worker/
 COPY lod-format/ lod-format/
+COPY lod-runtime/build.gradle.kts lod-runtime/build.gradle.kts
 
 # Use locked caches to avoid corruption on parallel builds
 RUN --mount=type=cache,target=/root/.gradle/caches,sharing=locked \

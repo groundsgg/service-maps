@@ -19,3 +19,5 @@ include("lit-worker")
 include("lod-worker")
 
 include("lod-format")
+
+include("lod-runtime")
