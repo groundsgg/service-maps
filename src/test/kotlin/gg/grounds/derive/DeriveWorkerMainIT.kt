@@ -24,6 +24,14 @@ import org.junit.jupiter.api.Test
 
 class DeriveWorkerMainIT {
     @Test
+    fun `archive fixtures keep their digest across wall clock ticks`() {
+        val files = mapOf("level.dat" to "world".encodeToByteArray())
+        val first = digest(archive(files))
+        Thread.sleep(1100)
+        assertEquals(first, digest(archive(files)))
+    }
+
+    @Test
     fun `catalog connection refusal is acknowledged as retryable system failure`() {
         val catalog = generatedCatalogJar()
         val source = archive(mapOf("scene.json" to validGroundsScene.encodeToByteArray()))
@@ -1131,7 +1139,12 @@ class DeriveWorkerMainIT {
         val tar = ByteArrayOutputStream()
         TarArchiveOutputStream(tar).use { output ->
             files.forEach { (name, bytes) ->
-                output.putArchiveEntry(TarArchiveEntry(name).apply { size = bytes.size.toLong() })
+                output.putArchiveEntry(
+                    TarArchiveEntry(name).apply {
+                        size = bytes.size.toLong()
+                        modTime = java.util.Date(0)
+                    }
+                )
                 output.write(bytes)
                 output.closeArchiveEntry()
             }
