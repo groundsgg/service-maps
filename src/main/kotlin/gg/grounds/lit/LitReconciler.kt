@@ -100,7 +100,7 @@ class LitReconciler(
         deriveEnabled: Boolean,
         @ConfigProperty(name = "grounds.maps.lit.enabled", defaultValue = "true")
         litEnabled: Boolean,
-        @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "1") format: Int,
+        @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "2") format: Int,
         @ConfigProperty(name = "grounds.maps.lit.timeout", defaultValue = "PT20M") timeout: Duration,
     ) : this(lits, jobs, blobs, pinFiles, deriveEnabled && litEnabled, format, timeout)
 

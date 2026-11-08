@@ -31,8 +31,8 @@ repositories {
 kotlin { jvmToolchain(25) }
 
 dependencies {
-    implementation("gg.grounds:grounds-minestom-runtime-runtime-world:0.15.0")
-    implementation("net.minestom:minestom:2026.10.10-26.3-grounds")
+    implementation("gg.grounds:grounds-minestom-runtime-runtime-world:0.15.1")
+    implementation("net.minestom:minestom:2026.11.08-26.3-grounds")
     implementation("com.google.code.gson:gson:2.15.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:1.5.7-25")

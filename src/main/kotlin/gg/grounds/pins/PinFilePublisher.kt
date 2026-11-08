@@ -32,7 +32,7 @@ constructor(
     private val json: ObjectMapper,
     private val lits: MapLitRepository,
     private val events: PinEvents,
-    @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "1") private val litFormat: Int,
+    @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "2") private val litFormat: Int,
 ) {
 
     private val log = Logger.getLogger(PinFilePublisher::class.java)
