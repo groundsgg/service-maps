@@ -6,6 +6,7 @@ import io.fabric8.kubernetes.api.model.ContainerBuilder
 import io.fabric8.kubernetes.api.model.DeletionPropagation
 import io.fabric8.kubernetes.api.model.EmptyDirVolumeSourceBuilder
 import io.fabric8.kubernetes.api.model.ObjectMeta
+import io.fabric8.kubernetes.api.model.OwnerReferenceBuilder
 import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder
 import io.fabric8.kubernetes.api.model.PodSpecBuilder
 import io.fabric8.kubernetes.api.model.PodTemplateSpecBuilder
@@ -48,6 +49,9 @@ class Fabric8LodJobGateway(
     private val namespace: String,
     private val serviceAccount: String,
     private val node: String,
+    private val isolated: Boolean = false,
+    private val ownerPodName: String = "",
+    private val ownerPodUid: String = "",
 ) : LodJobGateway {
     @Inject
     constructor(
@@ -59,7 +63,30 @@ class Fabric8LodJobGateway(
         )
         serviceAccount: String,
         @ConfigProperty(name = "grounds.maps.lod.node") node: Optional<String>,
-    ) : this(client, namespace, serviceAccount, node.orElse(""))
+        @ConfigProperty(name = "grounds.maps.lod.pilot.isolated", defaultValue = "false")
+        isolated: Boolean,
+        @ConfigProperty(name = "grounds.maps.lod.pilot.owner-pod-name")
+        ownerPodName: Optional<String>,
+        @ConfigProperty(name = "grounds.maps.lod.pilot.owner-pod-uid") ownerPodUid: Optional<String>,
+    ) : this(
+        client,
+        namespace,
+        serviceAccount,
+        node.orElse(""),
+        isolated,
+        ownerPodName.orElse(""),
+        ownerPodUid.orElse(""),
+    )
+
+    init {
+        require(
+            !isolated ||
+                (ownerPodName.isNotBlank() &&
+                    ownerPodUid.matches(Regex("[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}")))
+        ) {
+            "isolated LOD pilot requires its owning API Pod identity"
+        }
+    }
 
     override fun create(claim: LodClaim, requestJson: String) {
         require(requestJson.length <= 64 * 1024) { "LOD request exceeds limit" }
@@ -179,7 +206,7 @@ class Fabric8LodJobGateway(
                     ContainerBuilder()
                         .withName("lod-worker")
                         .withImage(claim.workerImage)
-                        .withImagePullPolicy("IfNotPresent")
+                        .withImagePullPolicy(if (isolated) "Never" else "IfNotPresent")
                         .withCommand(
                             "java",
                             "-Xmx1g",
@@ -238,6 +265,17 @@ class Fabric8LodJobGateway(
         return JobBuilder()
             .withMetadata(
                 ObjectMeta().also {
+                    if (isolated)
+                        it.ownerReferences =
+                            listOf(
+                                OwnerReferenceBuilder()
+                                    .withApiVersion("v1")
+                                    .withKind("Pod")
+                                    .withName(ownerPodName)
+                                    .withUid(ownerPodUid)
+                                    .withBlockOwnerDeletion(false)
+                                    .build()
+                            )
                     it.name = claim.jobName
                     it.namespace = namespace
                     it.labels = labels

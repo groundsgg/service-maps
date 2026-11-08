@@ -166,6 +166,27 @@ that deployment requirement. Public LOD HTTP qualification, runtime delivery lim
 Voxy/DH client acceptance remain separate integration steps; keep public publication off until
 those paths have been qualified. Finished artifacts are not deleted by an age-based lifecycle.
 
+The finite Stage controller additionally sets `MAPS_LOD_PILOT_ISOLATED=true`. Its REST
+filter permits only complete private pilot operation paths, even over direct Pod/Service
+addresses and with a staff JWT. Use a dedicated restricted namespace, never the live Maps
+namespace, because its namespaced Job permissions can mount any secret in that namespace.
+Keep its database ephemeral and separate; import only the exact published pilot metadata.
+
+`MAPS_R2_SESSION_TOKEN` enables temporary S3 session credentials. The isolated process reads
+first-party input from the immutable HTTPS CDN, so credentials need only the private bucket's
+`tmp/lod/` and `lod/first_party/lss20/` prefixes. Set public/UGC bucket names to unused sentinels;
+never give this process the long-lived Maps storage credential. Keep publication disabled.
+
+In isolated mode `MAPS_LOD_PILOT_OWNER_POD_NAME` and `MAPS_LOD_PILOT_OWNER_POD_UID` are required
+Downward API values: even suspended worker Jobs are owned by the API Pod and collected when
+it is removed. Worker image pulls are disabled (`Never`); prefetch verified digest-pinned images
+on the selected existing node without copying the registry credential into the pilot namespace.
+Bound the API Job to 1800 seconds with a 300-second cleanup TTL and every container's CPU,
+memory and ephemeral storage. Deactivate the serving row, disable the infrastructure flag,
+and remove the dedicated namespace after measurement. A later infrastructure reconciliation
+can recreate an enabled expired Job, so leave the flag disabled; no startup path seeds quota
+or run rows. Capture counters before deleting its temporary database.
+
 The populated `ci/verify-native.py` contract runs the packaged Native API, actual JVM LOD worker,
 TLS object storage, PostgreSQL and a Kubernetes fixture through source-pinned publication.
 

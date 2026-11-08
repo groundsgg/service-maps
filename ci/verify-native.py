@@ -608,10 +608,29 @@ def main():
             contracts(contract)
             lod_contract(contract)
             operator_registration_contract(contract)
+            # Exercise the packaged pilot process itself, including internal/direct requests.
+            docker('stop', contract.name + '-api')
+            isolated = {**env, 'MAPS_DERIVE_ENABLED': 'false', 'MAPS_LIT_ENABLED': 'false',
+                        'MAPS_LOD_ENABLED': 'false', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
+                        'MAPS_LOD_PILOT_ISOLATED': 'true',
+                        'MAPS_LOD_PILOT_OWNER_POD_NAME': 'native-pilot',
+                        'MAPS_LOD_PILOT_OWNER_POD_UID': '321ba5f0-b4f5-46bc-865c-d8013e2a552d'}
+            contract.run('isolated', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+                         ports=(9000,), env=isolated, command_args=arguments)
+            contract.ports['api', 9000] = contract.ports['isolated', 9000]
+            eventually(lambda: contract.request('/q/health/ready'))
+            pins = contract.s3('/public/pins/stage.json')
+            staff = contract.token()
+            contract.request('/v1/maps/grounds/native-contract/pins/stage', 'POST', {'version': 1}, staff, 404)
+            contract.request('/v1/maps', 'POST', token=staff, raw=b'{', status=404)
+            contract.request('/v1/maps/lod-pilots/castle', token=staff, status=404)
+            assert contract.s3('/public/pins/stage.json') == pins, 'isolated pilot changed ordinary pins'
+            contract.request('/v1/maps/lod-pilots/' + str(uuid.uuid4()) + '/credits', 'POST', raw=b'{', status=403)
+            print('Maps: isolated Native direct/staff write denial, unchanged public pins and protected private operation passed')
             print('Packaged Maps contract passed: ' + IMAGE)
         except BaseException:
             for name in contract.containers:
-                if name.endswith('-api'):
+                if name.endswith(('-api', '-isolated')):
                     print(docker('logs', name, check=False)[-18000:])
             raise
         finally:

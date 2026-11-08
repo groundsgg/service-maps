@@ -36,11 +36,25 @@ interface LodBlobs {
 }
 
 @ApplicationScoped
-class R2LodBlobs @Inject constructor(private val blobs: BlobStore) : LodBlobs {
+class R2LodBlobs
+@Inject
+constructor(
+    private val blobs: BlobStore,
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+        name = "grounds.maps.lod.pilot.isolated",
+        defaultValue = "false",
+    )
+    private val isolated: Boolean = false,
+) : LodBlobs {
     private val ttl = Duration.ofMinutes(30)
 
-    override fun sourceUrl(sha: String, trust: MapTrust): String =
-        blobs.presignGetPublic(BlobStore.bundleKey(sha), trust, ttl)
+    override fun sourceUrl(sha: String, trust: MapTrust): String {
+        if (!isolated) return blobs.presignGetPublic(BlobStore.bundleKey(sha), trust, ttl)
+        require(trust == MapTrust.FIRST_PARTY) { "isolated pilot requires first-party input" }
+        val base = blobs.publicBaseFor(trust)
+        require(java.net.URI.create(base).scheme == "https") { "pilot CDN must use HTTPS" }
+        return "$base/${BlobStore.bundleKey(sha)}"
+    }
 
     override fun workUrl(key: String): String = blobs.presignPut(key, ttl)
 

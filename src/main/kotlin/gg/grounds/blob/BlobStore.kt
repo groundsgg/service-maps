@@ -10,9 +10,11 @@ import java.io.InputStream
 import java.net.URI
 import java.time.Duration
 import java.time.Instant
+import java.util.Optional
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.core.ResponseInputStream
 import software.amazon.awssdk.core.sync.RequestBody
@@ -73,10 +75,19 @@ constructor(
     @ConfigProperty(name = "grounds.maps.cdn.content-base") val contentBaseUrl: String,
     /** Where creator content is read from. A different origin on purpose. */
     @ConfigProperty(name = "grounds.maps.cdn.ugc-base") val ugcBaseUrl: String,
+    @ConfigProperty(name = "grounds.maps.r2.session-token")
+    sessionToken: Optional<String> = Optional.empty(),
 ) : DeriveArtifactStore {
 
     private val credentials =
-        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey))
+        StaticCredentialsProvider.create(
+            sessionToken
+                .filter { it.isNotBlank() }
+                .map<software.amazon.awssdk.auth.credentials.AwsCredentials> {
+                    AwsSessionCredentials.create(accessKey, secretKey, it)
+                }
+                .orElseGet { AwsBasicCredentials.create(accessKey, secretKey) }
+        )
 
     private val client: S3Client by lazy {
         S3Client.builder()
