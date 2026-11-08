@@ -17,10 +17,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 @Priority(Priorities.AUTHENTICATION - 100)
 class LodPilotIsolationFilter(
     @ConfigProperty(name = "grounds.maps.lod.pilot.isolated", defaultValue = "false")
-    private val isolated: Boolean
+    private val isolated: jakarta.inject.Provider<Boolean>
 ) : ContainerRequestFilter {
     override fun filter(context: ContainerRequestContext) {
-        if (isolated && !ALLOWED.matches(context.uriInfo.requestUri.rawPath)) {
+        if (isolated.get() && !ALLOWED.matches(context.uriInfo.requestUri.rawPath)) {
             context.abortWith(Response.status(404).build())
         }
     }
