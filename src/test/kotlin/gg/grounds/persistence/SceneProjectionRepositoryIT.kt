@@ -14,7 +14,7 @@ import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
 import gg.grounds.domain.VersionState
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
 import java.time.Instant
@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
+@WithTestResource(PostgresResource::class)
 class SceneProjectionRepositoryIT {
 
     @Inject lateinit var maps: MapRepository

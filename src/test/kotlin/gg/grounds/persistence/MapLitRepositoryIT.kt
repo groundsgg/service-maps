@@ -10,7 +10,8 @@ import gg.grounds.domain.MapPinRepository
 import gg.grounds.domain.MapRepository
 import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.TestResourceScope
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
 import java.util.UUID
@@ -21,7 +22,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 @QuarkusTest
-@QuarkusTestResource(value = PostgresResource::class, restrictToAnnotatedClass = true)
+@WithTestResource(value = PostgresResource::class, scope = TestResourceScope.RESTRICTED_TO_CLASS)
 class MapLitRepositoryIT {
 
     @Inject lateinit var maps: MapRepository

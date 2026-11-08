@@ -20,7 +20,7 @@ class NatsResource : QuarkusTestResourceLifecycleManager {
     }
 
     override fun stop() {
-        container.stop()
+        if (this::container.isInitialized) container.stop()
     }
 
     companion object {

@@ -2,7 +2,7 @@ package gg.grounds.api
 
 import gg.grounds.MinioResource
 import gg.grounds.PostgresResource
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
@@ -18,8 +18,8 @@ import org.junit.jupiter.api.TestMethodOrder
  * they are here: the interesting cases are the ones that used to succeed.
  */
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
-@QuarkusTestResource(MinioResource::class)
+@WithTestResource(PostgresResource::class)
+@WithTestResource(MinioResource::class)
 // Ordered on purpose: the last two cases are one scenario in two identities — carol creates
 // a map, dave must not find it — and an identity cannot change mid-test.
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)

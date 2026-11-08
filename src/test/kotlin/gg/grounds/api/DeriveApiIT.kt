@@ -1,5 +1,6 @@
 package gg.grounds.api
 
+import gg.grounds.MinioResource
 import gg.grounds.PostgresResource
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
@@ -7,7 +8,7 @@ import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DerivedFailure
 import gg.grounds.domain.MapRepository
 import gg.grounds.domain.MapVersionRepository
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.junit.QuarkusTestProfile
 import io.quarkus.test.junit.TestProfile
@@ -20,7 +21,8 @@ import org.junit.jupiter.api.Test
 
 /** API boundary coverage for the persisted derive projection and retry state machine. */
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
+@WithTestResource(PostgresResource::class)
+@WithTestResource(MinioResource::class)
 @TestProfile(DeriveEnabledProfile::class)
 @TestSecurity(user = "derive-staff", roles = ["grounds-staff"])
 class DeriveApiIT {
