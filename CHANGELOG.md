@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.12.0](https://github.com/groundsgg/service-maps/compare/v1.11.1...v1.12.0) (2026-11-08)
+
+
+### Features
+
+* **catalogs:** retain bounded immutable operator pins alongside channels ([#100](https://github.com/groundsgg/service-maps/issues/100)) ([b783133](https://github.com/groundsgg/service-maps/commit/b783133d0ba79508caed677313c3be7b3f21e3d1))
+
+
+### Bug Fixes
+
+* **deps:** bump gg.grounds:resourcepacks-client from 1.0.0 to 1.3.0 ([#99](https://github.com/groundsgg/service-maps/issues/99)) ([2d0fb41](https://github.com/groundsgg/service-maps/commit/2d0fb41035cb8440094097a5ffc70ee383ee16e9))
+* **deps:** bump gg.grounds:scene-format from 0.4.0 to 0.4.4 ([#98](https://github.com/groundsgg/service-maps/issues/98)) ([d02378e](https://github.com/groundsgg/service-maps/commit/d02378ecbb89d59ad580c3a41dd2984810a2bb5b))
+* **deps:** preserve Kotlin compiler and daemon compatibility ([#93](https://github.com/groundsgg/service-maps/issues/93)) ([63e3e58](https://github.com/groundsgg/service-maps/commit/63e3e584a48fc3c3ecb3535304a98cb0e5c25fef))
+* **light:** rebake pinned maps with vanilla transparency ([#101](https://github.com/groundsgg/service-maps/issues/101)) ([38c9098](https://github.com/groundsgg/service-maps/commit/38c90987c1db274e2150609ca9ee4e5f6cb4900d))
+
 ## [1.11.1](https://github.com/groundsgg/service-maps/compare/v1.11.0...v1.11.1) (2026-11-02)
 
 
