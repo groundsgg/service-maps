@@ -85,6 +85,7 @@ class MapPreparationTest {
     fun `forks retain raw and cached light delivery when lighting is disabled`() {
         val disabled = MapPreparation(lits, bundles, MapLightPolicy(true, false, 2))
         objects.values[sha to MapTrust.FIRST_PARTY] = BlobMetadata(100)
+        objects.values[litSha to MapTrust.FIRST_PARTY] = BlobMetadata(1000)
         lits.row = record(LitState.LIT)
 
         disabled.ensureDelivery(version(), MapTrust.UNTRUSTED)
