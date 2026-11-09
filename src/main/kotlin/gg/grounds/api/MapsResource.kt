@@ -65,6 +65,7 @@ constructor(
     private val derive: DeriveCompatibility,
     private val coordinator: DeriveCoordinator,
     private val preparation: MapPreparation,
+    private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
 
     @Operation(
@@ -588,6 +589,12 @@ constructor(
                             Response.Status.CONFLICT,
                             "version ${request.version} is not ready to go live: ${status.detail ?: status.stage.lowercase().replace('_', ' ')}",
                         )
+                }
+                if (selected?.state == VersionState.PUBLISHED) {
+                    runtimeCompatibility.problem(environment, address, selected.scene)?.let { detail
+                        ->
+                        return@withMap problem(Response.Status.CONFLICT, detail)
+                    }
                 }
                 val moved = pins.move(environment, map.id, request.version, identity.principal.name)
                 val published = pinFiles.publish(environment)

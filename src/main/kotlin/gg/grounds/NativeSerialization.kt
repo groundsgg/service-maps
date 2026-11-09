@@ -73,6 +73,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             LitRequest::class,
             LitResult::class,
             DeriveRequest::class,
+            gg.grounds.domain.SceneShapeRequirements::class,
             AssetCatalogCandidate::class,
             DeriveResult::class,
             DeriveSuccess::class,

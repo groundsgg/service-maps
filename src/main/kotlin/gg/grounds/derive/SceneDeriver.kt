@@ -38,6 +38,8 @@ class SceneDeriver(
     private val catalogResolver: SceneCatalogResolver,
     private val limits: ArchiveLimits = ArchiveLimits(),
     private val bundleWriter: DerivedBundleWriter = DerivedBundleWriter(),
+    private val normalizationAssets: (() -> AssetCatalog)? = null,
+    private val shapeRequirements: gg.grounds.domain.SceneShapeRequirements? = null,
 ) {
     fun derive(
         source: InputStream,
@@ -107,7 +109,7 @@ class SceneDeriver(
         val decoded = SceneJson.decode(bytes)
         if (decoded is SceneDecodeResult.Failure)
             return invalidScene(decoded.problems.map(::toProblem))
-        val document = (decoded as SceneDecodeResult.Success).scene
+        var document = (decoded as SceneDecodeResult.Success).scene
         val catalogs =
             try {
                 catalogResolver.resolve(document.catalogs)
@@ -122,6 +124,44 @@ class SceneDeriver(
         val validation =
             SceneValidation.validateCatalogs(document, catalogs.assets, catalogs.actions)
         if (!validation.isValid) return invalidScene(validation.problems.map(::toProblem))
+        val normalization =
+            try {
+                normalizationAssets?.invoke()
+            } catch (failure: gg.grounds.catalog.CatalogContentException) {
+                null
+            }
+        normalization?.let { target ->
+            val source = catalogs.assets
+            // Catalog identity is exact. A newer catalog may add capabilities, but must not
+            // remove or change the semantics of any source definition during normalization.
+            val compatible =
+                source.id == target.id &&
+                    referencedAssets(document).all { key ->
+                        val old = source.assets.getValue(key)
+                        target.assets[key]?.let { current ->
+                            old.kind == current.kind &&
+                                old.defaultBounds == current.defaultBounds &&
+                                current.animations.containsAll(old.animations) &&
+                                old.editorMetadata == current.editorMetadata
+                        } == true
+                    }
+            if (compatible && source.version != target.version) {
+                val projected =
+                    SceneDocument(
+                        document.schemaVersion,
+                        document.id,
+                        document.metadata,
+                        SceneCatalogReferences(
+                            gg.grounds.scene.format.CatalogReference(target.id, target.version),
+                            document.catalogs.actions,
+                        ),
+                        document.groups,
+                        document.elements,
+                    )
+                if (SceneValidation.validateCatalogs(projected, target, catalogs.actions).isValid)
+                    document = projected
+            }
+        }
         val encoded = SceneJson.encode(document)
         if (encoded is SceneEncodeResult.Failure)
             return invalidScene(encoded.problems.map(::toProblem))
@@ -141,11 +181,39 @@ class SceneDeriver(
                         document.catalogs.actions.version,
                     ),
                     requiredActions(document),
+                    SceneShapeFacts.extract(document, shapeRequirements),
                 ),
                 canonical,
             )
         )
     }
+
+    private fun referencedAssets(document: SceneDocument): Set<gg.grounds.scene.format.AssetKey> =
+        buildSet {
+            document.elements.forEach { element ->
+                when (element) {
+                    is gg.grounds.scene.format.Prop -> add(element.asset)
+                    is gg.grounds.scene.format.Npc -> add(element.body)
+                    is gg.grounds.scene.format.CompositeProp ->
+                        element.parts.forEach { add(it.asset) }
+                }
+            }
+            document.elements
+                .filterIsInstance<gg.grounds.scene.format.Npc>()
+                .flatMap { it.bindings }
+                .flatMap { it.actions }
+                .forEach { action ->
+                    when (action) {
+                        is gg.grounds.scene.format.PlaySoundAction -> add(action.sound)
+                        is gg.grounds.scene.format.EmitParticleAction -> add(action.particle)
+                        is gg.grounds.scene.format.ApplicationAction ->
+                            action.arguments.values
+                                .filterIsInstance<gg.grounds.scene.format.AssetArgument>()
+                                .forEach { add(it.value) }
+                        else -> Unit
+                    }
+                }
+        }
 
     private fun requiredActions(document: SceneDocument): List<String> =
         document.elements

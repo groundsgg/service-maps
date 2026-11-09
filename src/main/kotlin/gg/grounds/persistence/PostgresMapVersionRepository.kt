@@ -595,6 +595,7 @@ constructor(
             sha256 == other.sha256 &&
             assetCatalog == other.assetCatalog &&
             actionCatalog == other.actionCatalog &&
+            runtimeFacts == other.runtimeFacts &&
             requiredActions == other.requiredActions.distinct().sortedWith(CODE_POINT_ORDER) &&
             problems == other.problems
 
@@ -634,6 +635,8 @@ constructor(
             scene =
                 SceneProjection(
                     status = sceneStatus(),
+                    runtimeFacts =
+                        SceneRuntimeFactProjection.read(getString("scene_runtime_facts")),
                     schemaVersion = getString("scene_schema_version"),
                     sha256 = getString("scene_sha256"),
                     assetCatalog = catalog("asset_catalog_id", "asset_catalog_version"),
@@ -709,6 +712,7 @@ constructor(
             }
 
     private fun clearSceneCollections(c: Connection, mapId: UUID, version: Int) {
+        SceneRuntimeFactProjection.write(c, mapId, version, null)
         c.prepareStatement("DELETE FROM map_version_required_action WHERE map = ? AND version = ?")
             .use { ps ->
                 ps.setObject(1, mapId)
@@ -731,6 +735,7 @@ constructor(
         scene: SceneProjection,
     ) {
         clearSceneCollections(c, mapId, version)
+        SceneRuntimeFactProjection.write(c, mapId, version, scene.runtimeFacts)
         c.prepareStatement(
                 """
                 INSERT INTO map_version_required_action (map, version, action_id)
@@ -810,7 +815,7 @@ constructor(
             SELECT map, version, state, bundle_sha256, source_sha256, source_key, manifest_sha256,
                    parent_version, size_bytes, present_chunks, est_loaded_mib,
                    derive_attempt, derive_failure_scope, derive_retryable, derive_requested,
-                   scene_present, scene_schema_version, scene_sha256,
+                   scene_present, scene_schema_version, scene_sha256, scene_runtime_facts,
                    asset_catalog_id, asset_catalog_version, action_catalog_id, action_catalog_version,
                    published_by_sub, note, created_at,
                    (SELECT trust FROM map WHERE id = map_version.map) AS map_trust

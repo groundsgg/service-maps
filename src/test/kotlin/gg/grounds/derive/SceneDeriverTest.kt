@@ -19,6 +19,84 @@ import org.junit.jupiter.api.Test
 
 class SceneDeriverTest {
     @Test
+    fun `unused source definitions do not prevent compatible normalization`() {
+        val key = AssetKey("grounds:unused")
+        val source =
+            AssetCatalog(
+                navigatorAssets.id,
+                navigatorAssets.version,
+                navigatorAssets.resourcePackCompatibility,
+                navigatorAssets.assets +
+                    (key to AssetDefinition(key, AssetKind.PROP, emptySet(), null, emptyMap())),
+            )
+        val result =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                deriveNavigatorScene("2", target = targetCatalog(), sourceAssets = source),
+            )
+        assertEquals("2", result.scene.assetCatalog?.version)
+    }
+
+    @Test
+    fun `invalid operator normalization target preserves valid authored content`() {
+        val result =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                deriveNavigatorScene("2", targetFailure = true),
+            )
+        assertEquals("1", result.scene.assetCatalog?.version)
+    }
+
+    @Test
+    fun `upload synchronizes an older compatible catalog without changing authored source`() {
+        val target = targetCatalog()
+        val result =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                deriveNavigatorScene("2", target = target),
+            )
+        assertEquals("2", result.scene.assetCatalog?.version)
+        assertEquals("a".repeat(64), CanonicalJson.readManifest(result.manifest).sourceSha256)
+        assertEquals(listOf("grounds:lobby/open_navigator"), result.scene.requiredActions)
+    }
+
+    @Test
+    fun `incompatible catalog updates remain authored and can be blocked at live activation`() {
+        val key = AssetKey("grounds:navigator")
+        val original = navigatorAssets.assets.getValue(key)
+        listOf(
+                targetCatalog(assets = emptyMap()),
+                targetCatalog(assets = mapOf(key to targetDefinition(kind = AssetKind.PROP))),
+                targetCatalog(
+                    assets =
+                        mapOf(
+                            key to
+                                targetDefinition(bounds = LocalBounds(ORIGIN, Vec3(2.0, 2.0, 2.0)))
+                        )
+                ),
+                targetCatalog(
+                    assets = mapOf(key to targetDefinition(metadata = mapOf("model" to "changed")))
+                ),
+            )
+            .forEach { target ->
+                val result =
+                    assertInstanceOf(
+                        SceneDerivationOutcome.Valid::class.java,
+                        deriveNavigatorScene("2", target = target),
+                    )
+                assertEquals("1", result.scene.assetCatalog?.version)
+            }
+    }
+
+    @Test
+    fun `source catalog validation still runs before synchronization`() {
+        assertInstanceOf(
+            SceneDerivationOutcome.Invalid::class.java,
+            deriveNavigatorScene("1", target = targetCatalog()),
+        )
+    }
+
+    @Test
     fun `NPC queues derive with the production revision three catalog and invalid modes are rejected`() {
         val catalog =
             gg.grounds.catalog
@@ -373,6 +451,9 @@ class SceneDeriverTest {
             ApplicationAction(ActionKey("grounds:lobby/open_navigator"), emptyMap()),
         includeNavigator: Boolean = true,
         catalog: ActionCatalog = navigatorActions(revision),
+        target: AssetCatalog? = null,
+        sourceAssets: AssetCatalog = navigatorAssets,
+        targetFailure: Boolean = false,
     ): SceneDerivationOutcome {
         val document =
             SceneDocument(
@@ -415,7 +496,11 @@ class SceneDeriverTest {
             assertInstanceOf(SceneEncodeResult.Success::class.java, SceneJson.encode(document))
                 .bytes
         return SceneDeriver(
-                SceneCatalogResolver { ResolvedSceneCatalogs(navigatorAssets, catalog) }
+                SceneCatalogResolver { ResolvedSceneCatalogs(sourceAssets, catalog) },
+                normalizationAssets =
+                    if (targetFailure) {
+                        { throw CatalogContentException("operator target missing") }
+                    } else target?.let { { it } },
             )
             .derive(
                 ByteArrayInputStream(archive(mapOf("scene.json" to bytes))),
@@ -423,6 +508,15 @@ class SceneDeriverTest {
                 Files.createTempDirectory("derive"),
             )
     }
+
+    private fun targetDefinition(
+        kind: AssetKind = AssetKind.NPC_BODY,
+        bounds: LocalBounds? = null,
+        metadata: Map<String, String> = emptyMap(),
+    ) = AssetDefinition(AssetKey("grounds:navigator"), kind, emptySet(), bounds, metadata)
+
+    private fun targetCatalog(assets: Map<AssetKey, AssetDefinition> = navigatorAssets.assets) =
+        AssetCatalog(navigatorAssets.id, "2", navigatorAssets.resourcePackCompatibility, assets)
 
     private val navigatorAssets =
         AssetCatalog(

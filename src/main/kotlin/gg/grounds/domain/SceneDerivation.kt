@@ -30,4 +30,16 @@ data class SceneProjection(
     val actionCatalog: CatalogReference?,
     val requiredActions: List<String>,
     val problems: List<DeriveProblem>,
+    val runtimeFacts: Map<String, String>? = null,
 )
+
+/** Finite operator-selected metadata, extracted without starting a game server. */
+data class SceneShapeRequirements(
+    val elements: Set<String> = emptySet(),
+    val prefixes: Set<String> = emptySet(),
+) {
+    init {
+        require(elements.size <= 128 && prefixes.size <= 32)
+        require((elements + prefixes).all { it.matches(Regex("[a-zA-Z0-9_-]{1,128}")) })
+    }
+}

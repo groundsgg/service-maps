@@ -125,6 +125,14 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
         }
     }
 
+    override fun findById(id: UUID): MapRecord? =
+        dataSource.connection.use { c ->
+            c.prepareStatement("$SELECT_COLUMNS WHERE id = ?").use { ps ->
+                ps.setObject(1, id)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.toMapRecord() else null }
+            }
+        }
+
     override fun find(address: MapAddress): MapRecord? =
         dataSource.connection.use { c -> readOn(c, address) }
 
@@ -176,6 +184,7 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
         version: Int,
         scene: SceneProjection,
     ) {
+        SceneRuntimeFactProjection.write(c, mapId, version, scene.runtimeFacts)
         c.prepareStatement("DELETE FROM map_version_required_action WHERE map = ? AND version = ?")
             .use { ps ->
                 ps.setObject(1, mapId)

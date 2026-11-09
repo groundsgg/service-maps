@@ -11,6 +11,49 @@ import org.junit.jupiter.api.Test
 
 class DeriveCoordinatorTest {
     @Test
+    fun `normalization stays scoped to the configured map address`() {
+        val policy =
+            gg.grounds.compatibility.MapRuntimeCompatibility(
+                "stage",
+                """[{"environment":"stage","address":"lobby/mainlobby","image":"ghcr.io/groundsgg/lobby@sha256:${"a".repeat(64)}","schemaVersions":["1"],"assetCatalog":{"id":"grounds:assets","version":"current"},"actionCatalogs":[{"id":"grounds:actions","version":"3"}],"supportedActions":[],"normalizeUploads":true}]""",
+            )
+        listOf("lobby/mainlobby", "arena/other").forEach { address ->
+            val row = version()
+            val record =
+                gg.grounds.domain.MapRecord(
+                    row.mapId,
+                    gg.grounds.domain.MapAddress.parse(address)!!,
+                    "test",
+                    gg.grounds.domain.MapKind.LOBBY,
+                    false,
+                    gg.grounds.domain.MapTrust.FIRST_PARTY,
+                    "builder",
+                    null,
+                    java.time.Instant.EPOCH,
+                )
+            val maps =
+                java.lang.reflect.Proxy.newProxyInstance(
+                    javaClass.classLoader,
+                    arrayOf(gg.grounds.domain.MapRepository::class.java),
+                ) { _, method, _ ->
+                    if (method.name == "findById") record else error("unexpected repository call")
+                } as gg.grounds.domain.MapRepository
+            val jobs = RecordingJobs()
+            DeriveCoordinator(FakeVersions(row), jobs, { emptyList() }, true, policy, maps)
+                .coordinate(row.mapId, row.version)
+            val actual =
+                CanonicalJson.readRequest(jobs.requests.single().requestJson.toByteArray())
+                    .normalizationCatalog
+            assertEquals(
+                if (address == "lobby/mainlobby")
+                    gg.grounds.domain.CatalogReference("grounds:assets", "current")
+                else null,
+                actual,
+            )
+        }
+    }
+
+    @Test
     fun `third immutable catalog reaches the worker request without channel clipping`() {
         val version = version()
         val repository = FakeVersions(version)
