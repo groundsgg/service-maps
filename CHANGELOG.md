@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/groundsgg/service-maps/compare/v1.13.1...v1.14.0) (2026-11-09)
+
+
+### Features
+
+* **maps:** synchronize compatible catalogs and guard live activation ([#108](https://github.com/groundsgg/service-maps/issues/108)) ([efc67c7](https://github.com/groundsgg/service-maps/commit/efc67c78cbb15d798f621481855da803d19d2ea7))
+
 ## [1.13.1](https://github.com/groundsgg/service-maps/compare/v1.13.0...v1.13.1) (2026-11-09)
 
 
