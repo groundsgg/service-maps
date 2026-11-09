@@ -348,7 +348,9 @@ def contracts(c):
         'gg.grounds.derive.DeriveWorkerMain', '--request-env', 'DERIVE_REQUEST_JSON']
     request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
     assert request['sourceSha256'] == digest(bundle) and request['attempt'] == deriving['deriveAttempt']
-    assert [candidate['channel'] for candidate in request['catalogCandidates']] == ['stable', 'edge']
+    assert [candidate['channel'] for candidate in request['catalogCandidates']] == ['stable', 'edge'] + ['pinned'] * 3
+    assert [candidate['version'] for candidate in request['catalogCandidates'] if candidate['channel'] == 'pinned'] == [
+        f'0.0.0-retained.{i}' for i in range(3)]
     c.execute(job)
     def derived():
         version = c.request(path + '/versions/' + str(deriving['version']), token=staff)
