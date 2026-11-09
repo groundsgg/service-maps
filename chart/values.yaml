@@ -40,7 +40,7 @@ derive:
     packSet: grounds-global
     cacheRoot: /tmp/service-maps/packsets
     # Additional immutable catalog metadata; operator configuration, never map input.
-    # At most two entries. Each URI is under <baseUri>/resourcepacks/catalog-pins/.
+    # At most eight entries. Each URI is under <baseUri>/resourcepacks/catalog-pins/.
     pinned: []
 
 service:
