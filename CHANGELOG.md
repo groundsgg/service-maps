@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/groundsgg/service-maps/compare/v1.13.0...v1.13.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **maps:** retain editor catalogs alongside published versions ([8308cb4](https://github.com/groundsgg/service-maps/commit/8308cb45c9b68886355840315cfc9398ff47cfcd))
+
 ## [1.13.0](https://github.com/groundsgg/service-maps/compare/v1.12.0...v1.13.0) (2026-11-09)
 
 
