@@ -109,22 +109,32 @@ control where a map is deployed. No PackSet channel or Minecraft client pack is 
 
 ## Lit copies
 
-Converted maps carry no light, and a game server that lights a map itself does it on the tick
-while players wait. With derivation enabled (`MAPS_LIT_ENABLED`, default true), every **pinned**
-bundle gets a lit copy once per light format: the lit worker (`lit-worker/`, a plain JVM
-program in the same image, run as a Job like the derive worker) lights it with
-grounds-minestom-runtime's `MapLight` — the code and Minestom build the game servers use — and
-the copy is published content-addressed beside the bundle. The pin file entry then carries
+With derivation and lighting enabled, every **published** bundle gets a prepared light copy
+before its first live pin. The standalone JVM worker (`lit-worker/`) uses the same `MapLight`
+and Minestom build as the game servers. Its accepted result is published content-addressed beside
+the source bundle. No upload moves a live pin automatically.
+
+The exact-version response carries `preparation`: `QUEUED`, `DERIVING`, `AWAITING_REVIEW`,
+`WAITING_FOR_LIGHT`, `LIGHTING`, `READY`, `FAILED` or `UNAVAILABLE`, together with the required
+`lightFormat`. Raw `PUBLISHED` means the immutable bundle exists; only `READY` means it can go
+live. The build-server client waits for that confirmation and reports the current step.
+A live-pin request before readiness returns 409 without changing the pin or its history.
+Explicitly disabled preparation retains the legacy publication path and reports `UNAVAILABLE`.
+
+A pin file entry names the accepted prepared transport:
 
 ```json
-"lit": {"format": 1, "bundleSha256": "…", "bundleUrl": "https://…/bundle/sha256/…tar.zst"}
+"lit": {"format": 2, "bundleSha256": "…", "bundleUrl": "https://…/bundle/sha256/…tar.zst"}
 ```
 
-and every environment pinning that bundle has its pin file republished. Versions and pins never
-change. Lit copies live in `map_lit`, keyed by bundle digest and light format; one bundle is lit
-at a time, a failure is retried up to three times, and lighting fills `present_chunks` and
-`est_loaded_mib` of the bundle's versions. `MAPS_LIT_FORMAT` must equal the worker's
-`MapLight.FORMAT`; raising both lights every pinned bundle again.
+Versions and source digests never change. `map_lit` deduplicates by bundle digest and light
+format. One worker runs at a time; failed attempts are retried up to three times. Three new
+bundle claims prefer recent uploads and the fourth serves the oldest eligible work. Existing
+records preserve this position across API restarts. A shared digest's raw and prepared objects
+are made available in each required published trust bucket, including cross-trust forks.
+Lighting fills `present_chunks` and `est_loaded_mib`. `MAPS_LIT_FORMAT` must equal the worker's
+`MapLight.FORMAT`; raising both prepares published bundles again. Existing pinned environments
+are republished as their prepared copies become available.
 
 ## Not yet true, and load-bearing
 

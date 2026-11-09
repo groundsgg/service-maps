@@ -25,6 +25,9 @@ data class PinnedMap(
 class NotPublishedException(val version: Int) :
     RuntimeException("version $version is not published and cannot be pinned")
 
+class NotPreparedException(val version: Int, val format: Int) :
+    RuntimeException("version $version is still being prepared for light format $format")
+
 interface MapPinRepository {
 
     /**

@@ -15,6 +15,7 @@ import gg.grounds.api.MovePinRequest
 import gg.grounds.api.OpenSnapshotRequest
 import gg.grounds.api.OpenedSnapshotDto
 import gg.grounds.api.PinDto
+import gg.grounds.api.PreparationDto
 import gg.grounds.api.ProblemDto
 import gg.grounds.api.PublishVersionRequest
 import gg.grounds.api.SceneDto
@@ -52,6 +53,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             ForkRequest::class,
             MovePinRequest::class,
             VersionDto::class,
+            PreparationDto::class,
             SceneDto::class,
             CatalogReferenceDto::class,
             DeriveProblemDto::class,
