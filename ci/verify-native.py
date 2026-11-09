@@ -477,6 +477,14 @@ def main():
             contract.s3('/ugc', 'PUT')
             contract.run('broker', 'nats:2.11-alpine', ports=(4222,))
             eventually(lambda: docker('exec', contract.name + '-database', 'pg_isready', '-h', '127.0.0.1', '-U', 'maps', '-d', 'maps'))
+            # Retain the editor snapshot alongside the catalogs of two published versions.
+            # Startup must accept this configuration in the actual native artifact.
+            retained_catalogs = [dict(
+                channel='pinned', id='grounds:resourcepacks', version=f'0.0.0-retained.{i}',
+                coordinate=f'gg.grounds:resourcepacks-catalog:0.0.0-retained.{i}',
+                file='catalog.jar', sha256=f'{i + 1:064x}', size=1,
+                uri=f'https://maps-fixtures/resourcepacks/catalog-pins/contract/0.0.0-retained.{i}/{i + 1:064x}/catalog.jar',
+            ) for i in range(3)]
             env = {'POSTGRES_URL': 'jdbc:postgresql://database:5432/maps?currentSchema=maps',
                    'POSTGRES_USER': 'maps', 'POSTGRES_PASSWORD': 'contract', 'NATS_URL': 'nats://broker:4222',
                    'GROUNDS_OIDC_SERVER_URL': 'http://maps-fixtures:8080/realm',
@@ -486,6 +494,7 @@ def main():
                    'MAPS_DERIVE_ENABLED': 'true', 'MAPS_DERIVE_IMAGE': WORKER_DIGEST,
                    'MAPS_DERIVE_POLL_INTERVAL': '1s', 'MAPS_LIT_POLL_INTERVAL': '1s',
                    'MAPS_CATALOGS_BASE_URI': 'https://maps-fixtures', 'MAPS_CATALOGS_PACK_SET': 'global',
+                   'MAPS_CATALOGS_PINNED_JSON': json.dumps(retained_catalogs),
                    'QUARKUS_KUBERNETES_CLIENT_API_SERVER_URL': 'http://maps-fixtures:8080',
                    'QUARKUS_KUBERNETES_CLIENT_TRUST_CERTS': 'true', 'QUARKUS_KUBERNETES_CLIENT_NAMESPACE': 'maps',
                    'JAVA_TOOL_OPTIONS': '-Djavax.net.ssl.trustStore=/fixtures/trust.p12 -Djavax.net.ssl.trustStorePassword=changeit'}
