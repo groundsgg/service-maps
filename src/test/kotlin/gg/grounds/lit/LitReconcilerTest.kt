@@ -128,6 +128,26 @@ class LitReconcilerTest {
     }
 
     @Test
+    fun `withdrawn content is not promoted into a default trust bucket`() {
+        lits.candidates += LitCandidate(sha, MapTrust.UNTRUSTED)
+        reconciler.step(now)
+        val attempt = lits.rows.getValue(sha).attempt
+        blobs.objects[LitReconciler.resultKey(sha, 1, attempt)] =
+            """{"schemaVersion":1,"format":1,"bundleSha256":"$sha","litSha256":"$litSha",
+               "litSize":1234,"presentChunks":900,"keptChunks":300,"estLoadedMib":10}"""
+                .toByteArray()
+        blobs.sizes[LitReconciler.litKey(sha, 1, attempt)] = 1234
+        jobs.status = LitJobStatus.SUCCEEDED
+        // All referencing versions were withdrawn while the worker was running.
+        lits.allTrusts[sha] = emptyList()
+
+        reconciler.step(now.plusSeconds(60))
+
+        assertTrue(blobs.promoted.isEmpty())
+        assertEquals(LitState.FAILED, lits.rows.getValue(sha).state)
+    }
+
+    @Test
     fun `the deadline also bounds final publication after a worker succeeds`() {
         lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
         reconciler.step(now)

@@ -212,7 +212,11 @@ class LitReconciler(
             fail(current, "the lit bundle is missing or not ${facts.litSize} bytes")
             return
         }
-        val trusts = lits.publishedTrusts(sha).ifEmpty { listOf(MapTrust.FIRST_PARTY) }
+        val trusts = lits.publishedTrusts(sha)
+        if (trusts.isEmpty()) {
+            fail(current, "the source bundle is no longer published")
+            return
+        }
         trusts.forEach { trust ->
             publication?.ensure(sha, trust)
             blobs.promote(work, BlobStore.bundleKey(facts.litSha256), facts.litSize, trust)
