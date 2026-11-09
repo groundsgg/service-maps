@@ -211,6 +211,26 @@ constructor(
         expectedSizeBytes: Long,
         trust: MapTrust,
     ) {
+        copyToPublicFrom(privateBucket, sourceKey, destinationKey, expectedSizeBytes, trust) {
+            headPrivate(sourceKey)
+        }
+    }
+
+    /** Copy an approved immutable object across public trust buckets. */
+    fun copyPublicObject(key: String, source: MapTrust, target: MapTrust, expectedSizeBytes: Long) {
+        copyToPublicFrom(publicBucketFor(source), key, key, expectedSizeBytes, target) {
+            headPublic(key, source)
+        }
+    }
+
+    private fun copyToPublicFrom(
+        sourceBucket: String,
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+        trust: MapTrust,
+        sourceMetadata: () -> BlobMetadata?,
+    ) {
         require(expectedSizeBytes >= 0) { "expected size must be non-negative" }
         val destinationBucket = publicBucketFor(trust)
         val beforeCopy = head(destinationBucket, destinationKey)
@@ -223,7 +243,10 @@ constructor(
             return
         }
 
-        val source = headPrivate(sourceKey) ?: throw noSuchPrivateObject(sourceKey)
+        val source =
+            sourceMetadata()
+                ?: throw (if (sourceBucket == privateBucket) noSuchPrivateObject(sourceKey)
+                else BlobIntegrityException("published source object is missing"))
         requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
         val sourceVersionToken =
             source.eTag
@@ -234,7 +257,7 @@ constructor(
         try {
             client.copyObject(
                 conditionalCopyRequest(
-                    sourceBucket = privateBucket,
+                    sourceBucket = sourceBucket,
                     sourceKey = sourceKey,
                     sourceVersionToken = sourceVersionToken,
                     destinationBucket = destinationBucket,

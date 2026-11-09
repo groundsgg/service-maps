@@ -2,6 +2,7 @@ package gg.grounds.lit
 
 import gg.grounds.blob.BlobMetadata
 import gg.grounds.blob.BlobStore
+import gg.grounds.blob.PublishedBundles
 import gg.grounds.domain.LitFacts
 import gg.grounds.domain.LitRecord
 import gg.grounds.domain.MapLitRepository
@@ -68,10 +69,10 @@ class PublisherPinFiles @Inject constructor(private val publisher: PinFilePublis
 }
 
 /**
- * Lights every pinned bundle once per light format, one bundle at a time.
+ * Lights every published bundle once per light format, one bundle at a time.
  *
- * A pinned version whose bundle has no lit copy of [format] gets one: a Job runs the lit worker on
- * it, the lit bundle is promoted to the bundle's public bucket under its own digest, and every
+ * A published version whose bundle has no lit copy of [format] gets one: a Job runs the lit worker
+ * on it, the lit bundle is promoted to the bundle's public bucket under its own digest, and every
  * environment pinning that bundle gets its pin file republished, now naming the lit copy. Versions
  * and pins never change. Backfilling everything already pinned is simply this loop's first passes;
  * raising [format] lights everything again.
@@ -89,6 +90,7 @@ class LitReconciler(
     private val enabled: Boolean,
     private val format: Int,
     private val timeout: Duration,
+    private val publication: PublishedBundles? = null,
 ) {
     @Inject
     constructor(
@@ -101,8 +103,10 @@ class LitReconciler(
         @ConfigProperty(name = "grounds.maps.lit.enabled", defaultValue = "true")
         litEnabled: Boolean,
         @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "2") format: Int,
-        @ConfigProperty(name = "grounds.maps.lit.timeout", defaultValue = "PT20M") timeout: Duration,
-    ) : this(lits, jobs, blobs, pinFiles, deriveEnabled && litEnabled, format, timeout)
+        @ConfigProperty(name = "grounds.maps.lit.timeout", defaultValue = "PT20M")
+        timeout: Duration,
+        publication: PublishedBundles,
+    ) : this(lits, jobs, blobs, pinFiles, deriveEnabled && litEnabled, format, timeout, publication)
 
     private val log = Logger.getLogger(LitReconciler::class.java)
 
@@ -126,6 +130,19 @@ class LitReconciler(
             follow(current, now)
             return
         }
+        if (publication != null)
+            lits.publishedCopies(format).forEach { copy ->
+                try {
+                    publication.ensure(copy.bundleSha256, copy.trust)
+                    publication.ensure(copy.litSha256, copy.trust, copy.litSize)
+                } catch (_: Exception) {
+                    log.warnf(
+                        "published lighting copy unavailable for %s in %s; retrying",
+                        copy.bundleSha256,
+                        copy.trust,
+                    )
+                }
+            }
         val next = lits.nextCandidate(format, MAX_ATTEMPTS) ?: return
         val attempt = UUID.randomUUID()
         lits.start(next.bundleSha256, format, attempt)
@@ -133,7 +150,11 @@ class LitReconciler(
             LitRequest(
                 format = format,
                 bundleSha256 = next.bundleSha256,
-                sourceUrl = blobs.sourceUrl(next.bundleSha256, next.trust),
+                sourceUrl =
+                    blobs.sourceUrl(
+                        next.bundleSha256,
+                        publication?.sourceTrust(next.bundleSha256, next.trust) ?: next.trust,
+                    ),
                 litUrl = blobs.workUrl(litKey(next.bundleSha256, format, attempt)),
                 resultUrl = blobs.workUrl(resultKey(next.bundleSha256, format, attempt)),
             )
@@ -191,8 +212,11 @@ class LitReconciler(
             fail(current, "the lit bundle is missing or not ${facts.litSize} bytes")
             return
         }
-        val trust = lits.trustOf(sha) ?: MapTrust.FIRST_PARTY
-        blobs.promote(work, BlobStore.bundleKey(facts.litSha256), facts.litSize, trust)
+        val trusts = lits.publishedTrusts(sha).ifEmpty { listOf(MapTrust.FIRST_PARTY) }
+        trusts.forEach { trust ->
+            publication?.ensure(sha, trust)
+            blobs.promote(work, BlobStore.bundleKey(facts.litSha256), facts.litSize, trust)
+        }
         lits.succeed(sha, format, current.attempt, facts)
         log.infof(
             "lit bundle %s as %s (%d of %d chunks kept, ~%d MiB loaded)",
