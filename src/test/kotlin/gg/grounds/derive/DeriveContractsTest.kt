@@ -14,6 +14,45 @@ import org.junit.jupiter.api.Test
 
 class DeriveContractsTest {
     @Test
+    fun `normalization target round trips without changing old request compatibility`() {
+        val original =
+            DeriveRequest(
+                mapId = UUID.randomUUID(),
+                version = 1,
+                attempt = UUID.randomUUID(),
+                sourceSha256 = digest(1),
+                sourceUrl = URI("https://example.test/source"),
+                bundleUrl = URI("https://example.test/bundle"),
+                manifestUrl = URI("https://example.test/manifest"),
+                resultUrl = URI("https://example.test/result"),
+                catalogCandidates = emptyList(),
+            )
+        assertEquals(
+            null,
+            CanonicalJson.readRequest(CanonicalJson.write(original)).normalizationCatalog,
+        )
+        val target = CatalogReference("grounds:assets", "new-runtime")
+        assertEquals(
+            target,
+            CanonicalJson.readRequest(
+                    CanonicalJson.write(original.copy(normalizationCatalog = target))
+                )
+                .normalizationCatalog,
+        )
+        assertThrows(JsonMappingException::class.java) {
+            CanonicalJson.readRequest(
+                CanonicalJson.write(original)
+                    .decodeToString()
+                    .replace(
+                        "\"version\":1",
+                        "\"normalizationCatalog\":{\"id\":3,\"version\":true},\"version\":1",
+                    )
+                    .toByteArray()
+            )
+        }
+    }
+
+    @Test
     fun `canonical JSON is stable sorted and newline terminated`() {
         val manifest =
             DerivedManifest(

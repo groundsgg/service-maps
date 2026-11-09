@@ -472,6 +472,7 @@ constructor(
                                 scene.actionCatalog,
                                 scene.requiredActions,
                                 emptyList(),
+                                scene.runtimeFacts,
                             )
                         else
                             SceneProjection(

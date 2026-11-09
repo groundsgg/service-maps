@@ -119,7 +119,24 @@ object DeriveWorkerMain {
         catalogLoaderFactory(catalogDir, loopback).use { loader ->
             val resolver = workerResolver(request, loader, DefaultNamespaceCatalogResolver())
             return Files.newInputStream(source).use {
-                SceneDeriver(resolver).derive(it, request.sourceSha256, deriveDirectory)
+                SceneDeriver(
+                        resolver,
+                        shapeRequirements = request.shapeRequirements,
+                        normalizationAssets =
+                            request.normalizationCatalog?.let { reference ->
+                                {
+                                    try {
+                                        loadAssets(reference, request, loader)
+                                    } catch (failure: ContentFailure) {
+                                        throw gg.grounds.catalog.CatalogContentException(
+                                            "Operator normalization catalog unavailable",
+                                            failure,
+                                        )
+                                    }
+                                }
+                            },
+                    )
+                    .derive(it, request.sourceSha256, deriveDirectory)
             }
         }
     }
@@ -130,18 +147,7 @@ object DeriveWorkerMain {
         actions: NamespaceCatalogResolver,
     ) = SceneCatalogResolver { references: SceneCatalogReferences ->
         val asset = references.assets
-        val candidate =
-            request.catalogCandidates.singleOrNull { it.version == asset.version }
-                ?: throw ContentFailure("no exact asset catalog candidate")
-        val assets =
-            try {
-                loader.load(candidate)
-            } catch (e: IllegalArgumentException) {
-                throw ContentFailure("asset catalog is invalid")
-            }
-        if (assets.id.value != asset.id.value || assets.version != asset.version) {
-            throw ContentFailure("asset catalog identity does not match")
-        }
+        val assets = loadAssets(CatalogReference(asset.id.value, asset.version), request, loader)
         val namespace = references.actions.id.value.substringBefore(':')
         if (namespace != "grounds" || !references.actions.id.value.startsWith("$namespace:")) {
             throw ContentFailure("action catalog namespace is invalid")
@@ -157,6 +163,25 @@ object DeriveWorkerMain {
                 )
                 .catalog,
         )
+    }
+
+    private fun loadAssets(
+        reference: CatalogReference,
+        request: DeriveRequest,
+        loader: CatalogJarLoader,
+    ): gg.grounds.scene.format.AssetCatalog {
+        val candidate =
+            request.catalogCandidates.singleOrNull { it.version == reference.version }
+                ?: throw ContentFailure("no exact asset catalog candidate")
+        val assets =
+            try {
+                loader.load(candidate)
+            } catch (failure: IllegalArgumentException) {
+                throw ContentFailure("asset catalog is invalid")
+            }
+        if (assets.id.value != reference.id || assets.version != reference.version)
+            throw ContentFailure("asset catalog identity does not match")
+        return assets
     }
 
     private fun success(request: DeriveRequest, result: SceneDerivationOutcome.Valid) =

@@ -125,6 +125,10 @@ spec:
             - name: MAPS_CATALOGS_PINNED_JSON
               value: {{ .Values.derive.catalog.pinned | default list | toJson | quote }}
             {{- end }}
+            - name: MAPS_RUNTIME_ENVIRONMENTS
+              value: {{ .Values.runtimeCompatibility.environments | default list | join "," | default "disabled" | quote }}
+            - name: MAPS_RUNTIME_TARGETS_JSON
+              value: {{ .Values.runtimeCompatibility.targets | default list | toJson | quote }}
           startupProbe:
             # Flyway runs at boot, so the first readiness can be slower than the steady state.
             httpGet: { path: /q/health/started, port: http }

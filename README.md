@@ -189,3 +189,41 @@ snapshots, quotas.
 > notices and retries by hand. A builder cannot notice and cannot retry — they see an
 > unexplained hang. A watch is an optimisation; the reconciler is the correctness
 > mechanism.
+
+### Runtime compatibility at live activation
+
+`/map push` prepares a version and its light data. The Portal remains the manual live
+activation surface. `runtimeCompatibility.environments` enables an additional API gate:
+authored scenes need a matching target contract for the environment and map address.
+A refusal returns HTTP 409 with its reason in `detail` before changing the pin, history,
+CDN pin file or NATS announcement. Existing lobbies keep serving their current map.
+Maps without scenes remain usable unless a target declares `requireScene: true`.
+
+Each operator-owned target contains `environment`, `address`, immutable `image` digest,
+`schemaVersions`, exact `assetCatalog`, accepted `actionCatalogs`, `supportedActions`,
+and optional `requireScene`/`normalizeUploads` booleans. Maintain this metadata alongside
+its runtime image deployment; it is a capability declaration, not a trial server or a
+startup guarantee. Map uploads cannot supply or override it. Enabled environments with
+missing scene contracts fail closed.
+
+A target with `normalizeUploads: true` selects the canonical upload catalog from the
+existing trusted catalog candidates. All normalization targets must agree on that catalog.
+The derive worker validates the authored scene against its exact source catalog, verifies
+that the target retains the referenced source definitions' kind, bounds, metadata and animations,
+and validates again after projecting only the catalog reference. The original upload and
+workspace remain unchanged. Incompatible catalogs retain their original reference so
+preparation can finish and the Portal can explain why live activation is blocked. No
+runtime code is loaded from author-supplied locations. Existing immutable versions are
+not rewritten; republish the source as a new version to synchronize it.
+
+Private runtime profiles can declare `requiredElements` (element ID → structural SHA-256)
+and `elementCounts` (ID prefix → count). Derivation records only the selected structural
+facts, and activation rejects missing/changed facts. Fingerprints include type, body,
+look, collision, bounds, rotation and scale; world position, labels and bindings remain
+editable. `legacySceneHashes` is a bounded operator allowlist for independently verified
+pre-migration scenes; it is not a map-author override or a requirement for new uploads.
+
+Rollout order: deploy the new worker image first, then enable normalization/shape metadata
+in the API. Old workers intentionally reject unknown request fields rather than silently
+skipping a requested normalization or scene proof. Contracts are scoped to the uploaded
+map address; another map is never normalized against a lobby's private target.

@@ -112,3 +112,10 @@ monitoring:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Exact capabilities of the deployed runtime. Compatibility failures are reported by
+# the live activation API, never as a build-server upload failure. Enabled environments
+# reject authored scenes without a matching address-specific contract.
+runtimeCompatibility:
+  environments: []
+  targets: []
