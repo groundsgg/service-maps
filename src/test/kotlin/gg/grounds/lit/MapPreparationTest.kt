@@ -81,6 +81,19 @@ class MapPreparationTest {
         assertEquals("DERIVATION_FAILED", status.failureCode)
     }
 
+    @Test
+    fun `forks retain raw and cached light delivery when lighting is disabled`() {
+        val disabled = MapPreparation(lits, bundles, MapLightPolicy(true, false, 2))
+        objects.values[sha to MapTrust.FIRST_PARTY] = BlobMetadata(100)
+        lits.row = record(LitState.LIT)
+
+        disabled.ensureDelivery(version(), MapTrust.UNTRUSTED)
+
+        assertEquals(BlobMetadata(100), objects.values[sha to MapTrust.UNTRUSTED])
+        assertEquals(BlobMetadata(1000), objects.values[litSha to MapTrust.UNTRUSTED])
+        assertEquals("UNAVAILABLE", disabled.status(version(trust = MapTrust.UNTRUSTED)).stage)
+    }
+
     private fun record(state: LitState) =
         LitRecord(sha, 2, state, UUID.randomUUID(), 1, litSha, 1000, Instant.EPOCH)
 

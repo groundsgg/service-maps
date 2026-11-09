@@ -50,7 +50,6 @@ constructor(
      * Forks share content, but a changed trust must not leave their public URLs pointing at 404s.
      */
     fun ensureDelivery(version: MapVersionRecord, trust: MapTrust) {
-        if (!required) return
         val sha = requireNotNull(version.bundleSha256)
         bundles.ensure(sha, trust, version.sizeBytes)
         val light = lits.find(sha, policy.format)
