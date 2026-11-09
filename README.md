@@ -84,7 +84,7 @@ promoted by that path.
 
 The normal derivation candidates remain the current Stable and Edge PackSet catalogs. To retain
 an exact private or historical catalog independently of moving channels, operators may configure
-at most two additional references in `derive.catalog.pinned` (or `MAPS_CATALOGS_PINNED_JSON`).
+at most eight additional references in `derive.catalog.pinned` (or `MAPS_CATALOGS_PINNED_JSON`).
 Each entry has the worker candidate fields `channel`, `id`, `version`, `coordinate`, `file`,
 `uri`, `sha256`, and `size`:
 
