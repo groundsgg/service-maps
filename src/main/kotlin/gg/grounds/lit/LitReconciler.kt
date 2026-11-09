@@ -98,15 +98,11 @@ class LitReconciler(
         jobs: LitJobGateway,
         blobs: LitBlobs,
         pinFiles: PinFiles,
-        @ConfigProperty(name = "grounds.maps.derive.enabled", defaultValue = "false")
-        deriveEnabled: Boolean,
-        @ConfigProperty(name = "grounds.maps.lit.enabled", defaultValue = "true")
-        litEnabled: Boolean,
-        @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "2") format: Int,
+        policy: MapLightPolicy,
         @ConfigProperty(name = "grounds.maps.lit.timeout", defaultValue = "PT20M")
         timeout: Duration,
         publication: PublishedBundles,
-    ) : this(lits, jobs, blobs, pinFiles, deriveEnabled && litEnabled, format, timeout, publication)
+    ) : this(lits, jobs, blobs, pinFiles, policy.enabled, policy.format, timeout, publication)
 
     private val log = Logger.getLogger(LitReconciler::class.java)
 
@@ -165,6 +161,10 @@ class LitReconciler(
     private fun follow(current: LitRecord, now: Instant) {
         val name = jobName(current.bundleSha256, format, current.attempt)
         val age = Duration.between(current.startedAt, now)
+        if (age > timeout) {
+            fail(current, "the lighting preparation timed out")
+            return
+        }
         when (jobs.status(name)) {
             LitJobStatus.SUCCEEDED -> accept(current)
             LitJobStatus.FAILED -> fail(current, "the lighting job failed")

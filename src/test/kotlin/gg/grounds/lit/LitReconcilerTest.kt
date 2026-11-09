@@ -128,6 +128,25 @@ class LitReconcilerTest {
     }
 
     @Test
+    fun `the deadline also bounds final publication after a worker succeeds`() {
+        lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
+        reconciler.step(now)
+        val attempt = lits.rows.getValue(sha).attempt
+        blobs.objects[LitReconciler.resultKey(sha, 1, attempt)] =
+            """{"schemaVersion":1,"format":1,"bundleSha256":"$sha","litSha256":"$litSha",
+               "litSize":1234,"presentChunks":900,"keptChunks":300,"estLoadedMib":10}"""
+                .toByteArray()
+        blobs.sizes[LitReconciler.litKey(sha, 1, attempt)] = 1234
+        blobs.failPromotion = true
+        jobs.status = LitJobStatus.SUCCEEDED
+
+        reconciler.step(now.plusSeconds(21 * 60L))
+
+        assertEquals(LitState.FAILED, lits.rows.getValue(sha).state)
+        assertTrue(lits.reasons.getValue(sha).contains("timed out"))
+    }
+
+    @Test
     fun `a lit bundle of the wrong size fails the attempt`() {
         lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
         reconciler.step(now)
@@ -273,6 +292,7 @@ class LitReconcilerTest {
         val objects = mutableMapOf<String, ByteArray>()
         val sizes = mutableMapOf<String, Long>()
         val promoted = mutableListOf<Triple<String, String, MapTrust>>()
+        var failPromotion = false
 
         override fun sourceUrl(bundleSha256: String, trust: MapTrust) = "source:$bundleSha256"
 
@@ -289,6 +309,7 @@ class LitReconcilerTest {
             sizeBytes: Long,
             trust: MapTrust,
         ) {
+            if (failPromotion) error("temporary public storage outage")
             promoted += Triple(sourceKey, destinationKey, trust)
         }
     }

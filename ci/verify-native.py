@@ -165,6 +165,16 @@ class Contract:
         assert jobs, f'no {kind} Job was created'
         return jobs[-1]
 
+    def light_job(self, bundle_sha):
+        matching = []
+        for job in self.jobs('service-maps-lit'):
+            container = job['spec']['template']['spec']['containers'][0]
+            request = json.loads(next(e['value'] for e in container['env'] if e['name'] == 'LIT_REQUEST_JSON'))
+            if request['bundleSha256'] == bundle_sha:
+                matching.append(job)
+        assert matching, 'no lighting Job for the exact published bundle'
+        return matching[-1]
+
     def execute(self, job):
         pod = job['spec']['template']['spec']
         container = pod['containers'][0]
@@ -253,6 +263,19 @@ def contracts(c):
     assert c.s3('/public/bundle/sha256/' + digest(bundle)[:2] + '/' + digest(bundle) + '.tar.zst') == bundle
     c.request(path + '/pins/stage', 'POST', {'version': 1}, creator, 403)
 
+    def ready_version(number):
+        value = c.request(path + '/versions/' + str(number), token=staff)
+        assert value['preparation']['lightFormat'] == 2, value
+        assert value['preparation']['stage'] == 'READY', value
+        return value
+
+    initial = c.request(path + '/versions/1', token=staff)
+    assert initial['preparation']['stage'] in ('WAITING_FOR_LIGHT', 'LIGHTING'), initial
+    c.request(path + '/pins/stage', 'POST', {'version': 1}, staff, 409)
+    c.execute(eventually(lambda: c.light_job(digest(bundle))))
+    eventually(lambda: ready_version(1))
+    print('Maps: published unpinned bundle is lit, exact-version status becomes READY, premature live pin refused')
+
     subscribers = []
     try:
         for _ in range(2):
@@ -266,7 +289,7 @@ def contracts(c):
         assert pin['pinFilePublished'] is True and pin['movedBySub'] == 'staff'
         pinfile = c.s3('/public/pins/stage.json')
         entry = pinfile['maps'][address]
-        assert entry['version'] == 1 and entry['bundleSha256'] == digest(bundle) and 'lit' not in entry
+        assert entry['version'] == 1 and entry['bundleSha256'] == digest(bundle) and entry['lit']['format'] == 2
         assert entry['bundleUrl'].startswith('https://maps.grounds.gg/bundle/sha256/')
         assert c.request(path + '/pins', token=staff)[0]['environment'] == 'stage'
         for _, stream in subscribers:
@@ -281,6 +304,18 @@ def contracts(c):
     fork = c.request(path + '/forks', 'POST', {'target': 'grounds/native-fork', 'fromVersion': 1}, staff, 201)
     assert fork['forkedFrom'].endswith('@1')
     uuid.UUID(fork['forkedFrom'].split('@')[0])
+    creator_fork = '/v1/maps/u/creator/prepared-fork'
+    c.request(path + '/forks', 'POST', {'target': 'u/creator/prepared-fork', 'fromVersion': 1}, creator, 201)
+    copied = c.request(creator_fork + '/versions/1', token=creator)
+    assert copied['preparation']['stage'] == 'READY', copied
+    c.request(creator_fork + '/versions/1', token=other, status=404)
+    raw_key = '/bundle/sha256/' + digest(bundle)[:2] + '/' + digest(bundle) + '.tar.zst'
+    assert c.s3('/ugc' + raw_key) == bundle
+    lit_sha = entry['lit']['bundleSha256']
+    lit_key = '/bundle/sha256/' + lit_sha[:2] + '/' + lit_sha + '.tar.zst'
+    assert c.s3('/ugc' + lit_key) == c.s3('/public' + lit_key)
+    assert len(c.jobs('service-maps-lit')) == 1, 'forks must reuse their accepted lighting copy'
+    print('Maps: cross-trust fork retains raw and lit availability without another worker; unauthorized status stays private')
     print('Maps: presigned upload, S3 promotion, immutable versions, pin-file reflection, fork and two NATS consumers passed')
 
     workspace = '/v1/workspaces/native-buildserver'
@@ -326,7 +361,10 @@ def contracts(c):
     assert completed['scene']['status'] == 'NONE' and completed['publishedBySub'] == 'derive-worker'
     print('Maps: enabled PackSet HTTPS refresh, Kubernetes derive Job serialization, real JVM derivation, API result reconciliation passed')
 
-    litjob = eventually(lambda: c.job('service-maps-lit'))
+    assert completed['preparation']['stage'] in ('WAITING_FOR_LIGHT', 'LIGHTING'), completed
+    c.request(path + '/pins/stage', 'POST', {'version': deriving['version']}, staff, 409)
+    assert c.request(path + '/pins', token=staff)[0]['version'] == 1
+    litjob = eventually(lambda: c.light_job(completed['bundleSha256']))
     litcontainer = litjob['spec']['template']['spec']['containers'][0]
     litrequest = json.loads(next(e['value'] for e in litcontainer['env'] if e['name'] == 'LIT_REQUEST_JSON'))
     assert litrequest['format'] == 2, litrequest
@@ -334,9 +372,12 @@ def contracts(c):
     assert litcommand == ['java', '-Xmx1g', '-Djava.io.tmpdir=/work', '-cp',
                           '/deployments/lit-worker/lib/*', 'gg.grounds.lit.worker.LitWorkerMainKt']
     c.execute(litjob)
+    eventually(lambda: ready_version(deriving['version']))
+    c.request(path + '/pins/stage', 'POST', {'version': deriving['version']}, staff)
     def lit():
         pinfile = c.s3('/public/pins/stage.json')
         entry = pinfile['maps'][address]
+        assert entry['version'] == deriving['version'], entry
         assert entry.get('lit', {}).get('format') == 2, entry
         return entry['lit']
     litentry = eventually(lit)
