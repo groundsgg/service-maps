@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/groundsgg/service-maps/compare/v1.12.0...v1.13.0) (2026-11-09)
+
+
+### Features
+
+* **maps:** prepare published maps before live activation ([b5df64d](https://github.com/groundsgg/service-maps/commit/b5df64dcd51783c5d81fad0500c20ef6457918cb))
+
 ## [1.12.0](https://github.com/groundsgg/service-maps/compare/v1.11.1...v1.12.0) (2026-11-08)
 
 
