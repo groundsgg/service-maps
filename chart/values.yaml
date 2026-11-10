@@ -124,6 +124,21 @@ lod:
   # Existing hostname only: these jobs must never trigger creation of another node.
   node: ""
   pollInterval: 30s
+  # Optional post-lighting reconciliation of the configured current Stage Lobby pin.
+  auto:
+    enabled: false
+    environment: ""
+    namespace: ""
+    name: ""
+    budgetId: ""
+    registrySha256: ""
+    generatorSha256: ""
+    workerImage: ""
+  # Private permission-gated serving uses an operator-created shared durable budget.
+  serving:
+    enabled: false
+    budgetId: ""
+    generationBudgetId: ""
 # Exact capabilities of the deployed runtime. Compatibility failures are reported by
 # the live activation API, never as a build-server upload failure. Enabled environments
 # reject authored scenes without a matching address-specific contract.

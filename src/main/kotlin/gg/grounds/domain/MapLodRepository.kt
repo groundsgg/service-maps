@@ -79,7 +79,29 @@ data class LodClaim(
     fun workKey(name: String): String = "tmp/lod/$attempt/$name"
 }
 
+/** Operator-selected scope; canonical and prepared source hashes always come from the live pin. */
+data class AutoLodSelection(
+    val environment: String,
+    val address: MapAddress,
+    val budgetId: String,
+    val registrySha256: String,
+    val generatorSha256: String,
+    val workerImage: String,
+) {
+    init {
+        require(environment == "stage" && address == MapAddress("lobby", "mainlobby"))
+        require(budgetId.matches(Regex("[a-z0-9-]{1,64}")))
+        require(listOf(registrySha256, generatorSha256).all { it.matches(Regex("[a-f0-9]{64}")) })
+        require(workerImage.matches(Regex("[^\\s]+@sha256:[a-f0-9]{64}")))
+    }
+}
+
 interface MapLodRepository {
+    /**
+     * Durable selection only; generation remains subject to claim's shared quota and worker guard.
+     */
+    fun automaticRun(selection: AutoLodSelection, now: Instant): UUID? = null
+
     fun createRun(run: LodRun)
 
     /** Atomic admission and permanent reservation, across every service replica. */

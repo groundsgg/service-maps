@@ -46,7 +46,7 @@ class R2LodPilotOrigin @Inject constructor(private val blobs: BlobStore) : LodPi
         )
 }
 
-/** Optional pilot only. There is no creation/reset endpoint and no terrain generation here. */
+/** Private credits/source for both modes. No creation/reset endpoint or terrain generation. */
 @Path("/v1/maps/lod-pilots/{runId}")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
@@ -175,7 +175,9 @@ class LodPilotResource(
             val seconds =
                 minOf(
                     reserved.validForMillis / 1000,
-                    Duration.between(clock.instant(), reserved.snapshot.run.expiresAt).seconds,
+                    reserved.snapshot.run.expiresAt?.let {
+                        Duration.between(clock.instant(), it).seconds
+                    } ?: 120L,
                 )
             if (seconds < 1) throw LodServingDenied(LodServingRefusal.CLOSED)
             val artifact = reserved.artifact

@@ -27,7 +27,7 @@ constructor(private val pins: PinFiles, private val lits: MapLitRepository) : Lo
         lits.environmentsPinning(claim.mapBundleSha256).map(pins::publish).all { it }
 }
 
-/** Admission is off by default and requires an explicit, persistent manual run selection. */
+/** Manual and scheduled post-lighting admission are both off by default. */
 @ApplicationScoped
 class LodReconciler(
     private val lods: MapLodRepository,
@@ -38,6 +38,7 @@ class LodReconciler(
     private val publicEnabled: Boolean,
     private val runId: UUID?,
     private val clock: Clock = Clock.systemUTC(),
+    private val automatic: AutoLodAdmission? = null,
 ) {
     @Inject
     constructor(
@@ -49,7 +50,17 @@ class LodReconciler(
         @ConfigProperty(name = "grounds.maps.lod.publication.enabled", defaultValue = "false")
         publicEnabled: Boolean,
         @ConfigProperty(name = "grounds.maps.lod.run-id") runId: Optional<String>,
-    ) : this(lods, jobs, artifacts, projection, enabled, publicEnabled, selectedRunId(runId))
+        automatic: AutoLodAdmission,
+    ) : this(
+        lods,
+        jobs,
+        artifacts,
+        projection,
+        enabled,
+        publicEnabled,
+        selectedRunId(runId),
+        automatic = automatic,
+    )
 
     private val log = Logger.getLogger(LodReconciler::class.java)
 
@@ -68,7 +79,7 @@ class LodReconciler(
     internal fun step(now: Instant) {
         val active = lods.active()
         if (active != null) follow(active, now)
-        if (publicEnabled) {
+        if (publicEnabled && automatic?.enabled != true) {
             lods.ready().firstOrNull()?.let { ready ->
                 artifacts.publish(ready)
                 lods.markPublished(ready.attempt)
@@ -79,8 +90,9 @@ class LodReconciler(
         }
         // Finishing or cancelling a previous claim is independent of the admission flag.
         // Do not start another job in the same tick that followed a former one.
-        if (active != null || !enabled || runId == null) return
-        val next = lods.claim(runId, now) ?: return
+        if (active != null || !enabled) return
+        val selected = runId ?: automatic?.admit(now) ?: return
+        val next = lods.claim(selected, now) ?: return
         jobs.create(next, artifacts.requestJson(next))
         activate(next)
     }

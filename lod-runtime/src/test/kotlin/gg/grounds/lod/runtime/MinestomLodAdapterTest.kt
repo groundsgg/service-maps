@@ -50,7 +50,59 @@ class MinestomLodAdapterTest {
     }
 
     @Test
-    fun `queued Minestom terrain is guarded after world switch and shutdown`() {
+    fun `queued Minestom terrain is guarded after world switch and shutdown`() = guarded(false)
+
+    @Test
+    fun `entitled Minestom terrain keeps world generation and writer shutdown fences`() =
+        guarded(true)
+
+    @Test
+    fun `public entitled install performs no control HTTP before any client demand`() {
+        val root = Files.createTempDirectory("lod-entitled-install-")
+        val instance = MinecraftServer.getInstanceManager().createInstanceContainer()
+        try {
+            val f = LodFixture(root.resolve("input"), MinestomLodAdapter.registrySha256())
+            val calls = AtomicInteger()
+            val control =
+                object : LodControl {
+                    override fun source(player: UUID): LodLease<LodSourceGrant> {
+                        calls.incrementAndGet()
+                        error("unexpected HTTP")
+                    }
+
+                    override fun payload(player: UUID, bytes: Int): LodLease<LodPayloadGrant> {
+                        calls.incrementAndGet()
+                        error("unexpected HTTP")
+                    }
+
+                    override fun download(
+                        lease: LodLease<LodSourceGrant>,
+                        into: java.nio.file.Path,
+                    ) {
+                        calls.incrementAndGet()
+                        error("unexpected HTTP")
+                    }
+                }
+            MinestomLodAdapter.installEntitled(
+                    EventNode.all("lazy-entitled"),
+                    instance,
+                    f.expectation,
+                    control,
+                    root.resolve("cache"),
+                ) {
+                    true
+                }
+                .use {
+                    assertEquals(0, calls.get())
+                    assertEquals(0, it.stats().queuedFrames)
+                }
+        } finally {
+            MinecraftServer.getInstanceManager().unregisterInstance(instance)
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    private fun guarded(entitled: Boolean) {
         val root = Files.createTempDirectory("lod-minestom-")
         val instance = MinecraftServer.getInstanceManager().createInstanceContainer()
         val other = MinecraftServer.getInstanceManager().createInstanceContainer()
@@ -81,11 +133,12 @@ class MinestomLodAdapterTest {
                     instance,
                     f.expectation,
                     control,
-                    setOf(f.player),
+                    if (entitled) emptySet() else setOf(f.player),
                     root.resolve("cache"),
                     false,
                     clock::get,
-                    { true },
+                    { id -> !entitled || id == f.player },
+                    entitled = entitled,
                 )
             val connection = Connection()
             val player = TestPlayer(connection, f.player, instance)
@@ -98,6 +151,26 @@ class MinestomLodAdapterTest {
                     MinecraftServer.getGlobalEventHandler().call(event)
                     if (!event.isCancelled) add(packet)
                 }
+            }
+            if (entitled) {
+                repeat(64) {
+                    val denied = TestPlayer(Connection(), UUID.randomUUID(), instance)
+                    parent.call(
+                        PlayerPluginMessageEvent(denied, Lss20.HANDSHAKE, byteArrayOf(20, 3))
+                    )
+                    parent.call(
+                        PlayerPluginMessageEvent(
+                            denied,
+                            Lss20.CLIENT_INFO,
+                            WireBytes.Writer(5)
+                                .writeVarInt(MinecraftServer.DATA_VERSION)
+                                .toByteArray(),
+                        )
+                    )
+                }
+                adapter.pumpForTest()
+                assertEquals(0, downloads.get())
+                assertEquals(0, adapter.stats().queuedFrames)
             }
             receive(Lss20.HANDSHAKE, byteArrayOf(20, 3))
             receive(

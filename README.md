@@ -308,3 +308,5 @@ The Minestom LOD library requires an access predicate. Lobby binds it to the cur
 `grounds.lod.receive` permission snapshot and rechecks it before source admission
 and packet serialization. Missing rights do not load the optional source. It does
 not delete terrain previously cached by Voxy or change normal map delivery.
+
+Automatic, private Stage Lobby LOD generation and permission-gated serving are described in [docs/lod-serving.md](docs/lod-serving.md).

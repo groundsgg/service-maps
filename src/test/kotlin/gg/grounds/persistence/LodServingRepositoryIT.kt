@@ -28,7 +28,7 @@ class LodServingRepositoryIT {
         db.connection.use { c ->
             c.createStatement().use {
                 it.execute(
-                    "TRUNCATE map_lod_serving_debit,map_lod_serving_window,map_lod_serving_run,map_lod,map_lod_run,map_lod_budget"
+                    "TRUNCATE map_lod_auto_selection,map_lod_serving_debit,map_lod_serving_window,map_lod_serving_run,map_lod,map_lod_run,map_lod_budget"
                 )
             }
         }
@@ -194,7 +194,7 @@ class LodServingRepositoryIT {
                     mapSha,
                     player,
                     1024,
-                    { run.expiresAt.minusMillis(5) },
+                    { run.expiresAt!!.minusMillis(5) },
                 )
                 .validForMillis,
         )
@@ -207,7 +207,7 @@ class LodServingRepositoryIT {
                         mapSha,
                         player,
                         1024,
-                        { run.expiresAt },
+                        { run.expiresAt!! },
                     )
                 }
                 .reason,
@@ -303,7 +303,7 @@ class LodServingRepositoryIT {
                     }
                 assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
                 assertFalse(clockRead.await(100, java.util.concurrent.TimeUnit.MILLISECONDS))
-                time.set(run.expiresAt)
+                time.set(run.expiresAt!!)
                 c.commit()
                 val failure =
                     assertFailsWith<java.util.concurrent.ExecutionException> {

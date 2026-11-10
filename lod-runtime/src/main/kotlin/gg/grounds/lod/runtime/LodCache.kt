@@ -44,11 +44,16 @@ internal constructor(
             .toSet()
 }
 
-/** One immutable Lobby source per Pod. No world loading, generation, tick work, HEAD or retries. */
+/**
+ * One immutable source per Pod, without world loading, generation or HEAD requests. Finite pilots
+ * never retry; entitled serving opts into a bounded demand-driven recovery envelope.
+ */
 class LodCache(
     private val control: LodControl,
     private val expected: LodExpectation,
     private val directory: Path,
+    private val entitled: Boolean = false,
+    private val nanos: () -> Long = System::nanoTime,
 ) : AutoCloseable {
     private val worker =
         Executors.newSingleThreadExecutor { task ->
@@ -56,26 +61,41 @@ class LodCache(
         }
     private var future: CompletableFuture<LoadedLod>? = null
     private var closed = false
+    private val recovery = LodRecovery(nanos)
+
+    @Synchronized internal fun readyToLoad() = !closed && (!entitled || recovery.ready())
 
     @Synchronized
-    fun load(player: UUID): CompletableFuture<LoadedLod> {
+    fun load(player: UUID, access: () -> Boolean = { true }): CompletableFuture<LoadedLod> {
         if (closed) return CompletableFuture.failedFuture(LodUnavailable(true))
         future?.let {
             return it
         }
+        if (entitled && !recovery.ready())
+            return CompletableFuture.failedFuture(LodUnavailable(recovery.closed))
         val shared = CompletableFuture<LoadedLod>()
         future = shared
         worker.execute {
             try {
-                shared.complete(loadSource(player))
-            } catch (_: Exception) {
-                shared.completeExceptionally(LodUnavailable())
+                shared.complete(loadSource(player, access))
+            } catch (error: Exception) {
+                synchronized(this) {
+                    if (entitled) {
+                        if (error !is LodAccessDenied) recovery.failed(error)
+                        // Keep permanent failure sticky; transient failures become eligible only
+                        // after the shared monotonic backoff, regardless of reconnects.
+                        if (!recovery.closed) future = null
+                    }
+                }
+                shared.completeExceptionally(
+                    if (entitled) LodUnavailable(recovery.closed) else LodUnavailable()
+                )
             }
         }
         return shared
     }
 
-    private fun loadSource(player: UUID): LoadedLod {
+    private fun loadSource(player: UUID, access: () -> Boolean): LoadedLod {
         Files.createDirectories(directory)
         FileChannel.open(
                 directory.resolve("cache.lock"),
@@ -91,6 +111,7 @@ class LodCache(
                         val partial = directory.resolve("terrain.part")
                         Files.deleteIfExists(partial)
                         try {
+                            if (!access()) throw LodAccessDenied()
                             val lease = control.source(player)
                             val grant = lease.value
                             grant.validate()
@@ -103,6 +124,7 @@ class LodCache(
                                     Files.delete(cached)
                                 }
                             }
+                            if (!access()) throw LodAccessDenied()
                             control.download(lease, partial)
                             val loaded = decode(partial, grant)
                             Files.move(
@@ -148,10 +170,14 @@ class LodCache(
         return LoadedLod(expected, stamp, Collections.unmodifiableMap(selected))
     }
 
-    @Synchronized
     override fun close() {
-        closed = true
-        future?.cancel(true)
+        val pending =
+            synchronized(this) {
+                closed = true
+                future
+            }
+        // Completion callbacks may enter the engine, which acquires cache bookkeeping in pump.
+        pending?.cancel(true)
         worker.shutdownNow()
     }
 

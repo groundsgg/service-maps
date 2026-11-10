@@ -94,3 +94,26 @@ helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set derive.e
 expect 'name: MAPS_LOD_RUN_ID' "$enabled"
 expect 'value: "existing-node"' "$enabled"
 awk '/name: MAPS_LOD_PUBLICATION_ENABLED/ { getline; if ($0 !~ /value: "false"/) exit 1; found=1 } END { if (!found) exit 1 }' "$enabled" || die 'LOD artifacts must remain private by default'
+
+# Ordinary Stage serving is a distinct private mode; automatic generation needs no manual run UUID.
+helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set derive.enabled=true \
+  --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" \
+  --set lod.enabled=true --set lod.node=existing-node --set lod.auto.enabled=true \
+  --set lod.auto.environment=stage --set lod.auto.namespace=lobby --set lod.auto.name=mainlobby \
+  --set lod.auto.budgetId=stage-lobby-auto-v1 \
+  --set lod.auto.registrySha256="$(printf '%064d' 0)" \
+  --set lod.auto.generatorSha256="$(printf '%064d' 1)" \
+  --set lod.auto.workerImage="ghcr.io/groundsgg/service-maps@$digest" \
+  --set lod.serving.enabled=true --set lod.serving.budgetId=stage-lobby-serving-v1 \
+  --set lod.serving.generationBudgetId=stage-lobby-auto-v1 >"$enabled"
+for env in MAPS_LOD_AUTO_ENABLED MAPS_LOD_AUTO_ENVIRONMENT MAPS_LOD_AUTO_NAMESPACE MAPS_LOD_AUTO_NAME \
+  MAPS_LOD_AUTO_BUDGET_ID MAPS_LOD_AUTO_REGISTRY_SHA256 MAPS_LOD_AUTO_GENERATOR_SHA256 \
+  MAPS_LOD_AUTO_WORKER_IMAGE MAPS_LOD_SERVING_ENABLED MAPS_LOD_SERVING_BUDGET_ID MAPS_LOD_SERVING_GENERATION_BUDGET_ID; do
+  expect "name: $env" "$enabled"
+done
+awk '/name: MAPS_LOD_AUTO_ENABLED/ { getline; if ($0 !~ /value: "true"/) exit 1; found=1 } END { if (!found) exit 1 }' "$enabled" || die 'explicit automatic LOD mode missing'
+awk '/name: MAPS_LOD_SERVING_ENABLED/ { getline; if ($0 !~ /value: "false"/) exit 1; found=1 } END { if (!found) exit 1 }' "$disabled" || die 'ordinary serving must default off'
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.auto.enabled=true
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.serving.enabled=true
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.auto.enabled=true --set lod.auto.environment=prod
+must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.serving.enabled=true --set lod.publication.enabled=true

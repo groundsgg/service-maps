@@ -38,7 +38,7 @@ data class LodDeliveryStats(
     val serializedFrames: Long,
 )
 
-/** Optional immutable Lobby pilot. Exclusively owns the four outbound LSS20 channels. */
+/** Optional immutable Lobby LOD serving. Exclusively owns the four outbound LSS20 channels. */
 class MinestomLodAdapter
 internal constructor(
     private val parent: EventNode<Event>,
@@ -50,14 +50,23 @@ internal constructor(
     autoPump: Boolean,
     nanos: () -> Long,
     private val access: (UUID) -> Boolean,
+    private val entitled: Boolean = false,
 ) : AutoCloseable {
     private val players = players.toSet()
     private val node = EventNode.all("grounds-lod-pilot")
     private val guardian = EventNode.all("grounds-lod-pilot-guardian").setPriority(Int.MAX_VALUE)
-    private val cache = LodCache(control, expected, cacheDirectory)
-    private val gate = LodCreditGate(control, players, nanos)
+    private val cache = LodCache(control, expected, cacheDirectory, entitled, nanos)
+    private val gate = LodCreditGate(control, players, nanos, entitled)
     private val engine =
-        LodSessionEngine(cache, gate, expected, players, MinecraftServer.DATA_VERSION, nanos)
+        LodSessionEngine(
+            cache,
+            gate,
+            expected,
+            players,
+            MinecraftServer.DATA_VERSION,
+            nanos,
+            entitled,
+        )
     private val closed = AtomicBoolean()
     private val peers = ConcurrentHashMap<UUID, Peer>()
 
@@ -88,13 +97,25 @@ internal constructor(
         node.addListener(PlayerPluginMessageEvent::class.java) { event ->
             if (
                 !closed.get() &&
-                    event.player.uuid in this.players &&
+                    (entitled || event.player.uuid in this.players) &&
                     event.identifier in Lss20.inbound
             ) {
                 val peer =
-                    peers.compute(event.player.uuid) { _, previous ->
-                        if (previous?.player === event.player) previous else Peer(event.player)
-                    }!!
+                    synchronized(peers) {
+                        val existing = peers[event.player.uuid]
+                        if (
+                            entitled &&
+                                existing?.player !== event.player &&
+                                !permitted(event.player.uuid)
+                        )
+                            null
+                        else if (entitled && existing == null && peers.size >= 64) null
+                        else
+                            peers.compute(event.player.uuid) { _, previous ->
+                                if (previous?.player === event.player) previous
+                                else Peer(event.player)
+                            }
+                    } ?: return@addListener
                 engine.receive(peer, event.identifier, event.message)
             }
         }
@@ -177,6 +198,13 @@ internal constructor(
             TimeUnit.MILLISECONDS,
         )
     }
+
+    private fun permitted(id: UUID) =
+        try {
+            access(id)
+        } catch (_: Exception) {
+            false
+        }
 
     private fun peerFor(player: Player): Peer? =
         peers[player.uuid]?.takeIf { it.player === player }
@@ -310,6 +338,28 @@ internal constructor(
                 true,
                 System::nanoTime,
                 access,
+            )
+
+        /** Long-lived permission-gated serving. No discovery or source HTTP occurs at install. */
+        fun installEntitled(
+            parent: EventNode<Event>,
+            instance: Instance,
+            expected: LodExpectation,
+            control: LodControl,
+            cacheDirectory: Path,
+            access: (UUID) -> Boolean,
+        ): MinestomLodAdapter =
+            MinestomLodAdapter(
+                parent,
+                instance,
+                expected,
+                control,
+                emptySet(),
+                cacheDirectory,
+                true,
+                System::nanoTime,
+                access,
+                entitled = true,
             )
 
         fun registrySha256(): String {
