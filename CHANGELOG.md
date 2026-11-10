@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/groundsgg/service-maps/compare/v1.15.0...v1.16.0) (2026-11-10)
+
+
+### Features
+
+* **lod:** prepare stage maps and serve entitled players ([#115](https://github.com/groundsgg/service-maps/issues/115)) ([b7a50b8](https://github.com/groundsgg/service-maps/commit/b7a50b8e2cb39e00ab1ed772bb00f0bdbe3167c2))
+
 ## [1.15.0](https://github.com/groundsgg/service-maps/compare/v1.14.0...v1.15.0) (2026-11-10)
 
 
