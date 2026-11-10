@@ -60,12 +60,13 @@ jobs:
           -PversionOverride="$LIBRARY_VERSION"
       - name: Publish only the libraries
         env:
-          PACKAGES_WRITE_TOKEN: ${{ github.token }}
+          # The published root convention reads GITHUB_TOKEN for Maven publication.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           umask 077
           {
             printf 'github.user=%s\n' "$GITHUB_ACTOR"
-            printf 'github.token=%s\n' "$PACKAGES_WRITE_TOKEN"
+            printf 'github.token=%s\n' "$GITHUB_TOKEN"
           } > "$GRADLE_USER_HOME/gradle.properties"
           ./gradlew --no-daemon --max-workers=2 :lod-format:publish :lod-runtime:publish -PversionOverride="$LIBRARY_VERSION"
       - name: Remove temporary credentials

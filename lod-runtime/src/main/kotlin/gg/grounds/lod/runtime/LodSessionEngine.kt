@@ -226,7 +226,11 @@ internal class LodSessionEngine(
                                                 state.peer.world().instanceKey === prepared.world
                                         ) {
                                             prepared.configuration?.let { enabled ->
-                                                state.announced = true
+                                                // An acknowledged disable fulfils the client's
+                                                // outstanding enable obligation. Denied peers
+                                                // cannot keep buying disable frames by declaring
+                                                // the same capabilities again.
+                                                state.announced = enabled
                                                 state.enabled = enabled
                                                 state.wantConfig =
                                                     enabled !=

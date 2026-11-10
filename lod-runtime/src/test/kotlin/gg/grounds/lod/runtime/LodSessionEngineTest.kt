@@ -119,6 +119,31 @@ class LodSessionEngineTest {
         }
 
     @Test
+    fun `acknowledged revocation silences repeated denied declarations without spending credits`() =
+        fixture { _, engine, peer, now, grants ->
+            handshake(engine, peer)
+            peer.accessAllowed = false
+            engine.pump()
+            assertContentEquals(byteArrayOf(20, 0, 96, 0, 42), assertNotNull(peer.flush()).body)
+            val previousGrants = grants.get()
+            repeat(12) {
+                now.addAndGet(2000000000L)
+                engine.receive(peer, Lss20.HANDSHAKE, byteArrayOf(20, 3))
+                engine.receive(peer, Lss20.CLIENT_INFO, byteArrayOf(42))
+                engine.pump()
+                assertEquals(
+                    previousGrants,
+                    grants.get(),
+                    "denied declarations must not reserve another quota window",
+                )
+                assertTrue(peer.queued.isEmpty())
+            }
+            peer.accessAllowed = true
+            engine.pump()
+            assertContentEquals(byteArrayOf(20, 1, 96, 0, 42), assertNotNull(peer.flush()).body)
+        }
+
+    @Test
     fun `vanilla unknown players wrong map and mismatched client receive no terrain`() =
         fixture { f, engine, peer, _, grants ->
             engine.pump()

@@ -253,17 +253,23 @@ def lod_contract(c):
     c.presigned(upload['url'],'PUT',source)
     c.request(path+'/versions','POST',{'uploadId':upload['uploadId'],'sourceSha256':source_sha},staff,201)
     c.request(path+'/versions/1/publish','POST',{'bundleSha256':source_sha,'sizeBytes':len(source),'presentChunks':1,'estLoadedMib':1},staff)
-    c.request(path+'/pins/lod-contract','POST',{'version':1},staff)
+    c.request(path+'/pins/lod-contract','POST',{'version':1},staff,409)
     def lighting_job():
         for job in c.jobs('service-maps-lit'):
             request=json.loads(next(e['value'] for e in job['spec']['template']['spec']['containers'][0]['env'] if e['name']=='LIT_REQUEST_JSON'))
-            if request['bundleSha256']==source_sha:
+            if request['bundleSha256']==source_sha and request['format']==2:
                 return job
         raise AssertionError('populated lighting Job not created')
     c.execute(eventually(lighting_job))
+    def ready_lod_version():
+        value=c.request(path+'/versions/1',token=staff)
+        assert value['preparation']['lightFormat']==2 and value['preparation']['stage']=='READY', value
+        return value
+    eventually(ready_lod_version)
+    c.request(path+'/pins/lod-contract','POST',{'version':1},staff)
     def prelit_entry():
         entry=c.s3('/public/pins/lod-contract.json')['maps'][address]
-        assert entry.get('lit',{}).get('bundleSha256')
+        assert entry.get('lit',{}).get('bundleSha256') and entry['lit']['format']==2
         return entry['lit']
     prelit=eventually(prelit_entry)
     identity_output=docker('run','--rm','--entrypoint','java',WORKER,'-Xmx256m','-XX:ActiveProcessorCount=2',
