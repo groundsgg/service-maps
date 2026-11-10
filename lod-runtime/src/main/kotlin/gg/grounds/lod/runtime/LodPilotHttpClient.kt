@@ -49,6 +49,7 @@ class LodPilotHttpClient(
     private val mapSha256: String,
     allowLoopbackHttp: Boolean = false,
     private val nanos: () -> Long = System::nanoTime,
+    private val permanentValidationFailures: Boolean = false,
 ) : LodControl {
     private val root = "/v1/maps/lod-pilots/$run"
     private val json = GsonBuilder().disableJdkUnsafe().setStrictness(Strictness.STRICT).create()
@@ -208,8 +209,8 @@ class LodPilotHttpClient(
             action()
         } catch (e: LodUnavailable) {
             throw e
-        } catch (_: Exception) {
-            throw LodUnavailable()
+        } catch (error: Exception) {
+            throw LodUnavailable(permanentValidationFailures && error !is java.io.IOException)
         }
 
     companion object {

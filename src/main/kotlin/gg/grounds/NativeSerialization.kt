@@ -39,6 +39,8 @@ import gg.grounds.lod.format.LodJobResult
 import gg.grounds.lod.format.LodManifest
 import gg.grounds.lod.format.LodPayloadGrant
 import gg.grounds.lod.format.LodPayloadRequest
+import gg.grounds.lod.format.LodServingDiscoveryRequest
+import gg.grounds.lod.format.LodServingSelection
 import gg.grounds.lod.format.LodSourceGrant
 import gg.grounds.lod.format.LodSourceRequest
 import gg.grounds.lod.format.LodTile
@@ -89,6 +91,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             LodPayloadGrant::class,
             LodSourceRequest::class,
             LodSourceGrant::class,
+            LodServingDiscoveryRequest::class,
+            LodServingSelection::class,
             LodJobResult::class,
             LitRequest::class,
             LitResult::class,

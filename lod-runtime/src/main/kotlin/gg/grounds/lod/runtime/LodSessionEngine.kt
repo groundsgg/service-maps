@@ -56,6 +56,7 @@ internal class LodSessionEngine(
     players: Set<UUID>,
     private val dataVersion: Int,
     private val nanos: () -> Long = System::nanoTime,
+    private val entitled: Boolean = false,
 ) : AutoCloseable {
     private data class Input(val channel: String, val bytes: ByteArray)
 
@@ -104,15 +105,18 @@ internal class LodSessionEngine(
     val serializedFrames = AtomicLong()
 
     init {
-        require(players.size in 1..5 && dataVersion > 0)
+        require((if (entitled) players.isEmpty() else players.size in 1..5) && dataVersion > 0)
     }
 
     fun receive(peer: LodPeer, channel: String, bytes: ByteArray) {
-        if (peer.id !in players || channel !in Lss20.inbound) return
+        if ((!entitled && peer.id !in players) || channel !in Lss20.inbound) return
         synchronized(lock) {
             if (closed || !peer.online) return
             var state = sessions[peer.id]
             if (state == null || state.peer !== peer) {
+                if (entitled && !permitted(peer)) return
+                if (entitled && state == null && sessions.size >= 64) return
+                if (entitled && state != null) gate.remove(peer.id)
                 state = Session(peer)
                 sessions[peer.id] = state
             }
@@ -163,9 +167,14 @@ internal class LodSessionEngine(
 
     fun remove(peer: LodPeer) =
         synchronized(lock) {
-            if (sessions[peer.id]?.peer === peer) sessions.remove(peer.id)
+            if (sessions[peer.id]?.peer === peer) {
+                sessions.remove(peer.id)
+                gate.remove(peer.id)
+            }
             Unit
         }
+
+    internal fun sessionCount() = synchronized(lock) { sessions.size }
 
     fun pump() {
         val current = synchronized(lock) { if (closed) return else sessions.values.toList() }
@@ -329,20 +338,40 @@ internal class LodSessionEngine(
                 !supported(state) ||
                 state.loading ||
                 state.failed ||
-                state.source != null
+                state.source != null ||
+                !cache.readyToLoad()
         )
             return
         state.loading = true
-        state.wantConfig = true
-        cache.load(state.peer.id).whenComplete { source, error ->
-            synchronized(lock) {
-                if (!closed && sessions[state.peer.id] === state) {
-                    state.loading = false
-                    if (error != null) state.failed = true else state.source = source
-                    state.wantConfig = true
+        val admittedWorld = state.world.instanceKey
+        cache
+            .load(state.peer.id) {
+                synchronized(lock) {
+                    !closed &&
+                        sessions[state.peer.id] === state &&
+                        state.peer.online &&
+                        permitted(state.peer) &&
+                        state.peer.world().let {
+                            it.instanceKey === admittedWorld &&
+                                it.mapSha256 == expected.mapSha256 &&
+                                it.sourceSha256 == expected.sourceSha256
+                        }
                 }
             }
-        }
+            .whenComplete { source, error ->
+                synchronized(lock) {
+                    if (!closed && sessions[state.peer.id] === state) {
+                        state.loading = false
+                        if (error != null) {
+                            state.failed =
+                                !entitled || (error as? LodUnavailable)?.permanent == true
+                        } else {
+                            state.source = source
+                            state.wantConfig = true
+                        }
+                    }
+                }
+            }
     }
 
     private fun prepare(state: Session): Prepared? {

@@ -1,5 +1,6 @@
 package gg.grounds.lod
 
+import gg.grounds.domain.LodServingMode
 import gg.grounds.domain.LodServingRepository
 import gg.grounds.domain.LodServingSnapshot
 import gg.grounds.lod.format.LOD_PILOT_HEADER
@@ -26,22 +27,28 @@ annotation class LodPilotAccess
 
 const val LOD_PILOT_AUTHORIZATION = "grounds.lod.pilot.authorization"
 
-/** A fresh capability per explicit short-lived run, scoped to one artifact and <=5 UUIDs. */
+/** Database mode selects independent pilot/entitled gates; client input cannot choose the mode. */
 @ApplicationScoped
 class LodPilotAuthorizer(
     private val quotas: LodServingRepository,
     private val enabled: Boolean,
     private val clock: Clock,
+    private val serving: LodServingConfig = LodServingConfig(false, null as String?, null),
 ) {
     @Inject
     constructor(
         quotas: LodServingRepository,
         @ConfigProperty(name = "grounds.maps.lod.pilot.enabled", defaultValue = "false")
         enabled: Boolean,
-    ) : this(quotas, enabled, Clock.systemUTC())
+        serving: LodServingConfig,
+    ) : this(quotas, enabled, Clock.systemUTC(), serving)
 
-    fun authorize(runId: String?, capability: String?): LodServingSnapshot {
-        if (!enabled || capability == null || capability.length !in 32..256) refuse(403)
+    fun authorize(
+        runId: String?,
+        capability: String?,
+        boundedDownload: Boolean = false,
+    ): LodServingSnapshot {
+        if (capability == null || capability.length !in 32..256) refuse(403)
         val id =
             try {
                 UUID.fromString(runId)
@@ -49,6 +56,16 @@ class LodPilotAuthorizer(
                 refuse(403)
             }
         val snapshot = quotas.find(id) ?: refuse(403)
+        when (snapshot.run.mode) {
+            LodServingMode.PILOT -> if (!enabled) refuse(403)
+            LodServingMode.ENTITLED ->
+                if (
+                    !serving.configured ||
+                        snapshot.run.budgetId != serving.budgetId ||
+                        snapshot.run.generationBudgetId != serving.generationBudgetId
+                )
+                    refuse(403)
+        }
         val supplied = digest(capability.toByteArray()).toByteArray(Charsets.US_ASCII)
         if (
             !MessageDigest.isEqual(
@@ -61,9 +78,26 @@ class LodPilotAuthorizer(
         if (
             !snapshot.run.enabled ||
                 now < snapshot.run.startsAt ||
-                !now.isBefore(snapshot.run.expiresAt)
+                snapshot.run.expiresAt?.let { !now.isBefore(it) } == true
         )
             refuse(410)
+        if (snapshot.run.mode == LodServingMode.ENTITLED) {
+            // A preexisting source lease may drain once within its original 120s bound.
+            if (boundedDownload) {
+                if (
+                    quotas.deliveryBudgetTokenSha256(requireNotNull(serving.budgetId)) !=
+                        snapshot.run.tokenSha256
+                )
+                    refuse(410)
+            } else if (
+                !quotas.isCurrentEntitled(
+                    id,
+                    requireNotNull(serving.budgetId),
+                    requireNotNull(serving.generationBudgetId),
+                )
+            )
+                refuse(410)
+        }
         return snapshot
     }
 
@@ -85,6 +119,9 @@ class LodPilotAccessFilter @Inject constructor(private val authorizer: LodPilotA
                 authorizer.authorize(
                     context.uriInfo.pathParameters.getFirst("runId"),
                     context.getHeaderString(LOD_PILOT_HEADER),
+                    boundedDownload =
+                        context.method == "GET" &&
+                            context.uriInfo.pathParameters.getFirst("requestId") != null,
                 )
             context.setProperty(LOD_PILOT_AUTHORIZATION, snapshot)
         } catch (e: WebApplicationException) {

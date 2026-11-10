@@ -41,6 +41,10 @@ class LodPilotAccessTest {
 
     private class Repo(var row: LodServingSnapshot) : LodServingRepository {
         var debits = 0
+        var current = true
+
+        override fun isCurrentEntitled(runId: UUID, budgetId: String, generationBudgetId: String) =
+            current
 
         override fun register(run: LodServingRun) {}
 
@@ -159,5 +163,55 @@ class LodPilotAccessTest {
         assertEquals(200, response.status)
         (response.entity as LodPayloadGrant).validate()
         assertEquals(1, repo.debits)
+    }
+
+    @Test
+    fun `entitled authorization independently enables persistent serving and current pin fences`() {
+        repo.row =
+            repo.row.copy(
+                run =
+                    run.copy(
+                        players = emptySet(),
+                        expiresAt = null,
+                        startsAt = now.minusSeconds(7200),
+                        mode = LodServingMode.ENTITLED,
+                        budgetId = "stage-serving",
+                        generationBudgetId = "stage-auto",
+                    )
+            )
+        val config = LodServingConfig(true, "stage-serving", "stage-auto")
+        val auth = LodPilotAuthorizer(repo, false, clock, config)
+        assertEquals(repo.row, auth.authorize(run.id.toString(), token))
+        repo.current = false
+        assertEquals(
+            410,
+            assertFailsWith<WebApplicationException> { auth.authorize(run.id.toString(), token) }
+                .response
+                .status,
+        )
+        assertEquals(0, repo.debits)
+    }
+
+    @Test
+    fun `pilot enable flag cannot authorize entitled mode`() {
+        repo.row =
+            repo.row.copy(
+                run =
+                    run.copy(
+                        players = emptySet(),
+                        expiresAt = null,
+                        mode = LodServingMode.ENTITLED,
+                        budgetId = "stage-serving",
+                        generationBudgetId = "stage-auto",
+                    )
+            )
+        assertEquals(
+            403,
+            assertFailsWith<WebApplicationException> {
+                    LodPilotAuthorizer(repo, true, clock).authorize(run.id.toString(), token)
+                }
+                .response
+                .status,
+        )
     }
 }

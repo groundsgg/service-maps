@@ -15,7 +15,9 @@ import javax.sql.DataSource
 @ApplicationScoped
 class PostgresMapLodRepository @Inject constructor(private val dataSource: DataSource) :
     MapLodRepository {
-    override fun createRun(run: LodRun) = transaction { c ->
+    override fun createRun(run: LodRun) = transaction { c -> createRun(c, run) }
+
+    private fun createRun(c: Connection, run: LodRun) {
         c.prepareStatement("INSERT INTO map_lod_budget(id) VALUES (?) ON CONFLICT DO NOTHING")
             .use { ps ->
                 ps.setString(1, run.budgetId)
@@ -43,7 +45,93 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
                 ps.setString(14, run.createdBy)
                 ps.executeUpdate()
             }
-        Unit
+    }
+
+    override fun automaticRun(selection: AutoLodSelection, now: Instant): UUID? = transaction { c ->
+        // The same global lock as claim serializes selection across replicas and restarts.
+        c.prepareStatement("SELECT pg_advisory_xact_lock(734428501)").use { it.execute() }
+        val input =
+            c.prepareStatement(
+                    """SELECT p.version,v.bundle_sha256,l.lit_sha256 FROM map m
+            JOIN map_pin p ON p.map=m.id AND p.environment=?
+            JOIN map_version v ON v.map=m.id AND v.version=p.version AND v.state='PUBLISHED'
+            JOIN map_lit l ON l.bundle_sha256=v.bundle_sha256 AND l.light_format=2 AND l.state='LIT'
+            WHERE m.namespace=? AND m.name=? AND m.trust='FIRST_PARTY' FOR SHARE OF p"""
+                )
+                .use { ps ->
+                    ps.setString(1, selection.environment)
+                    ps.setString(2, selection.address.namespace)
+                    ps.setString(3, selection.address.name)
+                    ps.executeQuery().use { rs ->
+                        if (rs.next()) Triple(rs.getInt(1), rs.getString(2), rs.getString(3))
+                        else null
+                    }
+                } ?: return@transaction null
+        val identity =
+            identity(
+                MapTrust.FIRST_PARTY,
+                input.second,
+                input.third,
+                selection.registrySha256,
+                selection.generatorSha256,
+            )
+        val remembered =
+            c.prepareStatement("SELECT run_id FROM map_lod_auto_selection WHERE identity_sha256=?")
+                .use { ps ->
+                    ps.setString(1, identity)
+                    ps.executeQuery().use { rs ->
+                        if (rs.next()) rs.getObject(1, UUID::class.java) else null
+                    }
+                }
+        if (remembered != null) return@transaction remembered
+        // Reuse even FAILED historical identities: automatic reconciliation never retries one.
+        val existing =
+            c.prepareStatement(
+                    "SELECT run_id FROM map_lod WHERE identity_sha256=? ORDER BY CASE state WHEN 'READY' THEN 0 WHEN 'GENERATING' THEN 1 ELSE 2 END,started_at LIMIT 1"
+                )
+                .use { ps ->
+                    ps.setString(1, identity)
+                    ps.executeQuery().use { rs ->
+                        if (rs.next()) rs.getObject(1, UUID::class.java) else null
+                    }
+                }
+        val runId =
+            existing
+                ?: UUID.randomUUID().also { id ->
+                    createRun(
+                        c,
+                        LodRun(
+                            id,
+                            selection.budgetId,
+                            selection.environment,
+                            selection.address,
+                            input.first,
+                            input.second,
+                            input.third,
+                            selection.registrySha256,
+                            selection.generatorSha256,
+                            selection.workerImage,
+                            now,
+                            now.plusSeconds(1800),
+                            "automatic-stage-lobby",
+                        ),
+                    )
+                }
+        c.prepareStatement("INSERT INTO map_lod_budget(id) VALUES (?) ON CONFLICT DO NOTHING")
+            .use { ps ->
+                ps.setString(1, selection.budgetId)
+                ps.executeUpdate()
+            }
+        c.prepareStatement(
+                "INSERT INTO map_lod_auto_selection(identity_sha256,run_id,budget_id) VALUES (?,?,?)"
+            )
+            .use { ps ->
+                ps.setString(1, identity)
+                ps.setObject(2, runId)
+                ps.setString(3, selection.budgetId)
+                ps.executeUpdate()
+            }
+        runId
     }
 
     override fun claim(runId: UUID, now: Instant): LodClaim? = transaction { c ->
@@ -56,16 +144,25 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
             }
         )
             return@transaction null
+        // Automatic selections survive outages before their first claim. Only the manual
+        // admission clock is bypassed; the current pin, format/trust, no-attempt and shared
+        // quota checks below remain in force, and started_at still sets a 15-minute worker
+        // deadline.
         val selection =
             c.prepareStatement(
                     """SELECT r.*, m.trust FROM map_lod_run r
             JOIN map m ON m.namespace=r.namespace AND m.name=r.name
-            JOIN map_pin p ON p.map=m.id AND p.environment=r.environment AND p.version=r.version
-            JOIN map_version v ON v.map=m.id AND v.version=r.version AND v.state='PUBLISHED'
+            JOIN map_pin p ON p.map=m.id AND p.environment=r.environment
+                AND (p.version=r.version OR EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=r.id))
+            JOIN map_version v ON v.map=m.id AND v.version=p.version AND v.state='PUBLISHED'
                 AND v.bundle_sha256=r.map_bundle_sha256
             JOIN map_lit l ON l.bundle_sha256=v.bundle_sha256 AND l.state='LIT'
                 AND l.lit_sha256=r.source_bundle_sha256
-            WHERE r.id=? AND r.created_at<=? AND r.expires_at>?
+                AND (l.light_format=2 OR NOT EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=r.id))
+            WHERE r.id=? AND r.created_at<=?
+              AND (r.expires_at>? OR EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=r.id))
+              AND (NOT EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=r.id)
+                OR (m.trust='FIRST_PARTY' AND r.environment='stage' AND r.namespace='lobby' AND r.name='mainlobby'))
               AND NOT EXISTS (SELECT 1 FROM map_lod a WHERE a.run_id=r.id)"""
                 )
                 .use { ps ->
@@ -87,20 +184,21 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
                     }
                 } ?: return@transaction null
         val identity =
-            HexFormat.of()
-                .formatHex(
-                    MessageDigest.getInstance("SHA-256")
-                        .digest(
-                            "${selection.trust}\n${selection.map}\n${selection.source}\n${selection.registry}\n${selection.generator}\nlss20\n32\nminecraft:overworld\n"
-                                .toByteArray()
-                        )
-                )
+            identity(
+                selection.trust,
+                selection.map,
+                selection.source,
+                selection.registry,
+                selection.generator,
+            )
         if (
             c.prepareStatement(
-                    "SELECT 1 FROM map_lod WHERE identity_sha256=? AND state IN ('READY','GENERATING')"
+                    """SELECT 1 FROM map_lod WHERE identity_sha256=? AND (state IN ('READY','GENERATING')
+                    OR EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=?))"""
                 )
                 .use { ps ->
                     ps.setString(1, identity)
+                    ps.setObject(2, runId)
                     ps.executeQuery().use(ResultSet::next)
                 }
         )
@@ -216,7 +314,10 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
                 ps.executeQuery().use { rs -> if (rs.next()) readLodClaim(rs) else null }
             }
 
-    override fun ready(): List<LodClaim> = rows("WHERE state='READY' AND NOT published")
+    override fun ready(): List<LodClaim> =
+        rows(
+            "WHERE state='READY' AND NOT published AND NOT EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=map_lod.run_id)"
+        )
 
     override fun published(): List<LodClaim> = rows("WHERE state='READY' AND published")
 
@@ -233,7 +334,9 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
     }
 
     override fun projectionPending(): List<LodClaim> =
-        rows("WHERE state='READY' AND published AND projection_pending")
+        rows(
+            "WHERE state='READY' AND published AND projection_pending AND NOT EXISTS (SELECT 1 FROM map_lod_auto_selection a WHERE a.run_id=map_lod.run_id)"
+        )
 
     override fun projectionComplete(attempt: UUID) {
         dataSource.connection.use { c ->
@@ -278,6 +381,22 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
         val generator: String,
         val image: String,
     )
+
+    private fun identity(
+        trust: MapTrust,
+        map: String,
+        source: String,
+        registry: String,
+        generator: String,
+    ): String =
+        HexFormat.of()
+            .formatHex(
+                MessageDigest.getInstance("SHA-256")
+                    .digest(
+                        "$trust\n$map\n$source\n$registry\n$generator\nlss20\n32\nminecraft:overworld\n"
+                            .toByteArray(Charsets.UTF_8)
+                    )
+            )
 
     companion object {
         // Scratch, permanent private and public bundle+manifest plus the marker; no refunds after

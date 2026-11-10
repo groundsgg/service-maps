@@ -26,6 +26,12 @@ class LodReconcilerTest {
         var failed = false
         var pending = false
         var claimed = 0
+        var automaticSelections = 0
+
+        override fun automaticRun(selection: AutoLodSelection, now: Instant): UUID? {
+            automaticSelections++
+            return candidate.runId
+        }
 
         override fun createRun(run: LodRun) {}
 
@@ -155,6 +161,65 @@ class LodReconcilerTest {
             claim.runId,
             clock,
         )
+
+    private fun automaticController(
+        enabled: Boolean = true,
+        automatic: Boolean = true,
+        public: Boolean = false,
+    ): LodReconciler =
+        LodReconciler(
+            repo,
+            jobs,
+            artifacts,
+            { true },
+            enabled,
+            public,
+            null,
+            clock,
+            AutoLodAdmission(
+                repo,
+                if (automatic)
+                    AutoLodSelection(
+                        "stage",
+                        MapAddress("lobby", "mainlobby"),
+                        "stage-lobby-auto-v1",
+                        claim.registrySha256,
+                        claim.generatorSha256,
+                        claim.workerImage,
+                    )
+                else null,
+            ),
+        )
+
+    @Test
+    fun `automatic scheduler admission needs both switches and never enters public projection`() {
+        automaticController(enabled = false).step(now)
+        automaticController(automatic = false).step(now)
+        assertEquals(0, repo.automaticSelections)
+        assertEquals(0, jobs.created.size)
+        automaticController().step(now)
+        assertEquals(1, repo.automaticSelections)
+        assertEquals(listOf(claim.jobName), jobs.created)
+        jobs.status = LodJobStatus.SUCCEEDED
+        automaticController().step(now.plusSeconds(5))
+        assertEquals(facts, repo.row!!.facts)
+        assertEquals(
+            1,
+            repo.automaticSelections,
+            "following a job must not also admit in the same tick",
+        )
+        assertEquals(0, artifacts.publicWrites)
+    }
+
+    @Test
+    fun `automatic generation cannot publish artifacts even if legacy publication was enabled`() {
+        automaticController(public = true).step(now)
+        jobs.status = LodJobStatus.SUCCEEDED
+        automaticController(public = true).step(now.plusSeconds(5))
+        assertEquals(facts, repo.row!!.facts)
+        assertEquals(0, artifacts.publicWrites)
+        assertEquals(0, projections)
+    }
 
     @Test
     fun `disabled admission cannot create jobs and verified output stays private by default`() {

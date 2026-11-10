@@ -111,6 +111,28 @@ spec:
               value: {{ .Values.lod.node | quote }}
             - name: MAPS_LOD_POLL_INTERVAL
               value: {{ .Values.lod.pollInterval | quote }}
+            - name: MAPS_LOD_AUTO_ENABLED
+              value: {{ .Values.lod.auto.enabled | quote }}
+            - name: MAPS_LOD_AUTO_ENVIRONMENT
+              value: {{ .Values.lod.auto.environment | quote }}
+            - name: MAPS_LOD_AUTO_NAMESPACE
+              value: {{ .Values.lod.auto.namespace | quote }}
+            - name: MAPS_LOD_AUTO_NAME
+              value: {{ .Values.lod.auto.name | quote }}
+            - name: MAPS_LOD_AUTO_BUDGET_ID
+              value: {{ .Values.lod.auto.budgetId | quote }}
+            - name: MAPS_LOD_AUTO_REGISTRY_SHA256
+              value: {{ .Values.lod.auto.registrySha256 | quote }}
+            - name: MAPS_LOD_AUTO_GENERATOR_SHA256
+              value: {{ .Values.lod.auto.generatorSha256 | quote }}
+            - name: MAPS_LOD_AUTO_WORKER_IMAGE
+              value: {{ .Values.lod.auto.workerImage | quote }}
+            - name: MAPS_LOD_SERVING_ENABLED
+              value: {{ .Values.lod.serving.enabled | quote }}
+            - name: MAPS_LOD_SERVING_BUDGET_ID
+              value: {{ .Values.lod.serving.budgetId | quote }}
+            - name: MAPS_LOD_SERVING_GENERATION_BUDGET_ID
+              value: {{ .Values.lod.serving.generationBudgetId | quote }}
             {{- if .Values.derive.enabled }}
             - name: MAPS_DERIVE_ENABLED
               value: "true"
