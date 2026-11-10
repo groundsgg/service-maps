@@ -113,6 +113,17 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# Explicit finite LOD job selection; finished artifacts stay private until separately enabled.
+lod:
+  enabled: false
+  pilot:
+    enabled: false
+  publication:
+    enabled: false
+  runId: ""
+  # Existing hostname only: these jobs must never trigger creation of another node.
+  node: ""
+  pollInterval: 30s
 # Exact capabilities of the deployed runtime. Compatibility failures are reported by
 # the live activation API, never as a build-server upload failure. Enabled environments
 # reject authored scenes without a matching address-specific contract.

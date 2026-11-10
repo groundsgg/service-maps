@@ -136,6 +136,70 @@ Lighting fills `present_chunks` and `est_loaded_mib`. `MAPS_LIT_FORMAT` must equ
 `MapLight.FORMAT`; raising both prepares published bundles again. Existing pinned environments
 are republished as their prepared copies become available.
 
+## Offline LOD worker
+
+`lod-worker/` encodes stored overworld chunks into bounded, deterministic LSS protocol-20
+column tiles. It verifies the input bundle, rejects unsupported archive metadata and chunk
+schemas, and publishes a local output directory atomically. It has no listener or cloud
+credentials. The pinned upstream codec and MIT license are documented in
+`lod-worker/UPSTREAM.md`; the unchanged wire code and MIT license ship in `lod-format/`.
+
+Build with `./gradlew :lod-worker:test :lod-worker:installDist`, then run the installed
+`lod-worker` command with `--bundle <map.tar.zst> --sha256 <digest> --output <new-directory>`.
+Input is ordinary USTAR; GNU/PAX extension headers require explicit bounded support.
+The `--identity` command reports the immutable source/dependency generator fingerprint and
+registry fingerprint without generating terrain. With no CLI arguments, the same executable
+accepts `LOD_REQUEST_JSON`: one scoped input GET and exactly three scoped output PUTs (bundle,
+manifest, result-last); it carries no R2 credentials and performs no automatic retry.
+
+LOD scheduling and public publication default off independently (`lod.enabled`,
+`lod.publication.enabled`). Admission needs both an existing hostname in `lod.node` and an
+explicit `lod.runId` registered using `scripts/register-lod-pilot.sql`. That script accepts
+only the measured stage Lobby v13 canonical and prelit hashes and never resets existing
+campaign counters. No boot, join, pin change or client request registers a run or backfills maps.
+The immutable worker image must contain this worker; obtain its generator/registry fingerprints
+using `--identity` before registration. Registration expires after 30 minutes.
+
+PostgreSQL reserves at most two cloud jobs and one GiB of maximum retained outputs per campaign;
+reservations survive failures/restarts and are never refunded automatically. Only one generator
+is admitted globally. Jobs are created suspended, activated under the current database claim with
+UID/revision fencing, and constrained to 2 CPUs, 2 GiB RAM, 4 GiB scratch and 900 seconds with no
+Kubernetes retries. A stopped job keeps the global slot until both the Job and its pods are gone.
+The scoped service Role must additionally allow Job patch/delete and pod list before admission.
+
+A verified result can remain private. Public promotion is separate and preserves own/UGC trust
+buckets; only a published artifact matching the exact canonical **and current prelit** source
+appears as optional `lod.artifacts[]`. Entries without LOD retain their existing JSON shape.
+Projection retries are durable. Optional LOD lookup failure still publishes the base map pin.
+The existing pin publisher remains single-replica; global generator admission does not change
+that deployment requirement. Public LOD HTTP qualification, runtime delivery limits and real
+Voxy/DH client acceptance remain separate integration steps; keep public publication off until
+those paths have been qualified. Finished artifacts are not deleted by an age-based lifecycle.
+
+The finite Stage controller additionally sets `MAPS_LOD_PILOT_ISOLATED=true`. Its REST
+filter permits only complete private pilot operation paths, even over direct Pod/Service
+addresses and with a staff JWT. Use a dedicated restricted namespace, never the live Maps
+namespace, because its namespaced Job permissions can mount any secret in that namespace.
+Keep its database ephemeral and separate; import only the exact published pilot metadata.
+
+`MAPS_R2_SESSION_TOKEN` enables temporary S3 session credentials. The isolated process reads
+first-party input from the immutable HTTPS CDN, so credentials need only the private bucket's
+`tmp/lod/` and `lod/first_party/lss20/` prefixes. Set public/UGC bucket names to unused sentinels;
+never give this process the long-lived Maps storage credential. Keep publication disabled.
+
+In isolated mode `MAPS_LOD_PILOT_OWNER_POD_NAME` and `MAPS_LOD_PILOT_OWNER_POD_UID` are required
+Downward API values: even suspended worker Jobs are owned by the API Pod and collected when
+it is removed. Worker image pulls are disabled (`Never`); prefetch verified digest-pinned images
+on the selected existing node without copying the registry credential into the pilot namespace.
+Bound the API Job to 1800 seconds with a 300-second cleanup TTL and every container's CPU,
+memory and ephemeral storage. Deactivate the serving row, disable the infrastructure flag,
+and remove the dedicated namespace after measurement. A later infrastructure reconciliation
+can recreate an enabled expired Job, so leave the flag disabled; no startup path seeds quota
+or run rows. Capture counters before deleting its temporary database.
+
+The populated `ci/verify-native.py` contract runs the packaged Native API, actual JVM LOD worker,
+TLS object storage, PostgreSQL and a Kubernetes fixture through source-pinned publication.
+
 ## Not yet true, and load-bearing
 
 <!-- Both of these are why there is no chart and no Argo application in this repository. -->
@@ -227,3 +291,20 @@ Rollout order: deploy the new worker image first, then enable normalization/shap
 in the API. Old workers intentionally reject unknown request fields rather than silently
 skipping a requested normalization or scene proof. Contracts are scoped to the uploaded
 map address; another map is never normalized against a lobby's private target.
+
+## LOD measurement semantics
+
+The optional source relay exports `grounds.lod.source.opens`,
+`grounds.lod.source.open.failures`, `grounds.lod.source.read.bytes` and
+`grounds.lod.source.transfers` with the bounded outcomes `complete` or `partial`.
+Bytes count actual origin-stream reads; the final observation runs once on close
+after any in-flight read has finished. Truncated or interrupted downloads retain
+their observed bytes. These counters do not claim SDK request billing, successful
+remote receipt or wire bytes. Observability errors never change authorization,
+retry an origin read, or retain the concurrent-download permit. Durable remote
+attempt/byte and client-payload reservations remain independent and irreversible.
+
+The Minestom LOD library requires an access predicate. Lobby binds it to the current
+`grounds.lod.receive` permission snapshot and rechecks it before source admission
+and packet serialization. Missing rights do not load the optional source. It does
+not delete terrain previously cached by Voxy or change normal map delivery.

@@ -9,7 +9,7 @@ import gg.grounds.domain.MapRepository
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneStatus
 import io.nats.client.Nats
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
@@ -31,9 +31,9 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
-@QuarkusTestResource(MinioResource::class)
-@QuarkusTestResource(NatsResource::class)
+@WithTestResource(PostgresResource::class)
+@WithTestResource(MinioResource::class)
+@WithTestResource(NatsResource::class)
 @TestSecurity(user = "builder-sub", roles = ["grounds-staff"])
 class VersionLifecycleIT {
 

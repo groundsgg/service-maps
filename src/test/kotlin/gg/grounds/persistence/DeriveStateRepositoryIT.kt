@@ -18,7 +18,8 @@ import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
 import gg.grounds.domain.VersionState
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.TestResourceScope
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
 import java.sql.Connection
@@ -43,7 +44,7 @@ import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertThrows
 
 @QuarkusTest
-@QuarkusTestResource(value = PostgresResource::class, restrictToAnnotatedClass = true)
+@WithTestResource(value = PostgresResource::class, scope = TestResourceScope.RESTRICTED_TO_CLASS)
 @TestMethodOrder(OrderAnnotation::class)
 class DeriveStateRepositoryIT {
 

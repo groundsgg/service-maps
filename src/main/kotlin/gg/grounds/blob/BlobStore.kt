@@ -5,12 +5,16 @@ import gg.grounds.derive.DeriveArtifactUnavailableException
 import gg.grounds.domain.MapTrust
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import java.io.FilterInputStream
+import java.io.InputStream
 import java.net.URI
 import java.time.Duration
 import java.time.Instant
+import java.util.Optional
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.core.ResponseInputStream
 import software.amazon.awssdk.core.sync.RequestBody
@@ -71,10 +75,19 @@ constructor(
     @ConfigProperty(name = "grounds.maps.cdn.content-base") val contentBaseUrl: String,
     /** Where creator content is read from. A different origin on purpose. */
     @ConfigProperty(name = "grounds.maps.cdn.ugc-base") val ugcBaseUrl: String,
+    @ConfigProperty(name = "grounds.maps.r2.session-token")
+    sessionToken: Optional<String> = Optional.empty(),
 ) : DeriveArtifactStore {
 
     private val credentials =
-        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey))
+        StaticCredentialsProvider.create(
+            sessionToken
+                .filter { it.isNotBlank() }
+                .map<software.amazon.awssdk.auth.credentials.AwsCredentials> {
+                    AwsSessionCredentials.create(accessKey, secretKey, it)
+                }
+                .orElseGet { AwsBasicCredentials.create(accessKey, secretKey) }
+        )
 
     private val client: S3Client by lazy {
         S3Client.builder()
@@ -93,6 +106,43 @@ constructor(
             .credentialsProvider(credentials)
             .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())
             .build()
+    }
+
+    /** Dedicated finite pilot reader: no SDK retries, redirects, HEAD or unbounded draining. */
+    private val lodReadClient: S3Client by lazy {
+        S3Client.builder()
+            .endpointOverride(URI.create(endpoint))
+            .region(Region.of(region.ifBlank { "auto" }))
+            .credentialsProvider(credentials)
+            .httpClient(
+                UrlConnectionHttpClient.builder()
+                    .connectionTimeout(Duration.ofSeconds(5))
+                    .socketTimeout(Duration.ofSeconds(10))
+                    .build()
+            )
+            .overrideConfiguration {
+                it.retryStrategy { strategy -> strategy.maxAttempts(1) }
+                    .apiCallTimeout(Duration.ofSeconds(15))
+                    .apiCallAttemptTimeout(Duration.ofSeconds(15))
+            }
+            .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())
+            .build()
+    }
+
+    fun openLodPrivate(key: String, expectedBytes: Long): InputStream {
+        require(expectedBytes in 1..134217728)
+        val stream =
+            lodReadClient.getObject(
+                GetObjectRequest.builder().bucket(privateBucket).key(key).build()
+            )
+        if (stream.response().contentLength() != expectedBytes) {
+            stream.abort()
+            throw BlobIntegrityException("LOD source size differs from verified artifact")
+        }
+        return object : FilterInputStream(stream) {
+            // SDK close may drain the entire remainder. The pilot must abort on disconnect.
+            override fun close() = stream.abort()
+        }
     }
 
     /**
@@ -210,29 +260,76 @@ constructor(
         destinationKey: String,
         expectedSizeBytes: Long,
         trust: MapTrust,
+        expectedSourceETag: String? = null,
+    ) =
+        copyPrivateObject(
+            sourceKey,
+            destinationKey,
+            expectedSizeBytes,
+            publicBucketFor(trust),
+            expectedSourceETag,
+        )
+
+    /**
+     * Pin validated work bytes privately before READY; these keys are outside scratch lifecycle.
+     */
+    fun pinPrivateObject(
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+        expectedSourceETag: String,
+    ) =
+        copyPrivateObject(
+            sourceKey,
+            destinationKey,
+            expectedSizeBytes,
+            privateBucket,
+            expectedSourceETag,
+        )
+
+    private fun copyPrivateObject(
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+        destinationBucket: String,
+        expectedSourceETag: String?,
     ) {
-        copyToPublicFrom(privateBucket, sourceKey, destinationKey, expectedSizeBytes, trust) {
+        copyObjectFrom(
+            privateBucket,
+            sourceKey,
+            destinationKey,
+            expectedSizeBytes,
+            destinationBucket,
+            expectedSourceETag,
+        ) {
             headPrivate(sourceKey)
         }
     }
 
     /** Copy an approved immutable object across public trust buckets. */
     fun copyPublicObject(key: String, source: MapTrust, target: MapTrust, expectedSizeBytes: Long) {
-        copyToPublicFrom(publicBucketFor(source), key, key, expectedSizeBytes, target) {
+        copyObjectFrom(
+            publicBucketFor(source),
+            key,
+            key,
+            expectedSizeBytes,
+            publicBucketFor(target),
+            null,
+        ) {
             headPublic(key, source)
         }
     }
 
-    private fun copyToPublicFrom(
+    private fun copyObjectFrom(
         sourceBucket: String,
         sourceKey: String,
         destinationKey: String,
         expectedSizeBytes: Long,
-        trust: MapTrust,
+        destinationBucket: String,
+        expectedSourceETag: String?,
         sourceMetadata: () -> BlobMetadata?,
     ) {
         require(expectedSizeBytes >= 0) { "expected size must be non-negative" }
-        val destinationBucket = publicBucketFor(trust)
         val beforeCopy = head(destinationBucket, destinationKey)
         if (beforeCopy != null) {
             requireMatchingSize(
@@ -248,6 +345,9 @@ constructor(
                 ?: throw (if (sourceBucket == privateBucket) noSuchPrivateObject(sourceKey)
                 else BlobIntegrityException("published source object is missing"))
         requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
+        if (expectedSourceETag != null && source.eTag != expectedSourceETag) {
+            throw BlobCopyPreconditionException("private source version changed after verification")
+        }
         val sourceVersionToken =
             source.eTag
                 ?: throw BlobCopyPreconditionException(

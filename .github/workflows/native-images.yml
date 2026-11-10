@@ -12,6 +12,8 @@ on:
       - gradle/**
       - src/**
       - lit-worker/**
+      - lod-worker/**
+      - lod-format/**
       - Dockerfile
       - ci/**
       - .github/workflows/native-images.yml

@@ -1,8 +1,9 @@
 package gg.grounds.blob
 
 import gg.grounds.MinioResource
+import gg.grounds.PostgresResource
 import gg.grounds.domain.MapTrust
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import jakarta.inject.Inject
 import java.net.URI
@@ -21,7 +22,8 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 
 @QuarkusTest
-@QuarkusTestResource(MinioResource::class)
+@WithTestResource(PostgresResource::class)
+@WithTestResource(MinioResource::class)
 class BlobStoreIT {
 
     @Inject lateinit var blobs: BlobStore
