@@ -21,10 +21,10 @@ jobs:
     concurrency:
       group: maps-lod-publish-${{ github.ref }}
       cancel-in-progress: false
-    env:
-      GRADLE_USER_HOME: ${{ runner.temp }}/maps-lod-publish-gradle
     steps:
       - uses: actions/checkout@v7
+      - name: Select an isolated Gradle cache
+        run: echo "GRADLE_USER_HOME=$RUNNER_TEMP/maps-lod-publish-gradle" >> "$GITHUB_ENV"
       - name: Require a release tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
