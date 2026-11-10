@@ -3,9 +3,11 @@ package gg.grounds.persistence
 import gg.grounds.domain.MapAddress
 import gg.grounds.domain.MapPinRepository
 import gg.grounds.domain.MapTrust
+import gg.grounds.domain.NotPreparedException
 import gg.grounds.domain.NotPublishedException
 import gg.grounds.domain.PinRecord
 import gg.grounds.domain.PinnedMap
+import gg.grounds.lit.MapLightPolicy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.sql.Connection
@@ -13,7 +15,9 @@ import java.util.UUID
 import javax.sql.DataSource
 
 @ApplicationScoped
-class PostgresMapPinRepository @Inject constructor(private val dataSource: DataSource) :
+class PostgresMapPinRepository
+@Inject
+constructor(private val dataSource: DataSource, private val light: MapLightPolicy) :
     MapPinRepository {
 
     override fun move(environment: String, mapId: UUID, version: Int, bySub: String): PinRecord =
@@ -35,13 +39,27 @@ class PostgresMapPinRepository @Inject constructor(private val dataSource: DataS
                 // Only a published version may be pinned. The foreign key already stops a
                 // pin at a version that does not exist; this stops a pin at one whose bundle
                 // has not been assembled, which the key cannot see.
-                c.prepareStatement("SELECT state FROM map_version WHERE map = ? AND version = ?")
+                c.prepareStatement(
+                        "SELECT state, bundle_sha256 FROM map_version WHERE map = ? AND version = ? FOR SHARE"
+                    )
                     .use { ps ->
                         ps.setObject(1, mapId)
                         ps.setInt(2, version)
                         ps.executeQuery().use { rs ->
                             if (!rs.next()) throw NotPublishedException(version)
                             if (rs.getString(1) != "PUBLISHED") throw NotPublishedException(version)
+                            if (light.enabled)
+                                c.prepareStatement(
+                                        "SELECT 1 FROM map_lit WHERE bundle_sha256 = ? AND light_format = ? AND state = 'LIT'"
+                                    )
+                                    .use { prepared ->
+                                        prepared.setString(1, rs.getString(2))
+                                        prepared.setInt(2, light.format)
+                                        prepared.executeQuery().use { ready ->
+                                            if (!ready.next())
+                                                throw NotPreparedException(version, light.format)
+                                        }
+                                    }
                         }
                     }
 

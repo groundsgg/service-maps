@@ -26,6 +26,8 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import org.eclipse.microprofile.openapi.annotations.Operation
 
 fun interface LodPilotOrigin {
@@ -54,12 +56,14 @@ class LodPilotResource(
     private val quotas: LodServingRepository,
     private val origin: LodPilotOrigin,
     private val clock: Clock,
+    private val observer: LodSourceObserver = object : LodSourceObserver {},
 ) {
     @Inject
     constructor(
         quotas: LodServingRepository,
         origin: LodPilotOrigin,
-    ) : this(quotas, origin, Clock.systemUTC())
+        metrics: LodSourceMetrics,
+    ) : this(quotas, origin, Clock.systemUTC(), metrics)
 
     @POST
     @Path("/credits")
@@ -99,9 +103,20 @@ class LodPilotResource(
         try {
             // Durable consume precedes the only origin read. Replays cannot reach R2.
             val reserved = quotas.consumeRemote(snapshot.run.id, id)
-            stream = origin.open(reserved.artifact)
+            observe { observer.opened() }
+            stream =
+                try {
+                    origin.open(reserved.artifact)
+                } catch (failure: Exception) {
+                    observe { observer.openFailed() }
+                    throw failure
+                }
             val entity =
-                PilotDownload(stream, requireNotNull(reserved.artifact.facts).bundleBytes) {
+                PilotDownload(
+                    stream,
+                    requireNotNull(reserved.artifact.facts).bundleBytes,
+                    { bytes, complete -> observe { observer.finished(bytes, complete) } },
+                ) {
                     downloads.release()
                 }
             return Response.ok(entity, MediaType.APPLICATION_OCTET_STREAM)
@@ -204,6 +219,14 @@ class LodPilotResource(
             Response.status(status).header("Cache-Control", "no-store").build()
         }
 
+    private fun observe(action: () -> Unit) {
+        try {
+            action()
+        } catch (_: Exception) {
+            /* Telemetry never authorizes or retries a read. */
+        }
+    }
+
     companion object {
         // The chart admits one controller replica; DB budgets remain shared across replicas.
         private val downloads = Semaphore(2)
@@ -214,8 +237,13 @@ class LodPilotResource(
 internal class PilotDownload(
     private val source: InputStream,
     private var remaining: Long,
+    private val observed: (Long, Boolean) -> Unit = { _, _ -> },
     private val released: () -> Unit,
 ) : InputStream() {
+    private val expected = remaining
+    private val transferred = AtomicLong()
+    private val activeReads = AtomicInteger()
+    private val reported = AtomicBoolean()
     private val closed = AtomicBoolean()
     private val deadline = deadlines.schedule({ close() }, 30, TimeUnit.SECONDS)
 
@@ -228,11 +256,18 @@ internal class PilotDownload(
         java.util.Objects.checkFromIndexSize(offset, length, bytes.size)
         if (length == 0) return 0
         if (remaining == 0L) return -1
-        if (closed.get()) throw IOException("LOD download closed")
-        val count = source.read(bytes, offset, minOf(length.toLong(), remaining).toInt())
-        if (count < 0) throw IOException("Truncated LOD download")
-        remaining -= count
-        return count
+        activeReads.incrementAndGet()
+        try {
+            if (closed.get()) throw IOException("LOD download closed")
+            val count = source.read(bytes, offset, minOf(length.toLong(), remaining).toInt())
+            if (count < 0) throw IOException("Truncated LOD download")
+            remaining -= count
+            transferred.addAndGet(count.toLong())
+            return count
+        } finally {
+            activeReads.decrementAndGet()
+            reportWhenDrained()
+        }
     }
 
     override fun close() {
@@ -241,7 +276,22 @@ internal class PilotDownload(
             try {
                 source.close()
             } finally {
-                released()
+                try {
+                    released()
+                } finally {
+                    reportWhenDrained()
+                }
+            }
+        }
+    }
+
+    private fun reportWhenDrained() {
+        if (closed.get() && activeReads.get() == 0 && reported.compareAndSet(false, true)) {
+            val bytes = transferred.get()
+            try {
+                observed(bytes, bytes == expected)
+            } catch (_: Exception) {
+                /* Observation only. */
             }
         }
     }

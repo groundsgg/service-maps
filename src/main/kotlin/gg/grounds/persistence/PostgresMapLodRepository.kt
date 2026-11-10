@@ -63,7 +63,7 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
             JOIN map_pin p ON p.map=m.id AND p.environment=r.environment AND p.version=r.version
             JOIN map_version v ON v.map=m.id AND v.version=r.version AND v.state='PUBLISHED'
                 AND v.bundle_sha256=r.map_bundle_sha256
-            JOIN map_lit l ON l.bundle_sha256=v.bundle_sha256 AND l.light_format=1 AND l.state='LIT'
+            JOIN map_lit l ON l.bundle_sha256=v.bundle_sha256 AND l.state='LIT'
                 AND l.lit_sha256=r.source_bundle_sha256
             WHERE r.id=? AND r.created_at<=? AND r.expires_at>?
               AND NOT EXISTS (SELECT 1 FROM map_lod a WHERE a.run_id=r.id)"""

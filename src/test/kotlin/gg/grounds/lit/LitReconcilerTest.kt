@@ -9,6 +9,7 @@ import gg.grounds.domain.LitRecord
 import gg.grounds.domain.LitState
 import gg.grounds.domain.MapLitRepository
 import gg.grounds.domain.MapTrust
+import gg.grounds.domain.PublishedLitCopy
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -104,6 +105,68 @@ class LitReconcilerTest {
     }
 
     @Test
+    fun `one computed bundle is promoted to every published trust bucket`() {
+        lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
+        lits.allTrusts[sha] = listOf(MapTrust.FIRST_PARTY, MapTrust.UNTRUSTED)
+        reconciler.step(now)
+        val attempt = lits.rows.getValue(sha).attempt
+        blobs.objects[LitReconciler.resultKey(sha, 1, attempt)] =
+            """{"schemaVersion":1,"format":1,"bundleSha256":"$sha","litSha256":"$litSha",
+               "litSize":1234,"presentChunks":900,"keptChunks":300,"estLoadedMib":10}"""
+                .toByteArray()
+        blobs.sizes[LitReconciler.litKey(sha, 1, attempt)] = 1234
+        jobs.status = LitJobStatus.SUCCEEDED
+
+        reconciler.step(now.plusSeconds(60))
+
+        assertEquals(
+            listOf(MapTrust.FIRST_PARTY, MapTrust.UNTRUSTED),
+            blobs.promoted.map { it.third },
+        )
+        assertEquals(1, jobs.created.size)
+        assertEquals(LitState.LIT, lits.rows.getValue(sha).state)
+    }
+
+    @Test
+    fun `withdrawn content is not promoted into a default trust bucket`() {
+        lits.candidates += LitCandidate(sha, MapTrust.UNTRUSTED)
+        reconciler.step(now)
+        val attempt = lits.rows.getValue(sha).attempt
+        blobs.objects[LitReconciler.resultKey(sha, 1, attempt)] =
+            """{"schemaVersion":1,"format":1,"bundleSha256":"$sha","litSha256":"$litSha",
+               "litSize":1234,"presentChunks":900,"keptChunks":300,"estLoadedMib":10}"""
+                .toByteArray()
+        blobs.sizes[LitReconciler.litKey(sha, 1, attempt)] = 1234
+        jobs.status = LitJobStatus.SUCCEEDED
+        // All referencing versions were withdrawn while the worker was running.
+        lits.allTrusts[sha] = emptyList()
+
+        reconciler.step(now.plusSeconds(60))
+
+        assertTrue(blobs.promoted.isEmpty())
+        assertEquals(LitState.FAILED, lits.rows.getValue(sha).state)
+    }
+
+    @Test
+    fun `the deadline also bounds final publication after a worker succeeds`() {
+        lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
+        reconciler.step(now)
+        val attempt = lits.rows.getValue(sha).attempt
+        blobs.objects[LitReconciler.resultKey(sha, 1, attempt)] =
+            """{"schemaVersion":1,"format":1,"bundleSha256":"$sha","litSha256":"$litSha",
+               "litSize":1234,"presentChunks":900,"keptChunks":300,"estLoadedMib":10}"""
+                .toByteArray()
+        blobs.sizes[LitReconciler.litKey(sha, 1, attempt)] = 1234
+        blobs.failPromotion = true
+        jobs.status = LitJobStatus.SUCCEEDED
+
+        reconciler.step(now.plusSeconds(21 * 60L))
+
+        assertEquals(LitState.FAILED, lits.rows.getValue(sha).state)
+        assertTrue(lits.reasons.getValue(sha).contains("timed out"))
+    }
+
+    @Test
     fun `a lit bundle of the wrong size fails the attempt`() {
         lits.candidates += LitCandidate(sha, MapTrust.FIRST_PARTY)
         reconciler.step(now)
@@ -176,6 +239,15 @@ class LitReconcilerTest {
         val reasons = mutableMapOf<String, String>()
         val environments = mutableMapOf<String, List<String>>()
         val trust = mutableMapOf<String, MapTrust>()
+        val allTrusts = mutableMapOf<String, List<MapTrust>>()
+
+        override fun find(bundleSha256: String, format: Int) =
+            rows[bundleSha256]?.takeIf { it.lightFormat == format }
+
+        override fun publishedTrusts(bundleSha256: String) =
+            allTrusts[bundleSha256] ?: listOfNotNull(trust[bundleSha256])
+
+        override fun publishedCopies(format: Int) = emptyList<PublishedLitCopy>()
 
         override fun lighting(format: Int) =
             rows.values.firstOrNull { it.state == LitState.LIGHTING }
@@ -200,7 +272,14 @@ class LitReconcilerTest {
         var startedAt: Instant = now
 
         override fun succeed(bundleSha256: String, format: Int, attempt: UUID, facts: LitFacts) {
-            rows[bundleSha256] = rows.getValue(bundleSha256).copy(state = LitState.LIT)
+            rows[bundleSha256] =
+                rows
+                    .getValue(bundleSha256)
+                    .copy(
+                        state = LitState.LIT,
+                        litSha256 = facts.litSha256,
+                        litSize = facts.litSize,
+                    )
             this.facts[bundleSha256] = facts
         }
 
@@ -233,6 +312,7 @@ class LitReconcilerTest {
         val objects = mutableMapOf<String, ByteArray>()
         val sizes = mutableMapOf<String, Long>()
         val promoted = mutableListOf<Triple<String, String, MapTrust>>()
+        var failPromotion = false
 
         override fun sourceUrl(bundleSha256: String, trust: MapTrust) = "source:$bundleSha256"
 
@@ -249,6 +329,7 @@ class LitReconcilerTest {
             sizeBytes: Long,
             trust: MapTrust,
         ) {
+            if (failPromotion) error("temporary public storage outage")
             promoted += Triple(sourceKey, destinationKey, trust)
         }
     }

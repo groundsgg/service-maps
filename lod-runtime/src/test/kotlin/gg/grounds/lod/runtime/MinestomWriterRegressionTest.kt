@@ -58,6 +58,8 @@ class MinestomWriterRegressionTest {
         val f = LodFixture(root.resolve("input"), MinestomLodAdapter.registrySha256())
         val clock = AtomicLong(1)
         val grants = AtomicInteger()
+        val sourceRequests = AtomicInteger()
+        var accessAllowed = true
         val channel = SocketChannel.open()
         val connection =
             PlayerSocketConnection(
@@ -85,6 +87,11 @@ class MinestomWriterRegressionTest {
             val delegate = f.control(AtomicInteger())
             val control =
                 object : LodControl by delegate {
+                    override fun source(player: UUID): LodLease<LodSourceGrant> {
+                        sourceRequests.incrementAndGet()
+                        return delegate.source(player)
+                    }
+
                     override fun payload(player: UUID, bytes: Int): LodLease<LodPayloadGrant> {
                         grants.incrementAndGet()
                         return LodLease(
@@ -110,6 +117,7 @@ class MinestomWriterRegressionTest {
                     root.resolve("cache"),
                     false,
                     clock::get,
+                    { accessAllowed },
                 )
             receive(Lss20.HANDSHAKE, byteArrayOf(20, 3))
             receive(
@@ -207,15 +215,80 @@ class MinestomWriterRegressionTest {
     }
 
     @Test
+    fun `denied entitlement never opens a source or reserves payload on the real adapter`() {
+        Harness().use { h ->
+            h.accessAllowed = false
+            repeat(20) { h.adapter.pumpForTest() }
+            assertEquals(0, h.sourceRequests.get())
+            assertEquals(0, h.grants.get())
+            assertTrue(h.queue.isEmpty)
+            h.accessAllowed = true
+            h.awaitEnabledConfig()
+            h.drain()
+            assertEquals(1, h.sourceRequests.get())
+        }
+    }
+
+    @Test
+    fun `revocation before the socket writer consumes queued terrain cancels its bytes`() {
+        Harness().use { h ->
+            h.awaitEnabledConfig()
+            h.drain()
+            h.receive(
+                Lss20.BATCH_REQUEST,
+                WireBytes.Writer(17).writeVarInt(1).writeLong(0).writeLong(0).toByteArray(),
+            )
+            h.adapter.pumpForTest()
+            assertNotNull(h.queue.peek())
+            h.accessAllowed = false
+            assertEquals(0L, h.consume(65536).second)
+            h.drain()
+            assertEquals(0, h.adapter.stats().queuedFrames)
+        }
+    }
+
+    @Test
+    fun `completed terrain body bytes count once after the real writer acknowledgement`() {
+        Harness().use { h ->
+            h.awaitEnabledConfig()
+            h.drain()
+            val before = h.adapter.deliveryStats()
+            h.receive(
+                Lss20.BATCH_REQUEST,
+                WireBytes.Writer(17).writeVarInt(1).writeLong(0).writeLong(0).toByteArray(),
+            )
+            h.adapter.pumpForTest()
+            assertEquals(before, h.adapter.deliveryStats())
+            h.drain()
+            val bodyBytes =
+                h.serialized
+                    .filter { it.channel() == Lss20.VOXEL }
+                    .sumOf { it.data().size.toLong() }
+            assertTrue(bodyBytes > 0)
+            assertEquals(bodyBytes, h.adapter.deliveryStats().serializedTerrainBodyBytes)
+            assertEquals(before.serializedFrames + 1, h.adapter.deliveryStats().serializedFrames)
+        }
+    }
+
+    @Test
     fun `a packet that failed to fit remains owned and succeeds on writer retry`() {
         Harness().use { h ->
             val packet = h.awaitEnabledConfig()
+            val before = h.adapter.deliveryStats()
             assertEquals(false to 0L, h.attempt(8))
             assertSame(packet, h.queue.peek())
+            assertEquals(before, h.adapter.deliveryStats())
             val retry = h.consume(65536)
             assertTrue(retry.second > 0, "valid config must be serialized on retry")
             h.drain()
             assertEquals(0, h.adapter.stats().queuedFrames)
+            assertEquals(before.serializedFrames + 1, h.adapter.deliveryStats().serializedFrames)
+            val session = h.serialized.last { it.channel() == Lss20.SESSION }
+            assertEquals(
+                before.serializedControlBodyBytes + session.data().size,
+                h.adapter.deliveryStats().serializedControlBodyBytes,
+            )
+            assertEquals(0, h.adapter.deliveryStats().serializedTerrainBodyBytes)
         }
     }
 
@@ -306,6 +379,7 @@ class MinestomWriterRegressionTest {
     fun `a later cancellation is observed before configuration completion`() {
         Harness().use { h ->
             h.awaitEnabledConfig()
+            val before = h.adapter.deliveryStats()
             val late = EventNode.all("late-cancel").setPriority(Int.MAX_VALUE)
             val once = java.util.concurrent.atomic.AtomicBoolean()
             late.addListener(PlayerPacketOutEvent::class.java) { event ->
@@ -321,6 +395,7 @@ class MinestomWriterRegressionTest {
                 assertEquals(0L, h.consume(65536).second)
                 h.drain()
                 assertTrue(once.get())
+                assertEquals(before, h.adapter.deliveryStats())
                 h.adapter.pumpForTest()
                 assertNotNull(h.queue.peek(), "a later-cancelled config cannot be committed")
             } finally {

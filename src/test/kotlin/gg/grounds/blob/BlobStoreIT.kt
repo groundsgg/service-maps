@@ -72,6 +72,17 @@ class BlobStoreIT {
     }
 
     @Test
+    fun `published objects can be copied to the creator bucket without using private uploads`() {
+        val key = "bundle/test/${UUID.randomUUID()}"
+        putPublic(key, "accepted")
+
+        blobs.copyPublicObject(key, MapTrust.FIRST_PARTY, MapTrust.UNTRUSTED, 8)
+
+        assertEquals(8, blobs.headPublic(key, MapTrust.UNTRUSTED)?.sizeBytes)
+        assertEquals("accepted", read(MinioResource.UGC, key))
+    }
+
+    @Test
     fun `promotion copies an absent destination then verifies it`() {
         val source = "tmp/derive/${UUID.randomUUID()}/bundle.tar.zst"
         val destination = "bundle/test/${UUID.randomUUID()}.tar.zst"

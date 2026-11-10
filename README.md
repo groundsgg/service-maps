@@ -84,7 +84,7 @@ promoted by that path.
 
 The normal derivation candidates remain the current Stable and Edge PackSet catalogs. To retain
 an exact private or historical catalog independently of moving channels, operators may configure
-at most two additional references in `derive.catalog.pinned` (or `MAPS_CATALOGS_PINNED_JSON`).
+at most eight additional references in `derive.catalog.pinned` (or `MAPS_CATALOGS_PINNED_JSON`).
 Each entry has the worker candidate fields `channel`, `id`, `version`, `coordinate`, `file`,
 `uri`, `sha256`, and `size`:
 
@@ -109,22 +109,32 @@ control where a map is deployed. No PackSet channel or Minecraft client pack is 
 
 ## Lit copies
 
-Converted maps carry no light, and a game server that lights a map itself does it on the tick
-while players wait. With derivation enabled (`MAPS_LIT_ENABLED`, default true), every **pinned**
-bundle gets a lit copy once per light format: the lit worker (`lit-worker/`, a plain JVM
-program in the same image, run as a Job like the derive worker) lights it with
-grounds-minestom-runtime's `MapLight` — the code and Minestom build the game servers use — and
-the copy is published content-addressed beside the bundle. The pin file entry then carries
+With derivation and lighting enabled, every **published** bundle gets a prepared light copy
+before its first live pin. The standalone JVM worker (`lit-worker/`) uses the same `MapLight`
+and Minestom build as the game servers. Its accepted result is published content-addressed beside
+the source bundle. No upload moves a live pin automatically.
+
+The exact-version response carries `preparation`: `QUEUED`, `DERIVING`, `AWAITING_REVIEW`,
+`WAITING_FOR_LIGHT`, `LIGHTING`, `READY`, `FAILED` or `UNAVAILABLE`, together with the required
+`lightFormat`. Raw `PUBLISHED` means the immutable bundle exists; only `READY` means it can go
+live. The build-server client waits for that confirmation and reports the current step.
+A live-pin request before readiness returns 409 without changing the pin or its history.
+Explicitly disabled preparation retains the legacy publication path and reports `UNAVAILABLE`.
+
+A pin file entry names the accepted prepared transport:
 
 ```json
-"lit": {"format": 1, "bundleSha256": "…", "bundleUrl": "https://…/bundle/sha256/…tar.zst"}
+"lit": {"format": 2, "bundleSha256": "…", "bundleUrl": "https://…/bundle/sha256/…tar.zst"}
 ```
 
-and every environment pinning that bundle has its pin file republished. Versions and pins never
-change. Lit copies live in `map_lit`, keyed by bundle digest and light format; one bundle is lit
-at a time, a failure is retried up to three times, and lighting fills `present_chunks` and
-`est_loaded_mib` of the bundle's versions. `MAPS_LIT_FORMAT` must equal the worker's
-`MapLight.FORMAT`; raising both lights every pinned bundle again.
+Versions and source digests never change. `map_lit` deduplicates by bundle digest and light
+format. One worker runs at a time; failed attempts are retried up to three times. Three new
+bundle claims prefer recent uploads and the fourth serves the oldest eligible work. Existing
+records preserve this position across API restarts. A shared digest's raw and prepared objects
+are made available in each required published trust bucket, including cross-trust forks.
+Lighting fills `present_chunks` and `est_loaded_mib`. `MAPS_LIT_FORMAT` must equal the worker's
+`MapLight.FORMAT`; raising both prepares published bundles again. Existing pinned environments
+are republished as their prepared copies become available.
 
 ## Offline LOD worker
 
@@ -243,3 +253,58 @@ snapshots, quotas.
 > notices and retries by hand. A builder cannot notice and cannot retry — they see an
 > unexplained hang. A watch is an optimisation; the reconciler is the correctness
 > mechanism.
+
+### Runtime compatibility at live activation
+
+`/map push` prepares a version and its light data. The Portal remains the manual live
+activation surface. `runtimeCompatibility.environments` enables an additional API gate:
+authored scenes need a matching target contract for the environment and map address.
+A refusal returns HTTP 409 with its reason in `detail` before changing the pin, history,
+CDN pin file or NATS announcement. Existing lobbies keep serving their current map.
+Maps without scenes remain usable unless a target declares `requireScene: true`.
+
+Each operator-owned target contains `environment`, `address`, immutable `image` digest,
+`schemaVersions`, exact `assetCatalog`, accepted `actionCatalogs`, `supportedActions`,
+and optional `requireScene`/`normalizeUploads` booleans. Maintain this metadata alongside
+its runtime image deployment; it is a capability declaration, not a trial server or a
+startup guarantee. Map uploads cannot supply or override it. Enabled environments with
+missing scene contracts fail closed.
+
+A target with `normalizeUploads: true` selects the canonical upload catalog from the
+existing trusted catalog candidates. All normalization targets must agree on that catalog.
+The derive worker validates the authored scene against its exact source catalog, verifies
+that the target retains the referenced source definitions' kind, bounds, metadata and animations,
+and validates again after projecting only the catalog reference. The original upload and
+workspace remain unchanged. Incompatible catalogs retain their original reference so
+preparation can finish and the Portal can explain why live activation is blocked. No
+runtime code is loaded from author-supplied locations. Existing immutable versions are
+not rewritten; republish the source as a new version to synchronize it.
+
+Private runtime profiles can declare `requiredElements` (element ID → structural SHA-256)
+and `elementCounts` (ID prefix → count). Derivation records only the selected structural
+facts, and activation rejects missing/changed facts. Fingerprints include type, body,
+look, collision, bounds, rotation and scale; world position, labels and bindings remain
+editable. `legacySceneHashes` is a bounded operator allowlist for independently verified
+pre-migration scenes; it is not a map-author override or a requirement for new uploads.
+
+Rollout order: deploy the new worker image first, then enable normalization/shape metadata
+in the API. Old workers intentionally reject unknown request fields rather than silently
+skipping a requested normalization or scene proof. Contracts are scoped to the uploaded
+map address; another map is never normalized against a lobby's private target.
+
+## LOD measurement semantics
+
+The optional source relay exports `grounds.lod.source.opens`,
+`grounds.lod.source.open.failures`, `grounds.lod.source.read.bytes` and
+`grounds.lod.source.transfers` with the bounded outcomes `complete` or `partial`.
+Bytes count actual origin-stream reads; the final observation runs once on close
+after any in-flight read has finished. Truncated or interrupted downloads retain
+their observed bytes. These counters do not claim SDK request billing, successful
+remote receipt or wire bytes. Observability errors never change authorization,
+retry an origin read, or retain the concurrent-download permit. Durable remote
+attempt/byte and client-payload reservations remain independent and irreversible.
+
+The Minestom LOD library requires an access predicate. Lobby binds it to the current
+`grounds.lod.receive` permission snapshot and rechecks it before source admission
+and packet serialization. Missing rights do not load the optional source. It does
+not delete terrain previously cached by Voxy or change normal map delivery.

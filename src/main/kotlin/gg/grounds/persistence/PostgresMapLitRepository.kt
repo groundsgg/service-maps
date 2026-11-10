@@ -6,6 +6,7 @@ import gg.grounds.domain.LitRecord
 import gg.grounds.domain.LitState
 import gg.grounds.domain.MapLitRepository
 import gg.grounds.domain.MapTrust
+import gg.grounds.domain.PublishedLitCopy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.sql.ResultSet
@@ -15,6 +16,60 @@ import javax.sql.DataSource
 @ApplicationScoped
 class PostgresMapLitRepository @Inject constructor(private val dataSource: DataSource) :
     MapLitRepository {
+
+    override fun find(bundleSha256: String, format: Int): LitRecord? =
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT * FROM map_lit WHERE bundle_sha256 = ? AND light_format = ?")
+                .use { ps ->
+                    ps.setString(1, bundleSha256)
+                    ps.setInt(2, format)
+                    ps.executeQuery().use { rs -> if (rs.next()) record(rs) else null }
+                }
+        }
+
+    override fun publishedTrusts(bundleSha256: String): List<MapTrust> =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    """
+                SELECT DISTINCT m.trust FROM map_version v JOIN map m ON m.id = v.map
+                 WHERE v.bundle_sha256 = ? AND v.state = 'PUBLISHED' ORDER BY m.trust
+            """
+                )
+                .use { ps ->
+                    ps.setString(1, bundleSha256)
+                    ps.executeQuery().use { rs ->
+                        buildList { while (rs.next()) add(MapTrust.valueOf(rs.getString(1))) }
+                    }
+                }
+        }
+
+    override fun publishedCopies(format: Int): List<PublishedLitCopy> =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    """
+                SELECT DISTINCT l.bundle_sha256, l.lit_sha256, l.lit_size, m.trust
+                  FROM map_lit l JOIN map_version v ON v.bundle_sha256 = l.bundle_sha256
+                  JOIN map m ON m.id = v.map
+                 WHERE l.light_format = ? AND l.state = 'LIT' AND v.state = 'PUBLISHED'
+                 ORDER BY l.bundle_sha256, m.trust
+            """
+                )
+                .use { ps ->
+                    ps.setInt(1, format)
+                    ps.executeQuery().use { rs ->
+                        buildList {
+                            while (rs.next()) add(
+                                PublishedLitCopy(
+                                    rs.getString(1),
+                                    rs.getString(2),
+                                    rs.getLong(3),
+                                    MapTrust.valueOf(rs.getString(4)),
+                                )
+                            )
+                        }
+                    }
+                }
+        }
 
     override fun lighting(format: Int): LitRecord? =
         dataSource.connection.use { c ->
@@ -36,22 +91,31 @@ class PostgresMapLitRepository @Inject constructor(private val dataSource: DataS
         dataSource.connection.use { c ->
             c.prepareStatement(
                     """
-                    SELECT v.bundle_sha256, m.trust, MIN(p.moved_at) AS first_pinned
-                      FROM map_pin p
-                      JOIN map m ON m.id = p.map
-                      JOIN map_version v ON v.map = p.map AND v.version = p.version
-                      LEFT JOIN map_lit l
-                        ON l.bundle_sha256 = v.bundle_sha256 AND l.light_format = ?
-                     WHERE v.bundle_sha256 IS NOT NULL
-                       AND (l.bundle_sha256 IS NULL OR (l.state = 'FAILED' AND l.attempts < ?))
-                     GROUP BY v.bundle_sha256, m.trust
-                     ORDER BY first_pinned, v.bundle_sha256
+                    WITH schedule AS (
+                        SELECT COUNT(*) % 4 = 3 AS oldest_turn
+                          FROM map_lit WHERE light_format = ?
+                    ), candidates AS (
+                        SELECT v.bundle_sha256, MIN(m.trust) AS trust,
+                               MIN(v.created_at) AS oldest, MAX(v.created_at) AS newest
+                          FROM map_version v
+                          JOIN map m ON m.id = v.map
+                          LEFT JOIN map_lit l
+                            ON l.bundle_sha256 = v.bundle_sha256 AND l.light_format = ?
+                         WHERE v.state = 'PUBLISHED' AND v.bundle_sha256 IS NOT NULL
+                           AND (l.bundle_sha256 IS NULL OR (l.state = 'FAILED' AND l.attempts < ?))
+                         GROUP BY v.bundle_sha256
+                    )
+                    SELECT bundle_sha256, trust FROM candidates CROSS JOIN schedule
+                     ORDER BY CASE WHEN oldest_turn THEN oldest END ASC,
+                              CASE WHEN NOT oldest_turn THEN newest END DESC,
+                              bundle_sha256
                      LIMIT 1
                     """
                 )
                 .use { ps ->
                     ps.setInt(1, format)
-                    ps.setInt(2, maxAttempts)
+                    ps.setInt(2, format)
+                    ps.setInt(3, maxAttempts)
                     ps.executeQuery().use { rs ->
                         if (!rs.next()) null
                         else
@@ -188,21 +252,7 @@ class PostgresMapLitRepository @Inject constructor(private val dataSource: DataS
         }
 
     override fun trustOf(bundleSha256: String): MapTrust? =
-        dataSource.connection.use { c ->
-            c.prepareStatement(
-                    """
-                    SELECT m.trust FROM map_version v JOIN map m ON m.id = v.map
-                     WHERE v.bundle_sha256 = ?
-                     LIMIT 1
-                    """
-                )
-                .use { ps ->
-                    ps.setString(1, bundleSha256)
-                    ps.executeQuery().use { rs ->
-                        if (rs.next()) MapTrust.valueOf(rs.getString(1)) else null
-                    }
-                }
-        }
+        publishedTrusts(bundleSha256).firstOrNull()
 
     private fun record(rs: ResultSet) =
         LitRecord(
@@ -214,6 +264,7 @@ class PostgresMapLitRepository @Inject constructor(private val dataSource: DataS
             litSha256 = rs.getString("lit_sha256"),
             litSize = rs.getObject("lit_size") as Long?,
             startedAt = rs.getTimestamp("started_at").toInstant(),
+            failure = rs.getString("failure"),
         )
 
     private companion object {

@@ -32,6 +32,8 @@ internal class PinnedCatalogs private constructor(val entries: List<AssetCatalog
     }
 
     companion object {
+        private const val MAX_PINNED_CATALOGS = 8
+
         private val fields =
             setOf("channel", "id", "version", "coordinate", "file", "uri", "sha256", "size")
         private val mapper = ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
@@ -48,8 +50,8 @@ internal class PinnedCatalogs private constructor(val entries: List<AssetCatalog
                 } catch (_: Exception) {
                     throw IllegalArgumentException("Invalid catalog pin JSON")
                 }
-            require(root != null && root.isArray && root.size() <= 2) {
-                "At most two catalog pins are allowed"
+            require(root != null && root.isArray && root.size() <= MAX_PINNED_CATALOGS) {
+                "At most $MAX_PINNED_CATALOGS catalog pins are allowed"
             }
             val pins =
                 root.map { node ->

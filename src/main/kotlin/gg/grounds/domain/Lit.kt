@@ -10,7 +10,7 @@ enum class LitState {
     FAILED,
 }
 
-/** A pinned bundle that has no lit copy of the current format yet. */
+/** A published bundle that has no lit copy of the current format yet. */
 data class LitCandidate(val bundleSha256: String, val trust: MapTrust)
 
 /** One bundle's lit copy, in one light format. */
@@ -23,6 +23,7 @@ data class LitRecord(
     val litSha256: String?,
     val litSize: Long?,
     val startedAt: Instant,
+    val failure: String? = null,
 )
 
 /** What a finished lighting job reports about the lit copy and the map it was made from. */
@@ -37,14 +38,30 @@ data class LitFacts(
     val estLoadedMib: Int,
 )
 
+data class PublishedLitCopy(
+    val bundleSha256: String,
+    val litSha256: String,
+    val litSize: Long,
+    val trust: MapTrust,
+)
+
 interface MapLitRepository {
+    fun find(bundleSha256: String, format: Int): LitRecord?
+
+    /** Required delivery buckets of published versions, in deterministic order. */
+    fun publishedTrusts(bundleSha256: String): List<MapTrust>
+
+    /** Cached copies that must be available in the buckets of their published versions. */
+    fun publishedCopies(format: Int): List<PublishedLitCopy>
 
     /** The bundle being lit now, if any: lighting runs one bundle at a time. */
     fun lighting(format: Int): LitRecord?
 
     /**
-     * The next pinned bundle without a lit copy of [format], oldest pin first, skipping bundles
-     * that already failed [maxAttempts] times.
+     * The next published bundle without a lit copy of [format], including unpinned uploads. Three
+     * new bundle claims prefer recent uploads; the fourth serves the oldest waiting bundle.
+     * Existing current-format records preserve that position across restarts. Retries remain
+     * bounded by [maxAttempts] and reuse their bundle's position.
      */
     fun nextCandidate(format: Int, maxAttempts: Int): LitCandidate?
 

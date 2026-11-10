@@ -294,6 +294,41 @@ constructor(
         destinationBucket: String,
         expectedSourceETag: String?,
     ) {
+        copyObjectFrom(
+            privateBucket,
+            sourceKey,
+            destinationKey,
+            expectedSizeBytes,
+            destinationBucket,
+            expectedSourceETag,
+        ) {
+            headPrivate(sourceKey)
+        }
+    }
+
+    /** Copy an approved immutable object across public trust buckets. */
+    fun copyPublicObject(key: String, source: MapTrust, target: MapTrust, expectedSizeBytes: Long) {
+        copyObjectFrom(
+            publicBucketFor(source),
+            key,
+            key,
+            expectedSizeBytes,
+            publicBucketFor(target),
+            null,
+        ) {
+            headPublic(key, source)
+        }
+    }
+
+    private fun copyObjectFrom(
+        sourceBucket: String,
+        sourceKey: String,
+        destinationKey: String,
+        expectedSizeBytes: Long,
+        destinationBucket: String,
+        expectedSourceETag: String?,
+        sourceMetadata: () -> BlobMetadata?,
+    ) {
         require(expectedSizeBytes >= 0) { "expected size must be non-negative" }
         val beforeCopy = head(destinationBucket, destinationKey)
         if (beforeCopy != null) {
@@ -305,7 +340,10 @@ constructor(
             return
         }
 
-        val source = headPrivate(sourceKey) ?: throw noSuchPrivateObject(sourceKey)
+        val source =
+            sourceMetadata()
+                ?: throw (if (sourceBucket == privateBucket) noSuchPrivateObject(sourceKey)
+                else BlobIntegrityException("published source object is missing"))
         requireMatchingSize("private source $sourceKey", source.sizeBytes, expectedSizeBytes)
         if (expectedSourceETag != null && source.eTag != expectedSourceETag) {
             throw BlobCopyPreconditionException("private source version changed after verification")
@@ -319,7 +357,7 @@ constructor(
         try {
             client.copyObject(
                 conditionalCopyRequest(
-                    sourceBucket = privateBucket,
+                    sourceBucket = sourceBucket,
                     sourceKey = sourceKey,
                     sourceVersionToken = sourceVersionToken,
                     destinationBucket = destinationBucket,

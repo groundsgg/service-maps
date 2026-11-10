@@ -31,6 +31,16 @@ object CanonicalJson {
             requireFields(it, "catalog candidate", CATALOG_FIELDS)
             requireTypes(it, "catalog candidate", CATALOG_TEXT_FIELDS, CATALOG_INTEGER_FIELDS)
         }
+        if (node.has("normalizationCatalog"))
+            validateCatalog(node.path("normalizationCatalog"), "normalizationCatalog")
+        if (node.has("shapeRequirements")) {
+            val shape = node.path("shapeRequirements")
+            requireFields(shape, "shape requirements", setOf("elements", "prefixes"))
+            requireArray(shape.path("elements"), "shape elements")
+            requireStringArray(shape.path("elements"), "shape elements")
+            requireArray(shape.path("prefixes"), "shape prefixes")
+            requireStringArray(shape.path("prefixes"), "shape prefixes")
+        }
         return mapper.readValue(bytes, DeriveRequest::class.java)
     }
 
@@ -79,6 +89,19 @@ object CanonicalJson {
         requireTypes(node, "scene", booleanFields = SCENE_BOOLEAN_FIELDS)
         requireArray(node.path("requiredActions"), "scene requiredActions")
         requireStringArray(node.path("requiredActions"), "scene requiredActions")
+        if (node.has("runtimeFacts")) {
+            val facts = node.path("runtimeFacts")
+            if (
+                !facts.isObject ||
+                    facts.size() > 256 ||
+                    facts.fields().asSequence().any {
+                        !it.value.isTextual ||
+                            it.key.length > 256 ||
+                            it.value.textValue().length > 128
+                    }
+            )
+                invalid("Invalid runtime facts")
+        }
         if (node.path("present").asBoolean()) {
             requireFields(node, "present scene", PRESENT_SCENE_FIELDS)
             requireTypes(node, "present scene", PRESENT_SCENE_TEXT_FIELDS)

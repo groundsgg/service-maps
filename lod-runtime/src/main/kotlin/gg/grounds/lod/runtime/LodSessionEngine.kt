@@ -13,6 +13,8 @@ internal interface LodPeer {
 
     fun world(): LodBinding
 
+    fun mayReceive(): Boolean
+
     fun writable(): Boolean = true
 
     fun enqueue(delivery: LodDelivery)
@@ -61,6 +63,7 @@ internal class LodSessionEngine(
 
     private class Session(val peer: LodPeer) {
         var world = peer.world()
+        var allowed = false
         var epoch = 0L
         var negotiation = 0L
         var capabilities: Int? = null
@@ -96,6 +99,9 @@ internal class LodSessionEngine(
     private var closed = false
     val sentBodyBytes = AtomicLong()
     val discardedFrames = AtomicLong()
+    val serializedTerrainBodyBytes = AtomicLong()
+    val serializedControlBodyBytes = AtomicLong()
+    val serializedFrames = AtomicLong()
 
     init {
         require(players.size in 1..5 && dataVersion > 0)
@@ -111,6 +117,7 @@ internal class LodSessionEngine(
                 sessions[peer.id] = state
             }
             refreshWorld(state)
+            refreshAuthorization(state)
             val at = nanos()
             while (state.inboundTimes.firstOrNull()?.let { at - it >= 1000000000 } == true) state
                 .inboundTimes
@@ -168,6 +175,7 @@ internal class LodSessionEngine(
                     if (closed || sessions[state.peer.id] !== state || !state.peer.online) null
                     else {
                         refreshWorld(state)
+                        refreshAuthorization(state)
                         state.input.removeFirstOrNull()?.let { process(state, it) }
                         maybeLoad(state)
                         // The carrier slot is UUID-wide across old/new connection sessions. Never
@@ -197,6 +205,18 @@ internal class LodSessionEngine(
                                 { first -> authorize(state, prepared, permit, first) },
                                 { serialized ->
                                     synchronized(lock) {
+                                        // A consumed barrier confirms the writer's final
+                                        // cancellation
+                                        // state. Count completed application bodies once, even if a
+                                        // world/permission change happened after serialization.
+                                        if (serialized) {
+                                            serializedFrames.incrementAndGet()
+                                            val counter =
+                                                if (prepared.reply.channel == Lss20.VOXEL)
+                                                    serializedTerrainBodyBytes
+                                                else serializedControlBodyBytes
+                                            counter.addAndGet(prepared.reply.body.size.toLong())
+                                        }
                                         if (
                                             serialized &&
                                                 !closed &&
@@ -233,8 +253,32 @@ internal class LodSessionEngine(
         state.capabilities != null && state.clientVersion == dataVersion
 
     private fun supported(state: Session) =
-        state.world.mapSha256 == expected.mapSha256 &&
+        state.allowed &&
+            state.world.mapSha256 == expected.mapSha256 &&
             state.world.sourceSha256 == expected.sourceSha256
+
+    private fun permitted(peer: LodPeer): Boolean =
+        try {
+            peer.mayReceive()
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun refreshAuthorization(state: Session) {
+        val allowed = permitted(state.peer)
+        if (allowed == state.allowed) return
+        state.allowed = allowed
+        state.negotiation++
+        state.input.clear()
+        state.requests.clear()
+        state.summary = null
+        state.prepared = null
+        state.enabled = false
+        // A previously queued configuration may already have reached the serializer.
+        // Keep the final disable notice even when its acknowledgement is still pending.
+        state.wantConfig =
+            validClient(state) && (allowed || state.announced || state.pending != null)
+    }
 
     private fun resetWorld(state: Session, world: LodBinding) {
         state.world = world
@@ -377,6 +421,7 @@ internal class LodSessionEngine(
                     world.mapSha256 == state.world.mapSha256 &&
                     world.sourceSha256 == state.world.sourceSha256 &&
                     validClient(state) &&
+                    (frame.configuration == false || permitted(state.peer)) &&
                     permit.valid(at)
             while (state.written.firstOrNull()?.let { at - it.at >= 1000000000 } == true) {
                 state.windowBytes -= state.written.removeFirst().bytes

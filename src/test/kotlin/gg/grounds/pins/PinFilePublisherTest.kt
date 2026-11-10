@@ -4,6 +4,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.sun.net.httpserver.HttpServer
 import gg.grounds.blob.BlobStore
 import gg.grounds.domain.*
+import gg.grounds.lit.MapLightPolicy
 import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
 import java.util.Optional
@@ -104,7 +105,7 @@ class PinFilePublisherTest {
                     PinEvents(Optional.empty()),
                     lods,
                     true,
-                    1,
+                    MapLightPolicy(true, true, 1),
                 )
             assertTrue(publisher.publish("stage"))
             val entry = json.readTree(body.get())["maps"]["lobby/mainlobby"]

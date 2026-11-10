@@ -6,6 +6,7 @@ import gg.grounds.blob.BlobStore
 import gg.grounds.domain.MapLitRepository
 import gg.grounds.domain.MapLodRepository
 import gg.grounds.domain.MapPinRepository
+import gg.grounds.lit.MapLightPolicy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import org.eclipse.microprofile.config.inject.ConfigProperty
@@ -36,7 +37,7 @@ constructor(
     private val lods: MapLodRepository,
     @ConfigProperty(name = "grounds.maps.lod.publication.enabled", defaultValue = "false")
     private val lodPublicationEnabled: Boolean,
-    @ConfigProperty(name = "grounds.maps.lit.format", defaultValue = "1") private val litFormat: Int,
+    private val light: MapLightPolicy,
 ) {
 
     private val log = Logger.getLogger(PinFilePublisher::class.java)
@@ -59,7 +60,7 @@ constructor(
                         // Snapshot and serialisation are inside the try as well: a failure in
                         // either is still a failed projection, and letting it escape would turn
                         // an applied pin move into a 500.
-                        val litCopies = lits.litCopies(litFormat)
+                        val litCopies = lits.litCopies(light.format)
                         val publishedLods =
                             if (lodPublicationEnabled) {
                                 try {
@@ -102,7 +103,7 @@ constructor(
                                                     lit =
                                                         litCopies[pin.bundleSha256]?.let { lit ->
                                                             LitEntry(
-                                                                format = litFormat,
+                                                                format = light.format,
                                                                 bundleSha256 = lit,
                                                                 bundleUrl =
                                                                     blobs.publicBaseFor(pin.trust) +

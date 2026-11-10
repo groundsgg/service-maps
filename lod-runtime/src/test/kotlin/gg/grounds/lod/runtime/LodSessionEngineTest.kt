@@ -11,9 +11,12 @@ import kotlin.test.*
 class LodSessionEngineTest {
     private class Peer(override val id: UUID, var binding: LodBinding) : LodPeer {
         override val online = true
+        var accessAllowed = true
         val queued = ArrayDeque<LodDelivery>()
 
         override fun world() = binding
+
+        override fun mayReceive() = accessAllowed
 
         override fun enqueue(delivery: LodDelivery) {
             queued.add(delivery)
@@ -76,6 +79,44 @@ class LodSessionEngineTest {
         repeat(5) { engine.pump() }
         assertEquals(Lss20.SESSION, peer.flush()?.channel)
     }
+
+    @Test
+    fun `denied entitlement spends no payload credit and later grant enables the same session`() =
+        fixture { _, engine, peer, _, grants ->
+            peer.accessAllowed = false
+            engine.receive(peer, Lss20.HANDSHAKE, byteArrayOf(20, 3))
+            engine.receive(peer, Lss20.CLIENT_INFO, byteArrayOf(42))
+            repeat(5) { engine.pump() }
+            assertEquals(0, grants.get())
+            assertTrue(peer.queued.isEmpty())
+
+            peer.accessAllowed = true
+            repeat(5) { engine.pump() }
+            assertEquals(Lss20.SESSION, peer.flush()?.channel)
+        }
+
+    @Test
+    fun `revoked entitlement fences an already queued terrain frame and can be granted again`() =
+        fixture { _, engine, peer, _, _ ->
+            handshake(engine, peer)
+            val request =
+                WireBytes.Writer(17).writeVarInt(1).writeLong(0).writeLong(0).toByteArray()
+            engine.receive(peer, Lss20.BATCH_REQUEST, request)
+            engine.pump()
+            val pending = peer.queued.removeFirst()
+            assertEquals(Lss20.VOXEL, pending.reply.channel)
+            peer.accessAllowed = false
+            assertFalse(pending.authorize())
+            pending.complete(false)
+            engine.pump()
+            val disabled = assertNotNull(peer.flush())
+            assertContentEquals(byteArrayOf(20, 0, 96, 0, 42), disabled.body)
+
+            peer.accessAllowed = true
+            engine.pump()
+            val enabled = assertNotNull(peer.flush())
+            assertContentEquals(byteArrayOf(20, 1, 96, 0, 42), enabled.body)
+        }
 
     @Test
     fun `vanilla unknown players wrong map and mismatched client receive no terrain`() =

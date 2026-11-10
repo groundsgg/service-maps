@@ -20,10 +20,12 @@ import gg.grounds.domain.MapRepository
 import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
+import gg.grounds.domain.NotPreparedException
 import gg.grounds.domain.NotPublishedException
 import gg.grounds.domain.VersionNotFoundException
 import gg.grounds.domain.VersionNotPublishableException
 import gg.grounds.domain.VersionState
+import gg.grounds.lit.MapPreparation
 import gg.grounds.pins.PinFilePublisher
 import io.quarkus.security.Authenticated
 import io.quarkus.security.identity.SecurityIdentity
@@ -62,6 +64,8 @@ constructor(
     private val identity: SecurityIdentity,
     private val derive: DeriveCompatibility,
     private val coordinator: DeriveCoordinator,
+    private val preparation: MapPreparation,
+    private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
 
     @Operation(
@@ -254,7 +258,9 @@ constructor(
                         versions.find(map.id, committed.version) ?: committed
                     }
                 else committed
-            Response.status(Response.Status.CREATED).entity(response.toDto()).build()
+            Response.status(Response.Status.CREATED)
+                .entity(response.toDto(preparation.status(response)))
+                .build()
         }
 
     /**
@@ -314,7 +320,7 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
-            Response.ok(found.toDto()).build()
+            Response.ok(found.toDto(preparation.status(found))).build()
         }
 
     @Tag(name = "Versions")
@@ -346,7 +352,9 @@ constructor(
                     // The transaction already created a durable reconciliation candidate.
                 }
                 val current = versions.find(map.id, version) ?: retried
-                Response.status(Response.Status.ACCEPTED).entity(current.toDto()).build()
+                Response.status(Response.Status.ACCEPTED)
+                    .entity(current.toDto(preparation.status(current)))
+                    .build()
             } catch (e: VersionNotFoundException) {
                 problem(Response.Status.NOT_FOUND, e.message ?: "no such version")
             } catch (e: DeriveResultRejectedException) {
@@ -510,24 +518,20 @@ constructor(
             }
             if (!authz.mayAuthor(target))
                 return@withMap denied("create a map in ${target.namespace}")
+            val targetTrust =
+                if (source.trust == MapTrust.UNTRUSTED || target.namespace.startsWith("u/"))
+                    MapTrust.UNTRUSTED
+                else MapTrust.FIRST_PARTY
             try {
+                preparation.ensureDelivery(from, targetTrust)
                 val created =
                     maps.create(
                         address = target,
                         displayName = request.displayName ?: target.name,
                         kind = source.kind,
                         stateful = source.stateful,
-                        // Trust is inherited from the SOURCE and can only get stricter.
-                        // Deriving it from the target namespace would let anyone launder an
-                        // untrusted creator world into a first-party namespace by forking it
-                        // there — the exact boundary this design exists to hold.
-                        trust =
-                            if (
-                                source.trust == MapTrust.UNTRUSTED ||
-                                    target.namespace.startsWith("u/")
-                            )
-                                MapTrust.UNTRUSTED
-                            else MapTrust.FIRST_PARTY,
+                        // A fork may lower trust, never elevate creator content.
+                        trust = targetTrust,
                         ownerSub = identity.principal.name,
                         forkedFrom = ForkOrigin(source.id, from.version),
                         // One fact, one transaction: a map created without its first version
@@ -577,6 +581,21 @@ constructor(
                 )
             }
             try {
+                val selected = versions.find(map.id, request.version)
+                if (preparation.required && selected?.state == VersionState.PUBLISHED) {
+                    val status = preparation.status(selected)
+                    if (status.stage != "READY")
+                        return@withMap problem(
+                            Response.Status.CONFLICT,
+                            "version ${request.version} is not ready to go live: ${status.detail ?: status.stage.lowercase().replace('_', ' ')}",
+                        )
+                }
+                if (selected?.state == VersionState.PUBLISHED) {
+                    runtimeCompatibility.problem(environment, address, selected.scene)?.let { detail
+                        ->
+                        return@withMap problem(Response.Status.CONFLICT, detail)
+                    }
+                }
                 val moved = pins.move(environment, map.id, request.version, identity.principal.name)
                 val published = pinFiles.publish(environment)
                 Response.ok(
@@ -590,6 +609,8 @@ constructor(
                         )
                     )
                     .build()
+            } catch (e: NotPreparedException) {
+                problem(Response.Status.CONFLICT, e.message ?: "version preparation is pending")
             } catch (e: NotPublishedException) {
                 problem(Response.Status.CONFLICT, e.message ?: "version is not published")
             }
@@ -681,6 +702,13 @@ data class ForkRequest(
 
 data class MovePinRequest(val version: Int = 0)
 
+data class PreparationDto(
+    val stage: String,
+    val lightFormat: Int,
+    val failureCode: String? = null,
+    val detail: String? = null,
+)
+
 data class VersionDto(
     val version: Int,
     val state: String,
@@ -697,6 +725,7 @@ data class VersionDto(
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
+    val preparation: PreparationDto? = null,
 )
 
 data class SceneDto(
@@ -744,7 +773,7 @@ data class PinDto(
     val pinFilePublished: Boolean,
 )
 
-private fun MapVersionRecord.toDto(): VersionDto =
+private fun MapVersionRecord.toDto(preparation: PreparationDto? = null): VersionDto =
     VersionDto(
         version = version,
         state = state.name,
@@ -779,6 +808,7 @@ private fun MapVersionRecord.toDto(): VersionDto =
         publishedBySub = publishedBySub,
         note = note,
         createdAt = createdAt,
+        preparation = preparation,
     )
 
 private fun MapRecord.toDto(): MapDto =

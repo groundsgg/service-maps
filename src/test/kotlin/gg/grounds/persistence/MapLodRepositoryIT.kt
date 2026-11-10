@@ -68,6 +68,23 @@ class MapLodRepositoryIT {
         )
 
     @Test
+    fun `selected format two source is admitted beside the older lit transport`() {
+        val input = input()
+        val source = "f".repeat(64)
+        val attempt = UUID.randomUUID()
+        lits.start(input.second, 2, attempt)
+        lits.succeed(input.second, 2, attempt, LitFacts(source, 50, 1, 1, 1))
+        val selected = run(input).copy(sourceBundleSha256 = source)
+        lods.createRun(selected)
+
+        val claim = lods.claim(selected.id, now)
+        assertNotNull(claim, "the selected prepared format two transport must be admissible")
+        assertEquals(source, claim!!.sourceBundleSha256)
+        assertEquals(input.second, claim.mapBundleSha256)
+        assertEquals(1, lods.budget("pilot")!!.jobsReserved)
+    }
+
+    @Test
     fun `concurrent reconcilers can claim only one globally active job`() {
         val runs = (1..8).map { run().also(lods::createRun) }
         val pool = Executors.newFixedThreadPool(8)

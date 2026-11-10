@@ -46,7 +46,8 @@ data class DerivedFacts(
                         scene.sha256 == null &&
                         scene.assetCatalog == null &&
                         scene.actionCatalog == null &&
-                        scene.requiredActions.isEmpty()
+                        scene.requiredActions.isEmpty() &&
+                        scene.runtimeFacts == null
                 ) {
                     "an absent scene cannot retain scene facts"
                 }

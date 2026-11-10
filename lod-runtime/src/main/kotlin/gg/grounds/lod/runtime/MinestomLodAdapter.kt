@@ -31,6 +31,13 @@ data class LodRuntimeStats(
     val closed: Boolean,
 )
 
+/** Completed application payloads, excluding protocol/TLS/TCP overhead and remote receipt. */
+data class LodDeliveryStats(
+    val serializedTerrainBodyBytes: Long,
+    val serializedControlBodyBytes: Long,
+    val serializedFrames: Long,
+)
+
 /** Optional immutable Lobby pilot. Exclusively owns the four outbound LSS20 channels. */
 class MinestomLodAdapter
 internal constructor(
@@ -42,6 +49,7 @@ internal constructor(
     cacheDirectory: Path,
     autoPump: Boolean,
     nanos: () -> Long,
+    private val access: (UUID) -> Boolean,
 ) : AutoCloseable {
     private val players = players.toSet()
     private val node = EventNode.all("grounds-lod-pilot")
@@ -193,6 +201,8 @@ internal constructor(
 
         override fun world() = binding
 
+        override fun mayReceive() = access(id)
+
         private fun snapshot(current: Instance?) =
             if (current === instance) LodBinding(Any(), expected.mapSha256, expected.sourceSha256)
             else LodBinding(Any(), null, null)
@@ -255,6 +265,13 @@ internal constructor(
             closed.get(),
         )
 
+    fun deliveryStats() =
+        LodDeliveryStats(
+            engine.serializedTerrainBodyBytes.get(),
+            engine.serializedControlBodyBytes.get(),
+            engine.serializedFrames.get(),
+        )
+
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             engine.close()
@@ -281,6 +298,7 @@ internal constructor(
             control: LodControl,
             players: Set<UUID>,
             cacheDirectory: Path,
+            access: (UUID) -> Boolean,
         ): MinestomLodAdapter =
             MinestomLodAdapter(
                 parent,
@@ -291,6 +309,7 @@ internal constructor(
                 cacheDirectory,
                 true,
                 System::nanoTime,
+                access,
             )
 
         fun registrySha256(): String {

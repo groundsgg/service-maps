@@ -25,8 +25,10 @@ import org.hamcrest.Matchers.notNullValue
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
+import software.amazon.awssdk.services.s3.model.PutObjectRequest
 
 @QuarkusTest
 @WithTestResource(PostgresResource::class)
@@ -239,6 +241,7 @@ class VersionLifecycleIT {
             .then()
             .statusCode(200)
 
+        putPublished(digest(2), 1234, MinioResource.PUBLIC)
         val before = listPublic().size
 
         given()
@@ -355,6 +358,7 @@ class VersionLifecycleIT {
             .then()
             .statusCode(200)
 
+        putPublished(digest(3), 10, MinioResource.UGC)
         given()
             .contentType(ContentType.JSON)
             .body("""{"target":"bedwars/laundered"}""")
@@ -458,6 +462,18 @@ class VersionLifecycleIT {
             .post("/v1/maps")
             .then()
             .statusCode(201)
+    }
+
+    private fun putPublished(sha: String, size: Int, bucket: String) {
+        MinioResource.client(requireNotNull(MinioResource.endpoint)).use { s3 ->
+            s3.putObject(
+                PutObjectRequest.builder()
+                    .bucket(bucket)
+                    .key("bundle/sha256/${sha.take(2)}/$sha.tar.zst")
+                    .build(),
+                RequestBody.fromBytes(ByteArray(size)),
+            )
+        }
     }
 
     private fun readPublic(key: String): String =

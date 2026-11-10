@@ -25,6 +25,8 @@ constructor(
     private val enabled: Boolean,
     @ConfigProperty(name = "grounds.maps.derive.url-ttl", defaultValue = "30m")
     private val urlTtl: Duration,
+    private val runtimes: gg.grounds.compatibility.MapRuntimeCompatibility? = null,
+    private val maps: gg.grounds.domain.MapRepository? = null,
 ) {
     init {
         require(!enabled || urlTtl >= MINIMUM_URL_TTL) {
@@ -40,7 +42,9 @@ constructor(
         jobs: DeriveJobGateway,
         candidates: () -> List<AssetCatalogCandidate>,
         enabled: Boolean,
-    ) : this(versions, jobs, null, null, enabled, BlobStore.PRESIGN_TTL) {
+        runtimes: gg.grounds.compatibility.MapRuntimeCompatibility? = null,
+        maps: gg.grounds.domain.MapRepository? = null,
+    ) : this(versions, jobs, null, null, enabled, BlobStore.PRESIGN_TTL, runtimes, maps) {
         testCandidates = candidates
     }
 
@@ -144,7 +148,13 @@ constructor(
                         ),
                     catalogCandidates = requireNotNull(catalogs).candidates(),
                 )
-        jobs.create(DeriveJobRequest(identity, CanonicalJson.write(request).decodeToString()))
+        val address = maps?.findById(mapId)?.address?.toString()
+        val configured =
+            request.copy(
+                normalizationCatalog = address?.let { runtimes?.normalizationCatalog(it) },
+                shapeRequirements = address?.let { runtimes?.shapeRequirements(it) },
+            )
+        jobs.create(DeriveJobRequest(identity, CanonicalJson.write(configured).decodeToString()))
     }
 
     private companion object {

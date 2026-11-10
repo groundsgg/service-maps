@@ -19,6 +19,8 @@ interface MapRepository {
         firstVersion: MapVersionRecord? = null,
     ): MapRecord
 
+    fun findById(id: java.util.UUID): MapRecord? = list(null).singleOrNull { it.id == id }
+
     fun find(address: MapAddress): MapRecord?
 
     /** Every map, or every map in one namespace. Ordered by address so paging is stable. */

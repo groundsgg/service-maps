@@ -46,6 +46,8 @@ data class DeriveRequest(
     val manifestUrl: URI,
     val resultUrl: URI,
     val catalogCandidates: List<AssetCatalogCandidate>,
+    val normalizationCatalog: CatalogReference? = null,
+    val shapeRequirements: gg.grounds.domain.SceneShapeRequirements? = null,
 ) {
     init {
         requireSchema(schemaVersion)
@@ -150,6 +152,7 @@ constructor(
     @param:JsonProperty("assetCatalog") val assetCatalog: CatalogReference?,
     @param:JsonProperty("actionCatalog") val actionCatalog: CatalogReference?,
     @JsonProperty("requiredActions") requiredActions: List<String>,
+    @param:JsonProperty("runtimeFacts") val runtimeFacts: Map<String, String>? = null,
 ) {
     val requiredActions: List<String> = requiredActions.distinct().sorted()
 
@@ -173,6 +176,7 @@ constructor(
             require(assetCatalog == null && actionCatalog == null) {
                 "absent scene cannot have catalogs"
             }
+            require(runtimeFacts == null) { "absent scene cannot have runtime facts" }
             require(requiredActions.isEmpty()) { "absent scene cannot require actions" }
         }
         require(this.requiredActions.none { it.isBlank() }) {
@@ -187,10 +191,19 @@ constructor(
             sha256 == other.sha256 &&
             assetCatalog == other.assetCatalog &&
             actionCatalog == other.actionCatalog &&
-            requiredActions == other.requiredActions
+            requiredActions == other.requiredActions &&
+            runtimeFacts == other.runtimeFacts
 
     override fun hashCode(): Int =
-        listOf(present, schemaVersion, sha256, assetCatalog, actionCatalog, requiredActions)
+        listOf(
+                present,
+                schemaVersion,
+                sha256,
+                assetCatalog,
+                actionCatalog,
+                requiredActions,
+                runtimeFacts,
+            )
             .hashCode()
 
     override fun toString(): String =

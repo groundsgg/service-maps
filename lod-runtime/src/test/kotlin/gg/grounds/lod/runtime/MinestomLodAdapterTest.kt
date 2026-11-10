@@ -85,6 +85,7 @@ class MinestomLodAdapterTest {
                     root.resolve("cache"),
                     false,
                     clock::get,
+                    { true },
                 )
             val connection = Connection()
             val player = TestPlayer(connection, f.player, instance)
