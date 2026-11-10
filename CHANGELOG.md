@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/groundsgg/service-maps/compare/v1.14.0...v1.15.0) (2026-11-10)
+
+
+### Features
+
+* **maps:** add versioned lod generation and delivery ([86cdeb6](https://github.com/groundsgg/service-maps/commit/86cdeb655ff3f9683b035e16886f5dcb8949fe87))
+
 ## [1.14.0](https://github.com/groundsgg/service-maps/compare/v1.13.1...v1.14.0) (2026-11-09)
 
 
