@@ -68,6 +68,33 @@ class MapLodRepositoryIT {
         )
 
     @Test
+    fun `progress is read only and exact across canonical source registry generator and trust`() {
+        val run = run().also(lods::createRun)
+        val claim = lods.claim(run.id, now)!!
+        val reserved = lods.budget(run.budgetId)
+        fun read(
+            trust: MapTrust = MapTrust.FIRST_PARTY,
+            map: String = run.mapBundleSha256,
+            source: String = run.sourceBundleSha256,
+            registry: String = run.registrySha256,
+            generator: String = run.generatorSha256,
+        ) = lods.progress(trust, map, source, registry, generator)
+        assertEquals("GENERATING", read()!!.state)
+        assertNull(read(trust = MapTrust.UNTRUSTED))
+        assertNull(read(map = "f".repeat(64)))
+        assertNull(read(source = "f".repeat(64)))
+        assertNull(read(registry = "f".repeat(64)))
+        assertNull(read(generator = "f".repeat(64)))
+        assertTrue(
+            lods.succeed(claim.attempt, LodFacts("1".repeat(64), 100, "2".repeat(64), 50, 1)) {
+                now
+            }
+        )
+        assertEquals(LodProgress("READY", 1, 100), read())
+        assertEquals(reserved, lods.budget(run.budgetId))
+    }
+
+    @Test
     fun `selected format two source is admitted beside the older lit transport`() {
         val input = input()
         val source = "f".repeat(64)

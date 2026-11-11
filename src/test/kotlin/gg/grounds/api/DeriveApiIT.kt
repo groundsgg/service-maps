@@ -81,6 +81,7 @@ class DeriveApiIT {
             .body("scene.problems[1].qualifiedIdentity", equalTo("x:y"))
             .body("deriveFailureScope", equalTo("SYSTEM"))
             .body("deriveRetryable", equalTo(true))
+            .body("lod.stage", equalTo("NOT_CONFIGURED"))
 
         given()
             .post("/v1/maps/bedwars/derive-api/versions/1/derive/retry")

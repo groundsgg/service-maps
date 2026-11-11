@@ -12,10 +12,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 
 /** Scheduled post-lighting selection. Never called by map push, discovery, or player requests. */
 @ApplicationScoped
-class AutoLodAdmission(
-    private val lods: MapLodRepository,
-    private val selection: AutoLodSelection?,
-) {
+class AutoLodAdmission(private val lods: MapLodRepository, val selection: AutoLodSelection?) {
     @Inject
     constructor(
         lods: MapLodRepository,

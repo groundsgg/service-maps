@@ -65,6 +65,7 @@ constructor(
     private val derive: DeriveCompatibility,
     private val coordinator: DeriveCoordinator,
     private val preparation: MapPreparation,
+    private val lodPreparation: gg.grounds.lod.LodPreparation,
     private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
 
@@ -320,7 +321,8 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
-            Response.ok(found.toDto(preparation.status(found))).build()
+            Response.ok(found.toDto(preparation.status(found), lodPreparation.status(map, found)))
+                .build()
         }
 
     @Tag(name = "Versions")
@@ -709,6 +711,13 @@ data class PreparationDto(
     val detail: String? = null,
 )
 
+data class LodPreparationDto(
+    val stage: String,
+    val failureCode: String? = null,
+    val columns: Int? = null,
+    val bundleBytes: Long? = null,
+)
+
 data class VersionDto(
     val version: Int,
     val state: String,
@@ -726,6 +735,7 @@ data class VersionDto(
     val note: String?,
     val createdAt: Instant,
     val preparation: PreparationDto? = null,
+    val lod: LodPreparationDto? = null,
 )
 
 data class SceneDto(
@@ -773,7 +783,10 @@ data class PinDto(
     val pinFilePublished: Boolean,
 )
 
-private fun MapVersionRecord.toDto(preparation: PreparationDto? = null): VersionDto =
+private fun MapVersionRecord.toDto(
+    preparation: PreparationDto? = null,
+    lod: LodPreparationDto? = null,
+): VersionDto =
     VersionDto(
         version = version,
         state = state.name,
@@ -809,6 +822,7 @@ private fun MapVersionRecord.toDto(preparation: PreparationDto? = null): Version
         note = note,
         createdAt = createdAt,
         preparation = preparation,
+        lod = lod,
     )
 
 private fun MapRecord.toDto(): MapDto =
