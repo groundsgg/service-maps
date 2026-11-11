@@ -113,7 +113,7 @@ configurations.configureEach {
     // Keep API and lit worker on the same Zstd patch despite the Quarkus BOM's older pin.
     resolutionStrategy.force("com.github.luben:zstd-jni:$zstdVersion")
     // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
-    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
+    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.23")
 }
 
 // The complete API suite retains several restricted Quarkus application profiles.
