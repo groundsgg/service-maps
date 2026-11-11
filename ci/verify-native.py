@@ -374,6 +374,7 @@ def entitled_contract(c, env, fixtures, arguments):
     def light_ready():
         value = c.request(path + f'/versions/{version}', token=staff)
         assert value['preparation']['lightFormat'] == 2 and value['preparation']['stage'] == 'READY', value
+        assert value['lod']['stage'] == 'WAITING_FOR_ACTIVATION', value
         return value
     eventually(light_ready)
     c.request(path + '/pins/stage', 'POST', {'version': version}, staff)
@@ -395,6 +396,7 @@ def entitled_contract(c, env, fixtures, arguments):
                 return job
         raise AssertionError('post-lighting automatic LOD Job missing')
     job = eventually(automatic_job)
+    assert c.request(path + f'/versions/{version}', token=staff)['lod']['stage'] == 'GENERATING'
     c.request('/v1/maps/lod-serving/discover', 'POST', request, headers=headers, status=404)
     pins_before = c.s3('/public/pins/stage.json')
     c.execute(job)
@@ -403,6 +405,8 @@ def entitled_contract(c, env, fixtures, arguments):
         assert all(selected[key] == request[key] for key in request if key != 'schemaVersion')
         return selected
     selected = eventually(selection)
+    ready_lod = c.request(path + f'/versions/{version}', token=staff)['lod']
+    assert ready_lod['stage'] == 'READY' and ready_lod['columns'] > 0 and ready_lod['bundleBytes'] > 0, ready_lod
     assert c.s3('/public/pins/stage.json') == pins_before, 'entitled terrain leaked into public pins'
     assert c.sql(f"SELECT count(*) FROM map_lod_delivery_budget WHERE id='{budget}';").splitlines()[-1] == '1'
     control = '/v1/maps/lod-pilots/' + selected['runId']
