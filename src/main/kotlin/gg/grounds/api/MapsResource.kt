@@ -731,11 +731,18 @@ data class VersionDto(
     val deriveFailureScope: String?,
     val deriveRetryable: Boolean,
     val scene: SceneDto,
+    val dialogue: DialogueDto,
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
     val preparation: PreparationDto? = null,
     val lod: LodPreparationDto? = null,
+)
+
+data class DialogueDto(
+    val status: String,
+    val proof: gg.grounds.domain.DialogueProof?,
+    val problems: List<DeriveProblemDto>,
 )
 
 data class SceneDto(
@@ -756,6 +763,11 @@ data class DeriveProblemDto(
     val code: String,
     val qualifiedIdentity: String?,
     val message: String,
+    val component: String? = null,
+    val severity: String? = null,
+    val file: String? = null,
+    val pointer: String? = null,
+    val nodeId: String? = null,
 )
 
 /**
@@ -801,29 +813,28 @@ private fun MapVersionRecord.toDto(
         deriveRetryable = deriveRetryable,
         scene =
             SceneDto(
-                status = scene.status.name,
+                status = if (executionContract?.schemaVersion == 2 && state == VersionState.DERIVE_FAILED &&
+                    scene.problems.none { it.component == "scene" || it.path?.startsWith("scene.json") == true })
+                    "PENDING" else scene.status.name,
                 schemaVersion = scene.schemaVersion,
                 sha256 = scene.sha256,
                 assetCatalog = scene.assetCatalog?.let { CatalogReferenceDto(it.id, it.version) },
                 actionCatalog = scene.actionCatalog?.let { CatalogReferenceDto(it.id, it.version) },
                 requiredActionIds = scene.requiredActions,
                 problems =
-                    scene.problems.map {
-                        DeriveProblemDto(
-                            scope = it.scope.name,
-                            path = it.path,
-                            code = it.code,
-                            qualifiedIdentity = it.qualifiedIdentity,
-                            message = it.message,
-                        )
-                    },
+                    scene.problems.filter { it.component != "dialogue" }.map { it.toDto() },
             ),
+        dialogue = DialogueDto(dialogue.status.name, dialogue.proof, dialogue.problems.map { it.toDto() }),
         publishedBySub = publishedBySub,
         note = note,
         createdAt = createdAt,
         preparation = preparation,
         lod = lod,
     )
+
+private fun gg.grounds.domain.DeriveProblem.toDto() = DeriveProblemDto(
+    scope.name, path, code, qualifiedIdentity, message, component, severity, file, pointer, nodeId,
+)
 
 private fun MapRecord.toDto(): MapDto =
     MapDto(

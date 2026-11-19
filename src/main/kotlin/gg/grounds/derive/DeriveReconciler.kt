@@ -160,7 +160,7 @@ constructor(
                 )
             }
             DeriveJobStatus.SUCCEEDED -> {
-                acceptResult(identity, record.trust)?.let { terminal ->
+                acceptResult(identity, record)?.let { terminal ->
                     observeTerminal(terminal)
                     logTransition(
                         record,
@@ -415,7 +415,7 @@ constructor(
         runCatching { scheduler.close() }
     }
 
-    private fun acceptResult(identity: DeriveIdentity, trust: MapTrust): TerminalAttempt? {
+    private fun acceptResult(identity: DeriveIdentity, record: gg.grounds.domain.MapVersionRecord): TerminalAttempt? {
         return try {
             when (
                 val result =
@@ -432,6 +432,7 @@ constructor(
             ) {
                 is DeriveSuccess -> {
                     requireResultIdentity(result, identity)
+                    requireExecution(result, record)
                     requireArtifactSize(
                         BlobStore.deriveBundleKey(
                             identity.mapId,
@@ -457,6 +458,9 @@ constructor(
                     val derivedManifest = CanonicalJson.readManifest(manifest)
                     require(derivedManifest.sourceSha256 == identity.sourceSha256) {
                         "derive manifest source does not match claimed request"
+                    }
+                    require(derivedManifest.schemaVersion == result.schemaVersion && derivedManifest.dialogue == result.dialogue) {
+                        "derive manifest validation does not match result"
                     }
                     require(derivedManifest.scene == result.scene) {
                         "derive manifest scene does not match result"
@@ -492,7 +496,7 @@ constructor(
                         ),
                         BlobStore.bundleKey(result.bundleSha256),
                         result.bundleSize,
-                        trust,
+                        record.trust,
                     )
                     val acceptance =
                         versions.acceptSuccessOutcome(
@@ -504,6 +508,7 @@ constructor(
                                 null,
                                 null,
                                 projection,
+                                result.dialogue ?: gg.grounds.domain.DialogueProjection(),
                             ),
                             "derive-worker",
                         )
@@ -516,6 +521,7 @@ constructor(
                 }
                 is DeriveFailure -> {
                     requireResultIdentity(result, identity)
+                    requireExecution(result, record)
                     val acceptance =
                         versions.acceptFailureOutcome(
                             identity,
@@ -583,6 +589,20 @@ constructor(
             blobs.headPrivate(key)
                 ?: throw IllegalStateException("derive result references missing private artifact")
         require(metadata.sizeBytes == expectedSize) { "derive result artifact size does not match" }
+    }
+
+    private fun requireExecution(result: DeriveResult, record: gg.grounds.domain.MapVersionRecord) {
+        val contract = record.executionContract
+        val expected = contract?.schemaVersion ?: if (record.deriveContractLegacy) 1 else error("unbound execution")
+        require(result.schemaVersion == expected) { "result schema does not match execution" }
+        if (result is DeriveSuccess && expected == 2) {
+            val proof = requireNotNull(result.dialogue?.proof)
+            require(proof.sourceSha256 == record.sourceSha256 && proof.workerImage == contract!!.workerImage &&
+                proof.executionSha256 == contract.fingerprint() &&
+                (result.dialogue.status != gg.grounds.domain.DialogueStatus.VALID || proof.profile in contract.dialogueProfiles)) {
+                "result does not match immutable execution context"
+            }
+        }
     }
 
     private fun requireResultIdentity(result: DeriveResult, identity: DeriveIdentity) {
