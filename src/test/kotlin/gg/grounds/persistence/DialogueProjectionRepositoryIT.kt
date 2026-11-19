@@ -28,6 +28,28 @@ class DialogueProjectionRepositoryIT {
         SceneProjection(SceneStatus.NONE,null,null,null,null,emptyList(),emptyList()),proof)
     private fun noneProof() = DialogueProjection(DialogueStatus.NONE,DialogueProof(sha,image,DeriveExecutionContract(2,image,emptyList()).fingerprint()))
 
+    @Test fun forkCopiesCompleteCheckedProof() {
+        val id=candidate()
+        val contract=DeriveExecutionContract(2,image,emptyList())
+        versions.bindExecution(id,contract)
+        versions.acceptSuccess(id,facts(noneProof()),"worker")
+        val source=versions.find(id.mapId,id.version)!!
+        val fork=maps.create(MapAddress("dialogue","fork-${UUID.randomUUID()}"),"fork",MapKind.ARENA,false,MapTrust.FIRST_PARTY,"builder",ForkOrigin(id.mapId,id.version),source)
+        val copied=versions.find(fork.id,1)!!
+        assertEquals(source.dialogue,copied.dialogue)
+        assertEquals(source.executionContract,copied.executionContract)
+        assertEquals(source.sourceSha256,copied.sourceSha256)
+        assertEquals(source.manifestSha256,copied.manifestSha256)
+        assertEquals(source.deriveContractLegacy,copied.deriveContractLegacy)
+    }
+    @Test fun unknownForkCannotBecomeChecked() {
+        val id=candidate()
+        versions.acceptSuccess(id,facts(DialogueProjection()),"legacy")
+        val source=versions.find(id.mapId,id.version)!!
+        val fork=maps.create(MapAddress("dialogue","old-${UUID.randomUUID()}"),"old",MapKind.ARENA,false,MapTrust.FIRST_PARTY,"builder",ForkOrigin(id.mapId,id.version),source)
+        assertEquals(DialogueStatus.UNKNOWN,versions.find(fork.id,1)!!.dialogue.status)
+    }
+
     @Test fun sameAttemptCannotChangeContract() {
         val id = candidate()
         val profile = DialogueProfilePin("test:host","1","9".repeat(64),10,java.net.URI("https://cdn.test/profile.json"))

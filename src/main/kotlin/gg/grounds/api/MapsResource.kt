@@ -66,6 +66,7 @@ constructor(
     private val coordinator: DeriveCoordinator,
     private val preparation: MapPreparation,
     private val lodPreparation: gg.grounds.lod.LodPreparation,
+    private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy,
     private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
 
@@ -213,6 +214,8 @@ constructor(
                 )
             }
             val sourceBacked = sourceKey != null
+            if (dialoguePolicy.required && (!sourceBacked || !request.derive))
+                return@withMap problem(Response.Status.CONFLICT, "Dialogue checking requires an uploaded source and derive=true; use /map pull then /map push for an old version.")
             if (derive.required && sourceBacked && !request.derive) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
@@ -413,6 +416,9 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
+            try { dialoguePolicy.requireChecked(existing) } catch (e: gg.grounds.compatibility.DialogueProofRequiredException) {
+                return@withMap problem(Response.Status.CONFLICT,e.message!!)
+            }
             if (existing.deriveRequested) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
@@ -517,6 +523,9 @@ constructor(
                     Response.Status.CONFLICT,
                     "version ${from.version} is ${from.state} and has no usable bundle",
                 )
+            }
+            try { dialoguePolicy.requireChecked(from) } catch (e: gg.grounds.compatibility.DialogueProofRequiredException) {
+                return@withMap problem(Response.Status.CONFLICT,e.message!!)
             }
             if (!authz.mayAuthor(target))
                 return@withMap denied("create a map in ${target.namespace}")

@@ -46,6 +46,7 @@ constructor(
     private val dataSource: DataSource,
     @param:ConfigProperty(name = "grounds.maps.derive.reconcile-batch-size", defaultValue = "100")
     private val reconcileBatchSize: Int,
+    private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy = gg.grounds.compatibility.DialoguePublicationPolicy(false),
 ) : MapVersionRepository {
 
     init {
@@ -146,6 +147,7 @@ constructor(
                 val current =
                     read(c, mapId, version, forUpdate = true)
                         ?: throw VersionNotFoundException(mapId, version)
+                dialoguePolicy.requireChecked(current)
                 // A published version is immutable, and a rejected or taken-down one must
                 // not come back to life through this door.
                 if (

@@ -17,7 +17,7 @@ import java.util.UUID
 import javax.sql.DataSource
 
 @ApplicationScoped
-class PostgresMapRepository @Inject constructor(private val dataSource: DataSource) :
+class PostgresMapRepository @Inject constructor(private val dataSource: DataSource, private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy) :
     MapRepository {
 
     override fun create(
@@ -61,6 +61,7 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
 
                 // Same transaction as the map row, so a fork cannot half-exist.
                 if (firstVersion != null) {
+                    dialoguePolicy.requireChecked(firstVersion)
                     c.prepareStatement(
                             """
                         INSERT INTO map_version (
@@ -112,6 +113,13 @@ class PostgresMapRepository @Inject constructor(private val dataSource: DataSour
                             )
                             ps.executeUpdate()
                         }
+                    c.prepareStatement("UPDATE map_version SET dialogue_projection=CAST(? AS jsonb), derive_execution_contract=CAST(? AS jsonb), derive_contract_legacy=? WHERE map=? AND version=1").use { ps ->
+                        ps.setString(1, gg.grounds.derive.CanonicalJson.write(firstVersion.dialogue).decodeToString())
+                        ps.setString(2, firstVersion.executionContract?.let { gg.grounds.derive.CanonicalJson.write(it).decodeToString() })
+                        ps.setBoolean(3, firstVersion.deriveContractLegacy)
+                        ps.setObject(4,id)
+                        ps.executeUpdate()
+                    }
                     replaceSceneProjection(c, id, 1, firstVersion.scene)
                 }
                 c.commit()
