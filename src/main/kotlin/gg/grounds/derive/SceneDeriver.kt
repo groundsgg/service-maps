@@ -4,6 +4,9 @@ import gg.grounds.catalog.CatalogTransferException
 import gg.grounds.domain.CatalogReference
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
+import gg.grounds.domain.DialogueProjection
+import gg.grounds.domain.DialogueProof
+import gg.grounds.domain.DialogueStatus
 import gg.grounds.scene.format.ActionCatalog
 import gg.grounds.scene.format.ApplicationAction
 import gg.grounds.scene.format.AssetCatalog
@@ -29,6 +32,7 @@ sealed interface SceneDerivationOutcome {
         val bundle: DerivedBundleArtifact,
         val manifest: ByteArray,
         val scene: DerivedScene,
+        val dialogue: DialogueProjection? = null,
     ) : SceneDerivationOutcome
 
     data class Invalid(val problems: List<DeriveProblem>) : SceneDerivationOutcome
@@ -40,6 +44,7 @@ class SceneDeriver(
     private val bundleWriter: DerivedBundleWriter = DerivedBundleWriter(),
     private val normalizationAssets: (() -> AssetCatalog)? = null,
     private val shapeRequirements: gg.grounds.domain.SceneShapeRequirements? = null,
+    private val dialogueContext: DialogueDeriveContext? = null,
 ) {
     fun derive(
         source: InputStream,
@@ -73,6 +78,9 @@ class SceneDeriver(
             return SceneDerivationOutcome.Invalid(sceneResult.problems)
         val sceneFacts = (sceneResult as SceneParseResult.Facts).facts
         val scene = sceneFacts.scene
+        val dialogue = try { deriveDialogue(spool, sourceSha256, sceneFacts) }
+            catch (failure: DialogueContentException) { return SceneDerivationOutcome.Invalid(listOf(failure.problem)) }
+            catch (failure: DialogueValidationException) { return SceneDerivationOutcome.Invalid(failure.problems) }
         val updated =
             spool.filterNot { it.path == "scene.json" } +
                 listOfNotNull(
@@ -86,6 +94,8 @@ class SceneDeriver(
         val manifest =
             CanonicalJson.write(
                 DerivedManifest(
+                    schemaVersion = dialogueContext?.execution?.schemaVersion ?: 1,
+                    dialogue = dialogue,
                     sourceSha256 = sourceSha256,
                     bundleDigestInputs = updated.map { it.path },
                     scene = scene,
@@ -97,7 +107,38 @@ class SceneDeriver(
             bundleWriter.write(updated, manifest, output),
             manifest,
             scene,
+            dialogue,
         )
+    }
+
+    private fun deriveDialogue(spool: List<SpoolEntry>, source: String, facts: SceneFacts): DialogueProjection? {
+        val context = dialogueContext ?: return null
+        val execution = context.execution
+        val profiles = execution.dialogueProfiles.associateWith { context.profileLoader.load(it) }
+        val knownStarts = profiles.values.flatMap { it.startActions.keys }.toSet()
+        val inputs = DialogueBundleInputs.read(spool, knownStarts, facts.document)
+        if (inputs is DialogueInputScan.Absent)
+            return DialogueProjection(DialogueStatus.NONE, DialogueProof(source, execution.workerImage, execution.fingerprint()))
+        inputs as DialogueInputScan.Present
+        if (profiles.isEmpty()) throw DialogueProfileConfigurationException()
+        val bindings = DialogueContentContracts.readBindings(inputs.bindingsBytes)
+        val pin = profiles.keys.singleOrNull { it.reference() == bindings.profile }
+            ?: throw DialogueContentException(DeriveProblem(DeriveFailureScope.CONTENT,"grounds/dialogue.json","DIALOGUE_PROFILE_UNKNOWN",null,
+                "Bindings require an unknown host profile", "dialogue", "ERROR", "grounds/dialogue.json", "/profile"))
+        val document = facts.document ?: throw DialogueContentException(DeriveProblem(DeriveFailureScope.CONTENT,"scene.json","DIALOGUE_SCENE_REQUIRED",null,
+            "Grounds Story requires an explicit NPC Scene", "dialogue", "ERROR", "scene.json", "/"))
+        val profile = profiles.getValue(pin)
+        val content = DialogueBundleValidation.validate(inputs, profile)
+        val problems = DialogueDiagnostics.bounded(content.problems + DialogueSceneReferences.validate(content, bindings, profile, document, requireNotNull(facts.catalogs)))
+        if (problems.any { it.severity != "WARNING" }) throw DialogueValidationException(problems)
+        val scene = facts.scene
+        return DialogueProjection(DialogueStatus.VALID, DialogueProof(
+            source, execution.workerImage, execution.fingerprint(), sceneSha256=scene.sha256,
+            assetCatalog=scene.assetCatalog, actionCatalog=scene.actionCatalog, profile=pin,
+            hostCatalogSha256=sha256(inputs.hostBytes), contentPin=content.catalogue.contentPin().sha256(),
+            files=content.files, dialogueIds=content.catalogue.entries().keys.sorted(), requirements=content.requirements,
+            bindingsSchemaVersion=1,
+        ), problems)
     }
 
     private fun noScene() =

@@ -26,7 +26,7 @@ class DialogueProjectionRepositoryIT {
     }
     private fun facts(proof: DialogueProjection) = DerivedFacts("c".repeat(64),"d".repeat(64),2,null,null,
         SceneProjection(SceneStatus.NONE,null,null,null,null,emptyList(),emptyList()),proof)
-    private fun noneProof() = DialogueProjection(DialogueStatus.NONE,DialogueProof(sha,image))
+    private fun noneProof() = DialogueProjection(DialogueStatus.NONE,DialogueProof(sha,image,DeriveExecutionContract(2,image,emptyList()).fingerprint()))
 
     @Test fun sameAttemptCannotChangeContract() {
         val id = candidate()
@@ -75,7 +75,7 @@ class DialogueProjectionRepositoryIT {
     @Test fun checkedProofCannotNameAnotherWorker() {
         val id = candidate()
         versions.bindExecution(id,DeriveExecutionContract(2,image,emptyList()))
-        val wrong = DialogueProjection(DialogueStatus.NONE,DialogueProof(sha,"other@sha256:${"e".repeat(64)}"))
+        val wrong = DialogueProjection(DialogueStatus.NONE,DialogueProof(sha,"other@sha256:${"e".repeat(64)}",DeriveExecutionContract(2,image,emptyList()).fingerprint()))
         assertThrows<DeriveResultRejectedException> { versions.acceptSuccess(id,facts(wrong),"worker") }
     }
     @Test fun concurrentBindChoosesExactlyOneImmutableContract() {
@@ -93,5 +93,12 @@ class DialogueProjectionRepositoryIT {
             assertTrue(results.single { it.isFailure }.exceptionOrNull() is DeriveResultIntegrityException)
             assertEquals(results.single { it.isSuccess }.getOrThrow(),versions.find(id.mapId,id.version)!!.executionContract)
         }
+    }
+
+    @Test fun absenceProofCannotHideAnotherDetectionContext() {
+        val id = candidate()
+        val configured = DialogueProfilePin("test:host","1","9".repeat(64),10,java.net.URI("https://cdn.test/profile.json"))
+        versions.bindExecution(id,DeriveExecutionContract(2,image,listOf(configured)))
+        assertThrows<DeriveResultRejectedException> { versions.acceptSuccess(id,facts(noneProof()),"worker") }
     }
 }

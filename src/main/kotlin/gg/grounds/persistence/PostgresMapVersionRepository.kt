@@ -535,6 +535,7 @@ constructor(
         if (contract?.schemaVersion != 2) throw DeriveResultRejectedException("checked dialogue facts require a bound schema 2 execution")
         val proof = requireNotNull(facts.dialogue.proof)
         if (proof.workerImage != contract.workerImage || proof.sourceSha256 != identity.sourceSha256 ||
+            proof.executionSha256 != contract.fingerprint() ||
             (facts.dialogue.status == DialogueStatus.VALID && proof.profile !in contract.dialogueProfiles))
             throw DeriveResultRejectedException("dialogue facts do not match the immutable execution context")
     }

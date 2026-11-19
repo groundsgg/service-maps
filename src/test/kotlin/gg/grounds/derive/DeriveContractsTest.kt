@@ -326,7 +326,7 @@ class DeriveContractsTest {
 
     @Test fun allProofFieldsParticipateInEquality() {
         fun proof(files: List<DialogueFilePin> = emptyList(), requirements: List<DialogueRequirement> = emptyList(), bindings: Int? = null) =
-            DialogueProof(digest(1),"test@sha256:${digest(8)}",files=files,requirements=requirements,bindingsSchemaVersion=bindings)
+            DialogueProof(digest(1),"test@sha256:${digest(8)}",digest(9),files=files,requirements=requirements,bindingsSchemaVersion=bindings)
         assertTrue(proof() != proof(files=listOf(DialogueFilePin("dialogues/a.json",digest(3),2))))
         assertTrue(proof() != proof(requirements=listOf(DialogueRequirement("speaker","mechanic"))))
         assertTrue(proof() != proof(bindings=1))

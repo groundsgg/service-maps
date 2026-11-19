@@ -37,7 +37,8 @@
       "validatorCoordinate": "gg.grounds:dialogue-json:0.1.0",
       "files": [],
       "dialogueIds": [],
-      "requirements": []
+      "requirements": [],
+      "executionSha256": "9b8ee8da2c787054acbb22042eb40f816334739a31c81715744da79e06d09de2"
     }
   }
 }

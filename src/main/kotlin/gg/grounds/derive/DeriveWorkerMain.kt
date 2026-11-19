@@ -1,6 +1,8 @@
 package gg.grounds.derive
 
 import gg.grounds.catalog.CatalogJarLoader
+import gg.grounds.catalog.DialogueProfileLoader
+import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.catalog.DefaultNamespaceCatalogResolver
 import gg.grounds.catalog.NamespaceCatalogResolver
 import gg.grounds.domain.CatalogReference
@@ -34,6 +36,7 @@ object DeriveWorkerMain {
         catalogLoaderFactory: (Path, Boolean) -> CatalogJarLoader = { directory, loopback ->
             CatalogJarLoader(directory, allowLoopbackHttp = loopback)
         },
+        profileLoaderFactory: (Boolean) -> DialogueProfileLoader = { DialogueProfileLoader(WorkerHttpTransfer(it,1048576)) },
     ): Int {
         val options =
             try {
@@ -51,6 +54,7 @@ object DeriveWorkerMain {
         try {
             listOf(request.sourceUrl, request.bundleUrl, request.manifestUrl, request.resultUrl)
                 .plus(request.catalogCandidates.map { it.uri })
+                .plus(request.dialogueProfiles.map { it.uri })
                 .forEach(transfer::preflight)
         } catch (failure: Exception) {
             return 2
@@ -63,12 +67,13 @@ object DeriveWorkerMain {
                 if (actual != request.sourceSha256)
                     throw ContentFailure("source digest does not match request")
                 val result =
-                    derive(request, source, root, options.allowLoopbackHttp, catalogLoaderFactory)
+                    derive(request, source, root, options.allowLoopbackHttp, catalogLoaderFactory, profileLoaderFactory)
                 when (result) {
                     is SceneDerivationOutcome.Invalid ->
                         return failure(request, result.problems, transfer)
                     is SceneDerivationOutcome.Valid -> {
                         try {
+                            val resultBytes = CanonicalJson.write(success(request, result))
                             transfer.upload(
                                 request.bundleUrl,
                                 result.bundle.path,
@@ -79,7 +84,7 @@ object DeriveWorkerMain {
                             transfer.upload(request.manifestUrl, manifest, digest(result.manifest))
                             transfer.upload(
                                 request.resultUrl,
-                                CanonicalJson.write(success(request, result)),
+                                resultBytes,
                             )
                             return 0
                         } catch (e: Exception) {
@@ -113,6 +118,7 @@ object DeriveWorkerMain {
         root: Path,
         loopback: Boolean,
         catalogLoaderFactory: (Path, Boolean) -> CatalogJarLoader,
+        profileLoaderFactory: (Boolean) -> DialogueProfileLoader,
     ): SceneDerivationOutcome {
         val catalogDir = root.resolve("catalogs")
         val deriveDirectory = Files.createDirectory(root.resolve("derive"))
@@ -122,6 +128,11 @@ object DeriveWorkerMain {
                 SceneDeriver(
                         resolver,
                         shapeRequirements = request.shapeRequirements,
+                        dialogueContext = if (request.schemaVersion == 2) DialogueDeriveContext(
+                            DeriveExecutionContract(2,requireNotNull(request.workerImage),request.dialogueProfiles,
+                                request.catalogCandidates,request.normalizationCatalog,request.shapeRequirements),
+                            profileLoaderFactory(loopback),
+                        ) else null,
                         normalizationAssets =
                             request.normalizationCatalog?.let { reference ->
                                 {
@@ -186,6 +197,8 @@ object DeriveWorkerMain {
 
     private fun success(request: DeriveRequest, result: SceneDerivationOutcome.Valid) =
         DeriveSuccess(
+            schemaVersion = request.schemaVersion,
+            dialogue = result.dialogue,
             mapId = request.mapId,
             version = request.version,
             attempt = request.attempt,
@@ -208,13 +221,14 @@ object DeriveWorkerMain {
                         request.resultUrl,
                         CanonicalJson.write(
                             DeriveFailure(
+                                schemaVersion = request.schemaVersion,
                                 mapId = request.mapId,
                                 version = request.version,
                                 attempt = request.attempt,
                                 sourceSha256 = request.sourceSha256,
                                 scope = DeriveFailureScope.CONTENT,
                                 retryable = false,
-                                problems = problems,
+                                problems = if (request.schemaVersion == 2) DialogueDiagnostics.bounded(problems,1048576-16384) else problems,
                             )
                         ),
                     )
@@ -235,6 +249,7 @@ object DeriveWorkerMain {
                         request.resultUrl,
                         CanonicalJson.write(
                             DeriveFailure(
+                                schemaVersion = request.schemaVersion,
                                 mapId = request.mapId,
                                 version = request.version,
                                 attempt = request.attempt,
@@ -245,7 +260,11 @@ object DeriveWorkerMain {
                                     listOf(
                                         problem(
                                             DeriveFailureScope.SYSTEM,
-                                            "SYSTEM",
+                                            when (e) {
+                                                is ProofReportLimitException -> "PROOF_REPORT_LIMIT"
+                                                is DialogueProfileConfigurationException -> "DIALOGUE_PROFILE_CONFIG_MISSING"
+                                                else -> "SYSTEM"
+                                            },
                                             redact(e.message ?: "worker failure"),
                                         )
                                     ),

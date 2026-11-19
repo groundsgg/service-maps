@@ -23,6 +23,30 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class DeriveWorkerMainIT {
+    @Test fun v2WorkerEntryPointUploadsExplicitAbsenceProof() {
+        val source=archive(mapOf("level.dat" to "world".toByteArray()))
+        workerServer(source) { server,uploads ->
+            run(server,request(server,digest(source)).copy(schemaVersion=2,workerImage="worker@sha256:${"a".repeat(64)}"))
+            val result=CanonicalJson.readResult(uploads.single { it.first=="/result" }.second) as DeriveSuccess
+            assertEquals(2,result.schemaVersion)
+            assertEquals(gg.grounds.domain.DialogueStatus.NONE,result.dialogue!!.status)
+        }
+    }
+
+    @Test fun v2StoryWithoutHostProfileYieldsOnlySystemMarker() {
+        val source=archive(mapOf("dialogues/demo.json" to "{}".toByteArray(),"texts/en.json" to "{}".toByteArray(),
+            "context/host-catalog.json" to "{}".toByteArray(),"grounds/dialogue.json" to "{}".toByteArray()))
+        workerServer(source) { server,uploads ->
+            run(server,request(server,digest(source)).copy(schemaVersion=2,workerImage="worker@sha256:${"a".repeat(64)}"))
+            assertEquals(listOf("/result"),uploads.map { it.first })
+            val result=CanonicalJson.readResult(uploads.single().second) as DeriveFailure
+            assertEquals(2,result.schemaVersion)
+            assertEquals("SYSTEM",result.scope.name)
+            assertEquals("DIALOGUE_PROFILE_CONFIG_MISSING",result.problems.single().code)
+            assertTrue(result.retryable)
+        }
+    }
+
     @Test
     fun `archive fixtures keep their digest across wall clock ticks`() {
         val files = mapOf("level.dat" to "world".encodeToByteArray())

@@ -43,6 +43,7 @@ data class DialogueRequirement(val kind: String, val key: String, val speaker: S
 class DialogueProof(
     val sourceSha256: String,
     val workerImage: String,
+    val executionSha256: String,
     val schemaVersion: Int = 1,
     val proof: String = "STATIC_VALIDATION",
     val sceneSha256: String? = null,
@@ -63,13 +64,14 @@ class DialogueProof(
     init {
         require(schemaVersion == 1 && proof == "STATIC_VALIDATION")
         requireDigest(sourceSha256)
+        requireDigest(executionSha256)
         require(workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}")))
         require(validatorCoordinate == "gg.grounds:dialogue-json:0.1.0")
         listOfNotNull(sceneSha256, hostCatalogSha256, contentPin).forEach(::requireDigest)
         require(this.files.map { it.path }.distinct().size == this.files.size)
         require(this.dialogueIds.distinct().size == this.dialogueIds.size && this.dialogueIds.all { it.isNotBlank() })
     }
-    private fun values(): List<Any?> = listOf(sourceSha256, workerImage, schemaVersion, proof,
+    private fun values(): List<Any?> = listOf(sourceSha256, workerImage, executionSha256, schemaVersion, proof,
         sceneSha256, assetCatalog, actionCatalog, validatorCoordinate, profile, hostCatalogSha256,
         contentPin, files, dialogueIds, requirements, bindingsSchemaVersion)
     override fun equals(other: Any?) = other is DialogueProof && values() == other.values()
@@ -131,6 +133,8 @@ class DeriveExecutionContract(
         require(this.dialogueProfiles.map { it.id to it.version }.distinct().size == this.dialogueProfiles.size)
         require(schemaVersion != 1 || this.dialogueProfiles.isEmpty())
     }
+    fun fingerprint(): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(gg.grounds.derive.CanonicalJson.write(this)).joinToString("") { "%02x".format(it) }
     private fun values() = listOf(schemaVersion, workerImage, dialogueProfiles, catalogCandidates, normalizationCatalog, shapeRequirements)
     override fun equals(other: Any?) = other is DeriveExecutionContract && values() == other.values()
     override fun hashCode() = values().hashCode()
