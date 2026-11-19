@@ -1,0 +1,11 @@
+{
+  "speaker.mechanic": "Mechanic",
+  "mechanic.greeting": "Hello! What would you like to know?",
+  "mechanic.lift": "The lift connects the workshop and the upper floor.",
+  "mechanic.city": "Explore the city and come back with questions.",
+  "mechanic.bye": "See you later!",
+  "choice.lift": "Explain the lift",
+  "choice.city": "Tell me about the city",
+  "choice.again": "Start again",
+  "choice.leave": "Later"
+}

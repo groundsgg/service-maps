@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "id": "demo:mechanic",
+  "contentVersion": "1.0.0",
+  "entry": "greeting",
+  "locales": {
+    "default": "en",
+    "supported": [
+      "en",
+      "de"
+    ]
+  },
+  "capabilities": {
+    "required": [
+      "dialogue.choices"
+    ],
+    "optional": [
+      "actor.gesture"
+    ]
+  },
+  "nodes": {
+    "greeting": {
+      "type": "message",
+      "speaker": "mechanic",
+      "text": "mechanic.greeting",
+      "presentation": {
+        "gesture": "demo:wave"
+      },
+      "choices": [
+        {
+          "id": "ask_lift",
+          "text": "choice.lift",
+          "to": "explain_lift"
+        },
+        {
+          "id": "ask_city",
+          "text": "choice.city",
+          "to": "explain_city"
+        },
+        {
+          "id": "again",
+          "text": "choice.again",
+          "to": "greeting"
+        },
+        {
+          "id": "leave",
+          "text": "choice.leave",
+          "to": "farewell",
+          "default": true
+        }
+      ]
+    },
+    "explain_lift": {
+      "type": "message",
+      "speaker": "mechanic",
+      "text": "mechanic.lift",
+      "next": "lift_discussed"
+    },
+    "explain_city": {
+      "type": "message",
+      "speaker": "mechanic",
+      "text": "mechanic.city",
+      "next": "greeting"
+    },
+    "lift_discussed": {
+      "type": "outcome",
+      "milestone": "demo:lift_discussed",
+      "delivery": "local",
+      "onAcknowledged": "farewell",
+      "onUnavailable": "farewell",
+      "onUncertain": "farewell"
+    },
+    "farewell": {
+      "type": "message",
+      "speaker": "mechanic",
+      "text": "mechanic.bye",
+      "next": "done"
+    },
+    "done": {
+      "type": "end",
+      "reason": "completed"
+    }
+  }
+}
