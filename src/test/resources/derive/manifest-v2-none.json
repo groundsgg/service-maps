@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "bundleDigestInputs": [
+    "scene.json"
+  ],
+  "scene": {
+    "present": true,
+    "schemaVersion": "1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "assetCatalog": {
+      "id": "assets",
+      "version": "2026.08"
+    },
+    "actionCatalog": {
+      "id": "grounds",
+      "version": "1"
+    },
+    "requiredActions": [
+      "a.action",
+      "z.action"
+    ]
+  },
+  "dialogue": {
+    "status": "NONE",
+    "problems": [],
+    "proof": {
+      "schemaVersion": 1,
+      "proof": "STATIC_VALIDATION",
+      "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "workerImage": "test@sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "validatorCoordinate": "gg.grounds:dialogue-json:0.1.0",
+      "files": [],
+      "dialogueIds": [],
+      "requirements": []
+    }
+  }
+}

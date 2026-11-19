@@ -1,5 +1,7 @@
 package gg.grounds.derive
 
+import com.fasterxml.jackson.core.JsonFactory
+import com.fasterxml.jackson.core.StreamReadFeature
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JsonMappingException
@@ -11,19 +13,42 @@ import com.fasterxml.jackson.module.kotlin.KotlinModule
 
 object CanonicalJson {
     private val mapper: ObjectMapper =
-        ObjectMapper()
+        ObjectMapper(JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())
             .registerModule(KotlinModule.Builder().build())
             .setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
 
     fun write(value: Any): ByteArray {
-        val sorted = sort(mapper.valueToTree(value))
-        return mapper.writeValueAsBytes(sorted).plus('\n'.code.toByte())
+        val node: JsonNode = mapper.valueToTree(value)
+        val schema = when (value) {
+            is DeriveRequest -> value.schemaVersion
+            is DeriveResult -> value.schemaVersion
+            is DerivedManifest -> value.schemaVersion
+            else -> null
+        }
+        if (schema == 1 && node is ObjectNode) {
+            node.remove(listOf("workerImage", "dialogueProfiles", "dialogue"))
+            node.path("problems").forEach { problem ->
+                if (problem is ObjectNode) problem.remove(NEW_PROBLEM_FIELDS)
+            }
+        }
+        val bytes = mapper.writeValueAsBytes(sort(node)).plus('\n'.code.toByte())
+        if (schema == 2 && ((value is DeriveResult && bytes.size > 1048576) ||
+                (value is DerivedManifest && bytes.size > 4194304))) throw ProofReportLimitException()
+        return bytes
     }
 
     fun readRequest(bytes: ByteArray): DeriveRequest {
         val node = mapper.readTree(bytes)
+        val schema = schema(node)
+        if (schema == 1) rejectExtensions(node, setOf("workerImage", "dialogueProfiles", "dialogue"))
+        else {
+            requireTypes(node, "request", setOf("workerImage"))
+            requireArray(node.path("dialogueProfiles"), "dialogue profiles")
+            if (node.path("dialogueProfiles").size() > 8) invalid("Too many dialogue profiles")
+            node.path("dialogueProfiles").forEach(::validateProfilePin)
+        }
         requireFields(node, "request", REQUEST_FIELDS)
         requireTypes(node, "request", REQUEST_TEXT_FIELDS, REQUEST_INTEGER_FIELDS)
         requireArray(node.path("catalogCandidates"), "catalogCandidates")
@@ -46,6 +71,8 @@ object CanonicalJson {
 
     fun readResult(bytes: ByteArray): DeriveResult {
         val node = mapper.readTree(bytes)
+        val schema = schema(node)
+        if (schema == 1) rejectExtensions(node, setOf("dialogue", "workerImage", "dialogueProfiles"))
         requireFields(node, "result", RESULT_FIELDS)
         requireTypes(node, "result", RESULT_TEXT_FIELDS, RESULT_INTEGER_FIELDS)
         when (node.path("kind").asText()) {
@@ -53,6 +80,7 @@ object CanonicalJson {
                 requireFields(node, "success result", SUCCESS_FIELDS)
                 requireTypes(node, "success result", SUCCESS_TEXT_FIELDS, SUCCESS_INTEGER_FIELDS)
                 validateScene(node.path("scene"))
+                if (schema == 2) validateDialogue(node.path("dialogue"))
             }
             "FAILURE" -> {
                 requireFields(node, "failure result", FAILURE_FIELDS)
@@ -66,7 +94,9 @@ object CanonicalJson {
                 node.path("problems").forEach {
                     requireFields(it, "failure problem", PROBLEM_FIELDS)
                     requireTypes(it, "failure problem", PROBLEM_TEXT_FIELDS)
-                    requireOptionalText(it, "failure problem", OPTIONAL_PROBLEM_TEXT_FIELDS)
+                    if (schema == 1) rejectExtensions(it, NEW_PROBLEM_FIELDS)
+                    requireOptionalText(it, "failure problem", OPTIONAL_PROBLEM_TEXT_FIELDS + if (schema == 2) NEW_PROBLEM_FIELDS else emptySet())
+                    if (it.hasNonNull("severity") && it.path("severity").asText() !in setOf("ERROR", "WARNING")) invalid("Invalid diagnostic severity")
                 }
             }
             else -> invalid("result kind must be SUCCESS or FAILURE")
@@ -76,12 +106,65 @@ object CanonicalJson {
 
     fun readManifest(bytes: ByteArray): DerivedManifest {
         val node = mapper.readTree(bytes)
+        val schema = schema(node)
+        if (schema == 1) rejectExtensions(node, setOf("dialogue"))
+        else validateDialogue(node.path("dialogue"))
         requireFields(node, "manifest", MANIFEST_FIELDS)
         requireTypes(node, "manifest", MANIFEST_TEXT_FIELDS, MANIFEST_INTEGER_FIELDS)
         requireArray(node.path("bundleDigestInputs"), "bundleDigestInputs")
         requireStringArray(node.path("bundleDigestInputs"), "bundleDigestInputs")
         validateScene(node.path("scene"))
         return mapper.readValue(bytes, DerivedManifest::class.java)
+    }
+
+    private fun schema(node: JsonNode): Int {
+        val version = node.path("schemaVersion")
+        if (!version.isIntegralNumber || !version.canConvertToInt() || version.intValue() !in 1..2)
+            invalid("unsupported schemaVersion")
+        return version.intValue()
+    }
+
+    private fun rejectExtensions(node: JsonNode, fields: Set<String>) {
+        if (fields.any { node.has(it) }) invalid("Schema 1 cannot carry dialogue extensions")
+    }
+
+    private fun validateProfilePin(node: JsonNode) {
+        requireFields(node, "dialogue profile", setOf("id", "version", "sha256", "sizeBytes", "uri"))
+        requireTypes(node, "dialogue profile", setOf("id", "version", "sha256", "uri"), setOf("sizeBytes"))
+    }
+
+    private fun validateDialogue(node: JsonNode) {
+        requireFields(node, "dialogue", setOf("status", "proof", "problems"))
+        requireTypes(node, "dialogue", setOf("status"))
+        if (node.path("status").asText() !in setOf("NONE", "VALID")) invalid("Successful dialogue proof must be NONE or VALID")
+        val proof = node.path("proof")
+        requireFields(proof, "dialogue proof", setOf("schemaVersion", "proof", "sourceSha256", "workerImage", "validatorCoordinate", "files", "dialogueIds", "requirements"))
+        requireTypes(proof, "dialogue proof", setOf("proof", "sourceSha256", "workerImage", "validatorCoordinate"), setOf("schemaVersion"))
+        requireOptionalText(proof, "dialogue proof", setOf("sceneSha256", "hostCatalogSha256", "contentPin"))
+        if (proof.hasNonNull("bindingsSchemaVersion") && !proof.path("bindingsSchemaVersion").isIntegralNumber) invalid("Invalid bindings schema type")
+        if (proof.hasNonNull("assetCatalog")) validateCatalog(proof.path("assetCatalog"), "dialogue asset catalog")
+        if (proof.hasNonNull("actionCatalog")) validateCatalog(proof.path("actionCatalog"), "dialogue action catalog")
+        if (proof.hasNonNull("profile")) validateProfilePin(proof.path("profile"))
+        requireArray(proof.path("files"), "dialogue files")
+        proof.path("files").forEach { file ->
+            requireFields(file, "dialogue file", setOf("path", "sha256", "sizeBytes"))
+            requireTypes(file, "dialogue file", setOf("path", "sha256"), setOf("sizeBytes"))
+        }
+        requireArray(proof.path("dialogueIds"), "dialogue IDs")
+        requireStringArray(proof.path("dialogueIds"), "dialogue IDs")
+        requireArray(proof.path("requirements"), "dialogue requirements")
+        proof.path("requirements").forEach { req ->
+            requireFields(req, "dialogue requirement", setOf("kind", "key", "required"))
+            requireTypes(req, "dialogue requirement", setOf("kind", "key"), booleanFields=setOf("required"))
+            requireOptionalText(req, "dialogue requirement", setOf("speaker"))
+        }
+        requireArray(node.path("problems"), "dialogue problems")
+        node.path("problems").forEach { problem ->
+            requireFields(problem, "dialogue problem", PROBLEM_FIELDS)
+            requireTypes(problem, "dialogue problem", PROBLEM_TEXT_FIELDS)
+            requireOptionalText(problem, "dialogue problem", OPTIONAL_PROBLEM_TEXT_FIELDS + NEW_PROBLEM_FIELDS)
+            if (problem.path("severity").asText() != "WARNING") invalid("Successful proof cannot carry errors")
+        }
     }
 
     private fun validateScene(node: JsonNode) {
@@ -174,6 +257,8 @@ object CanonicalJson {
             }
             else -> node
         }
+
+    private val NEW_PROBLEM_FIELDS = setOf("component", "severity", "file", "pointer", "nodeId")
 
     private val REQUEST_FIELDS =
         setOf(

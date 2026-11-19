@@ -6,12 +6,17 @@ import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import com.fasterxml.jackson.annotation.JsonTypeName
 import gg.grounds.domain.CatalogReference
+import gg.grounds.domain.DialogueProfilePin
+import gg.grounds.domain.DialogueProjection
+import gg.grounds.domain.DialogueStatus
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
 import java.net.URI
 import java.util.UUID
 
 private const val CONTRACT_SCHEMA_VERSION = 1
+
+class ProofReportLimitException : IllegalStateException("PROOF_REPORT_LIMIT")
 private val SHA_256 = Regex("[0-9a-f]{64}")
 
 data class AssetCatalogCandidate(
@@ -48,6 +53,8 @@ data class DeriveRequest(
     val catalogCandidates: List<AssetCatalogCandidate>,
     val normalizationCatalog: CatalogReference? = null,
     val shapeRequirements: gg.grounds.domain.SceneShapeRequirements? = null,
+    val workerImage: String? = null,
+    val dialogueProfiles: List<DialogueProfilePin> = emptyList(),
 ) {
     init {
         requireSchema(schemaVersion)
@@ -57,6 +64,10 @@ data class DeriveRequest(
         requireHttpUrl("bundleUrl", bundleUrl)
         requireHttpUrl("manifestUrl", manifestUrl)
         requireHttpUrl("resultUrl", resultUrl)
+        if (schemaVersion == 2) {
+            require(workerImage != null && workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}")))
+            require(dialogueProfiles.size <= 8 && dialogueProfiles.map { it.id to it.version }.distinct().size == dialogueProfiles.size)
+        } else require(workerImage == null && dialogueProfiles.isEmpty())
     }
 }
 
@@ -99,6 +110,7 @@ constructor(
     @param:JsonProperty("manifestSize") val manifestSize: Long,
     @param:JsonProperty("scene") val scene: DerivedScene,
     @param:JsonProperty("kind") override val kind: DeriveResultKind = DeriveResultKind.SUCCESS,
+    @param:JsonProperty("dialogue") val dialogue: DialogueProjection? = null,
 ) : DeriveResult {
     init {
         require(kind == DeriveResultKind.SUCCESS) { "success result kind must be SUCCESS" }
@@ -107,6 +119,7 @@ constructor(
         requireNonNegative("bundleSize", bundleSize)
         requireSha256("manifestSha256", manifestSha256)
         requireNonNegative("manifestSize", manifestSize)
+        requireDialogue(schemaVersion, sourceSha256, scene, dialogue)
     }
 }
 
@@ -217,15 +230,28 @@ constructor(
     @param:JsonProperty("sourceSha256") val sourceSha256: String,
     @JsonProperty("bundleDigestInputs") bundleDigestInputs: List<String>,
     @param:JsonProperty("scene") val scene: DerivedScene,
+    @param:JsonProperty("dialogue") val dialogue: DialogueProjection? = null,
 ) {
     val bundleDigestInputs: List<String> = bundleDigestInputs.distinct().sorted()
 
     init {
         requireSchema(schemaVersion)
         requireSha256("sourceSha256", sourceSha256)
+        requireDialogue(schemaVersion, sourceSha256, scene, dialogue)
         require(this.bundleDigestInputs.none { it.isBlank() }) {
             "bundle digest inputs cannot be blank"
         }
+    }
+}
+
+private fun requireDialogue(schemaVersion: Int, source: String, scene: DerivedScene, dialogue: DialogueProjection?) {
+    if (schemaVersion == 1) { require(dialogue == null); return }
+    requireNotNull(dialogue)
+    require(dialogue.status == DialogueStatus.NONE || dialogue.status == DialogueStatus.VALID)
+    val proof = requireNotNull(dialogue.proof)
+    require(proof.sourceSha256 == source)
+    if (dialogue.status == DialogueStatus.VALID) {
+        require(scene.present && proof.sceneSha256 == scene.sha256 && proof.assetCatalog == scene.assetCatalog && proof.actionCatalog == scene.actionCatalog)
     }
 }
 
@@ -236,7 +262,7 @@ private fun requireIdentity(schemaVersion: Int, version: Int, sourceSha256: Stri
 }
 
 private fun requireSchema(schemaVersion: Int) {
-    require(schemaVersion == CONTRACT_SCHEMA_VERSION) {
+    require(schemaVersion in 1..2) {
         "unsupported schemaVersion: $schemaVersion"
     }
 }
