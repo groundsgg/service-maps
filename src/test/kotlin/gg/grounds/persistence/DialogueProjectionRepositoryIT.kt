@@ -18,14 +18,17 @@ class DialogueProjectionRepositoryIT {
     private val sha = "a".repeat(64)
     private val image = "worker@sha256:${"b".repeat(64)}"
 
-    private fun candidate(): DeriveIdentity {
+    @Inject lateinit var dataSource: javax.sql.DataSource
+    @Inject lateinit var lits: MapLitRepository
+
+    private fun candidate(trust: MapTrust = MapTrust.FIRST_PARTY): DeriveIdentity {
         val map =
             maps.create(
                 MapAddress("dialogue", "test-${UUID.randomUUID()}"),
                 "test",
                 MapKind.ARENA,
                 false,
-                MapTrust.FIRST_PARTY,
+                trust,
                 "builder",
             )
         versions.commitWithDeriveRequest(map.id, sha, "tmp/source", true, null, null, "builder")
@@ -50,6 +53,88 @@ class DialogueProjectionRepositoryIT {
             DialogueStatus.NONE,
             DialogueProof(sha, image, DeriveExecutionContract(2, image, emptyList()).fingerprint()),
         )
+
+    @Test
+    fun freshUnboundSuccessCannotMasqueradeAsLegacy() {
+        val id = candidate()
+        assertThrows<DeriveResultRejectedException> {
+            versions.acceptSuccess(id, facts(DialogueProjection()), "worker")
+        }
+        assertEquals(VersionState.DERIVING, versions.find(id.mapId, id.version)!!.state)
+    }
+
+    @Test
+    fun explicitHistoricalMarkerAllowsUnboundV1ButNotBoundV2() {
+        val legacy = candidate()
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    "UPDATE map_version SET derive_contract_legacy = true WHERE map = ? AND version = ?"
+                )
+                .use { ps ->
+                    ps.setObject(1, legacy.mapId)
+                    ps.setInt(2, legacy.version)
+                    ps.executeUpdate()
+                }
+        }
+        assertEquals(
+            VersionState.PUBLISHED,
+            versions.acceptSuccess(legacy, facts(DialogueProjection()), "legacy").state,
+        )
+        val modern = candidate()
+        versions.bindExecution(modern, DeriveExecutionContract(2, image, emptyList()))
+        assertThrows<DeriveResultRejectedException> {
+            versions.acceptSuccess(modern, facts(DialogueProjection()), "worker")
+        }
+    }
+
+    @Test
+    fun prebindInfrastructureFailureCanStillBecomeTerminal() {
+        val id = candidate()
+        versions.acceptFailure(
+            id,
+            DerivedFailure(
+                DeriveFailureScope.SYSTEM,
+                true,
+                listOf(
+                    DeriveProblem(
+                        DeriveFailureScope.SYSTEM,
+                        null,
+                        "JOB_CREATION",
+                        null,
+                        "Unavailable",
+                    )
+                ),
+            ),
+        )
+        assertEquals(VersionState.DERIVE_FAILED, versions.find(id.mapId, id.version)!!.state)
+    }
+
+    @Test
+    fun replayRemainsIdempotentAfterLightingForBothStorageTrusts() {
+        MapTrust.entries.forEach { trust ->
+            val id = candidate(trust)
+            versions.bindExecution(id, DeriveExecutionContract(2, image, emptyList()))
+            val facts =
+                facts(noneProof())
+                    .copy(bundleSha256 = UUID.randomUUID().toString().replace("-", "").repeat(2))
+            versions.acceptSuccess(id, facts, "worker")
+            val attempt = UUID.randomUUID()
+            val format = 1000 + java.util.concurrent.ThreadLocalRandom.current().nextInt(1000000)
+            lits.start(facts.bundleSha256, format, attempt)
+            lits.succeed(
+                facts.bundleSha256,
+                format,
+                attempt,
+                LitFacts("f".repeat(64), 40, 123, 7, 3),
+            )
+            assertEquals(123, versions.find(id.mapId, id.version)!!.presentChunks)
+            assertFalse(versions.acceptSuccessOutcome(id, facts, "worker").transitioned)
+            assertEquals(123, versions.find(id.mapId, id.version)!!.presentChunks)
+            assertThrows<DeriveResultIntegrityException> {
+                versions.acceptSuccess(id, facts.copy(sizeBytes = facts.sizeBytes + 1), "worker")
+            }
+        }
+    }
 
     @Test
     fun forkCopiesCompleteCheckedProof() {
@@ -80,6 +165,7 @@ class DialogueProjectionRepositoryIT {
     @Test
     fun unknownForkCannotBecomeChecked() {
         val id = candidate()
+        versions.bindExecution(id, DeriveExecutionContract(1, image, emptyList()))
         versions.acceptSuccess(id, facts(DialogueProjection()), "legacy")
         val source = versions.find(id.mapId, id.version)!!
         val fork =

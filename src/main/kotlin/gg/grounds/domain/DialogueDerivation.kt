@@ -164,7 +164,15 @@ class DialogueProjection(
                         proof.actionCatalog != null &&
                         proof.bindingsSchemaVersion == 1 &&
                         proof.dialogueIds.isNotEmpty() &&
-                        proof.files.isNotEmpty()
+                        proof.files.any { it.path.startsWith("dialogues/") } &&
+                        proof.files.any { it.path.startsWith("texts/") } &&
+                        proof.files.any { it.path == "grounds/dialogue.json" } &&
+                        proof.files.any {
+                            it.path == "context/host-catalog.json" &&
+                                it.sha256 == proof.hostCatalogSha256
+                        } &&
+                        proof.files.all { DialoguePaths.isStoryFile(it.path) } &&
+                        DialoguePaths.validInventory(proof.files.map { it.path })
                 )
             }
         }

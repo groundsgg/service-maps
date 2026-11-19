@@ -54,6 +54,23 @@ class SafeTarZstdReaderTest {
     }
 
     @Test
+    fun `overlong filesystem components are content errors before opening a spool file`() {
+        val root = Files.createTempDirectory("safe-tar-test")
+        assertThrows(ArchiveContentException::class.java) {
+            SafeTarZstdReader()
+                .read(
+                    ByteArrayInputStream(archive(entry("dialogues/" + "a".repeat(256) + ".json"))),
+                    root,
+                )
+        }
+        assertTrue(
+            Files.list(root).use {
+                it.noneMatch { p -> !p.fileName.toString().startsWith(".source-") }
+            }
+        )
+    }
+
+    @Test
     fun `rejects links duplicates non-files scene and trailing payload`() {
         val link = TarArchiveEntry("link", TarArchiveEntry.LF_SYMLINK).apply { linkName = "target" }
         listOf(

@@ -88,6 +88,7 @@ class DialogueSceneDeriverTest {
 
     private fun story(
         action: Boolean = false,
+        otherStartProfile: Boolean = false,
         profileAssetVersion: String = "1",
         block: (Map<String, ByteArray>, DialogueDeriveContext, SceneCatalogResolver) -> Unit,
     ) {
@@ -123,6 +124,27 @@ class DialogueSceneDeriverTest {
                         mapOf("test:mechanic" to mapOf("gestures" to mapOf("demo:wave" to "wave"))),
                 )
             )
+        val otherBytes =
+            mapper.writeValueAsBytes(
+                (mapper.readTree(profileBytes) as ObjectNode).apply {
+                    put("id", "other")
+                    set<ObjectNode>(
+                        "startActions",
+                        mapper.readTree(
+                            """{"test:other_start":{"dialogueArgument":"dialogue","speakerArgument":"speaker"}}"""
+                        ) as ObjectNode,
+                    )
+                }
+            )
+        val otherPin =
+            DialogueProfilePin(
+                "other",
+                "1",
+                digest(otherBytes),
+                otherBytes.size.toLong(),
+                URI("https://cdn.test/profile-other.json"),
+            )
+        val otherKey = ActionKey("test:other_start")
         val pin =
             DialogueProfilePin(
                 "test",
@@ -143,7 +165,26 @@ class DialogueSceneDeriverTest {
                 initialAnimation = null,
                 interactionBounds = LocalBounds(ORIGIN, Vec3(1.0, 1.0, 1.0)),
                 proximity = null,
-                bindings = emptyList(),
+                bindings =
+                    if (otherStartProfile)
+                        listOf(
+                            TriggerBinding(
+                                SceneTrigger.RIGHT_CLICK,
+                                emptyList(),
+                                0,
+                                0,
+                                listOf(
+                                    ApplicationAction(
+                                        otherKey,
+                                        mapOf(
+                                            LocalId("dialogue") to StringArgument("missing"),
+                                            LocalId("speaker") to StringArgument("missing"),
+                                        ),
+                                    )
+                                ),
+                            )
+                        )
+                    else emptyList(),
             )
         val scene =
             SceneDocument(
@@ -176,7 +217,30 @@ class DialogueSceneDeriverTest {
                             )
                     ),
                 ),
-                ActionCatalog(CatalogId("test:actions"), "1", emptyMap()),
+                ActionCatalog(
+                    CatalogId("test:actions"),
+                    "1",
+                    if (otherStartProfile)
+                        mapOf(
+                            otherKey to
+                                ActionDefinition(
+                                    otherKey,
+                                    "Start",
+                                    "",
+                                    listOf("dialogue", "speaker").associate { name ->
+                                        LocalId(name) to
+                                            ActionParameter(
+                                                LocalId(name),
+                                                ActionParameterType.STRING,
+                                                true,
+                                                null,
+                                                NoConstraints,
+                                            )
+                                    },
+                                )
+                        )
+                    else emptyMap(),
+                ),
             )
         val files =
             mapOf(
@@ -197,8 +261,10 @@ class DialogueSceneDeriverTest {
             )
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/profile") { exchange ->
-            exchange.sendResponseHeaders(200, profileBytes.size.toLong())
-            exchange.responseBody.use { it.write(profileBytes) }
+            val bytes =
+                if (exchange.requestURI.path == "/profile-other.json") otherBytes else profileBytes
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
         }
         server.start()
         try {
@@ -206,7 +272,7 @@ class DialogueSceneDeriverTest {
                 object : WorkerHttpTransfer(true, 1048576) {
                     override fun download(uri: URI, destination: Path): String =
                         super.download(
-                            URI("http://127.0.0.1:${server.address.port}/profile"),
+                            URI("http://127.0.0.1:${server.address.port}${uri.path}"),
                             destination,
                         )
                 }
@@ -216,7 +282,7 @@ class DialogueSceneDeriverTest {
                     DeriveExecutionContract(
                         2,
                         image,
-                        listOf(pin),
+                        if (otherStartProfile) listOf(pin, otherPin) else listOf(pin),
                         normalizationCatalog =
                             if (profileAssetVersion == "2")
                                 gg.grounds.domain.CatalogReference("test:assets", "2")
@@ -246,6 +312,17 @@ class DialogueSceneDeriverTest {
         assertEquals(execution.fingerprint(), result.dialogue.proof!!.executionSha256)
         assertEquals(2, CanonicalJson.readManifest(result.manifest).schemaVersion)
     }
+
+    @Test
+    fun registeredStartFromOtherApplicableProfileCannotEscapeValidation() =
+        story(otherStartProfile = true) { files, context, resolver ->
+            val result = assertIs<SceneDerivationOutcome.Invalid>(derive(files, context, resolver))
+            assertTrue(
+                result.problems.any {
+                    it.code == "DIALOGUE_TRIGGER_PROFILE_MISMATCH" && it.file == "scene.json"
+                }
+            )
+        }
 
     @Test
     fun validStoryPreservesSourceBytes() = story { files, context, resolver ->

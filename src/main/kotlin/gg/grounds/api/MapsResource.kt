@@ -855,7 +855,9 @@ private fun MapVersionRecord.toDto(
                         executionContract?.schemaVersion == 2 &&
                             state == VersionState.DERIVE_FAILED &&
                             scene.problems.none {
-                                it.component == "scene" || it.path?.startsWith("scene.json") == true
+                                it.component == "scene" ||
+                                    (it.component == null &&
+                                        it.path?.startsWith("scene.json") == true)
                             }
                     )
                         "PENDING"

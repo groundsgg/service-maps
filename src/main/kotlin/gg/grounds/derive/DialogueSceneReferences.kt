@@ -14,6 +14,7 @@ object DialogueSceneReferences {
         profile: DialogueHostProfile,
         scene: SceneDocument,
         catalogs: ResolvedSceneCatalogs,
+        registeredStartActions: Set<String> = profile.startActions.keys,
     ): List<DeriveProblem> {
         val problems = mutableListOf<DeriveProblem>()
         fun problem(
@@ -125,9 +126,19 @@ object DialogueSceneReferences {
             npc.bindings.forEachIndexed { bindingIndex, binding ->
                 binding.actions.forEachIndexed actionLoop@{ actionIndex, action ->
                     if (action !is ApplicationAction) return@actionLoop
-                    val mapping = profile.startActions[action.key.value] ?: return@actionLoop
                     val pointer =
                         "/elements/${scene.elements.indexOf(npc)}/bindings/$bindingIndex/actions/$actionIndex"
+                    val mapping = profile.startActions[action.key.value]
+                    if (mapping == null) {
+                        if (action.key.value in registeredStartActions)
+                            problem(
+                                "DIALOGUE_TRIGGER_PROFILE_MISMATCH",
+                                pointer,
+                                "Registered dialogue start action is unsupported by the selected host profile",
+                                file = "scene.json",
+                            )
+                        return@actionLoop
+                    }
                     val declaration = catalogs.actions.actions[action.key]
                     val parameters = listOf(mapping.dialogueArgument, mapping.speakerArgument)
                     if (

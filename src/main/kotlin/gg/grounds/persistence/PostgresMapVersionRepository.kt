@@ -565,9 +565,9 @@ constructor(
     ) {
         val contract = current.executionContract
         if (facts.dialogue.status == DialogueStatus.UNKNOWN) {
-            if (contract?.schemaVersion == 2)
+            if (contract?.schemaVersion != 1 && !(contract == null && current.deriveContractLegacy))
                 throw DeriveResultRejectedException(
-                    "schema 2 attempt requires checked dialogue facts"
+                    "unknown dialogue facts require bound schema 1 or explicitly migrated legacy execution"
                 )
             return // Legacy internal callers provide no positive absence or Story attestation.
         }
@@ -610,7 +610,10 @@ constructor(
         failure: DerivedFailure,
     ): DialogueProjection =
         if (contract?.schemaVersion == 2)
-            DialogueProjection(DialogueStatus.INVALID, problems = failure.problems)
+            DialogueProjection(
+                DialogueStatus.INVALID,
+                problems = failure.problems.filter { it.component == "dialogue" },
+            )
         else DialogueProjection()
 
     private fun writeDeriveState(
@@ -693,8 +696,10 @@ constructor(
             bundleSha256 == facts.bundleSha256 &&
             manifestSha256 == facts.manifestSha256 &&
             sizeBytes == facts.sizeBytes &&
-            presentChunks == facts.presentChunks &&
-            estLoadedMib == facts.estLoadedMib &&
+            // Lighting fills initially absent estimates after acceptance; supplied facts stay
+            // immutable.
+            (facts.presentChunks == null || presentChunks == facts.presentChunks) &&
+            (facts.estLoadedMib == null || estLoadedMib == facts.estLoadedMib) &&
             scene.matchesPersisted(facts.scene) &&
             dialogue == facts.dialogue &&
             publishedBySub == bySub &&

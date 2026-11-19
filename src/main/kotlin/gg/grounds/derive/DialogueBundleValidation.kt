@@ -2,6 +2,7 @@ package gg.grounds.derive
 
 import gg.grounds.dialogue.core.definition.DialogueDefinition
 import gg.grounds.dialogue.json.DialogueCatalogLoader
+import gg.grounds.dialogue.json.DialogueJsonCodec
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DialogueFilePin
@@ -43,6 +44,17 @@ object DialogueBundleValidation {
                         "context/host-catalog.json",
                         "/",
                     )
+                )
+            )
+        // Context diagnostics and relative definition labels have separate namespaces in the public
+        // codec.
+        // Preflight context so an authored definition called texts/en.json cannot capture its
+        // filename.
+        val context = DialogueJsonCodec().prepareContext(inputs.texts, profile.hostCatalogBytes)
+        if (!context.isValid)
+            throw DialogueValidationException(
+                DialogueDiagnostics.bounded(
+                    context.problems().map { DialogueDiagnostics.fromLibrary(it) }
                 )
             )
         val result =

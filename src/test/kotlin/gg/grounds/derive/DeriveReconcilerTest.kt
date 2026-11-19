@@ -96,6 +96,114 @@ class DeriveReconcilerTest {
     }
 
     @Test
+    fun refreshesExecutionAfterTerminalJobObservation() {
+        val bound = v2Record()
+        val listed = bound.copy(executionContract = null)
+        val versions = FakeVersions(listOf(listed))
+        val result = v2Success(bound)
+        val jobs =
+            FakeJobs(
+                mapOf(listed.identity() to DeriveJobStatus.SUCCEEDED),
+                onFind = { versions.bindExecution(it, bound.executionContract!!) },
+            )
+        reconciler(
+                versions,
+                jobs,
+                FakeArtifacts(CanonicalJson.write(result)).assigned(bound).apply {
+                    complete(result)
+                },
+            )
+            .reconcile()
+        assertEquals(1, versions.successes.size)
+        assertTrue(versions.failures.isEmpty())
+    }
+
+    @Test
+    fun noneCannotHideStoryFilesInMatchingManifest() {
+        val v = v2Record()
+        val initial = v2Success(v)
+        val body =
+            CanonicalJson.write(
+                DerivedManifest(
+                    2,
+                    v.sourceSha256!!,
+                    listOf("dialogues/guide.json"),
+                    initial.scene,
+                    initial.dialogue,
+                )
+            )
+        val result = initial.copy(manifestSha256 = sha256(body), manifestSize = body.size.toLong())
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply {
+                complete(result)
+                manifest = body
+                sizes["manifest"] = BlobMetadata(body.size.toLong())
+            }
+        val versions = FakeVersions(listOf(v))
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(versions.successes.isEmpty())
+        assertTrue(artifacts.promotions.isEmpty())
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
+    }
+
+    @Test
+    fun storyProofMustAccountForEveryManifestStoryFileBeforePromotion() {
+        val base = v2Record()
+        val fixture = gg.grounds.DialogueFactsFixture
+        val v = base.copy(sourceSha256 = fixture.source, executionContract = fixture.contract)
+        val scene =
+            DerivedScene(
+                true,
+                fixture.scene.schemaVersion,
+                fixture.scene.sha256,
+                fixture.scene.assetCatalog,
+                fixture.scene.actionCatalog,
+                emptyList(),
+            )
+        val paths = fixture.story.proof!!.files.map { it.path }
+        listOf(paths.drop(1), paths + "texts/de.json").forEach { inventory ->
+            val body =
+                CanonicalJson.write(
+                    DerivedManifest(2, v.sourceSha256!!, inventory, scene, fixture.story)
+                )
+            val result =
+                DeriveSuccess(
+                    2,
+                    v.mapId,
+                    v.version,
+                    v.deriveAttempt!!,
+                    v.sourceSha256,
+                    "b".repeat(64),
+                    42,
+                    sha256(body),
+                    body.size.toLong(),
+                    scene,
+                    dialogue = fixture.story,
+                )
+            val artifacts =
+                FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply {
+                    complete(result)
+                    manifest = body
+                    sizes["manifest"] = BlobMetadata(body.size.toLong())
+                }
+            val versions = FakeVersions(listOf(v))
+            reconciler(
+                    versions,
+                    FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)),
+                    artifacts,
+                )
+                .reconcile()
+            assertTrue(versions.successes.isEmpty())
+            assertTrue(artifacts.promotions.isEmpty())
+            assertEquals(
+                "RESULT_UNAVAILABLE",
+                versions.failures.single().second.problems.single().code,
+            )
+        }
+    }
+
+    @Test
     fun rejectsOldSchemaForV2Attempt() {
         val v = v2Record()
         val result = success(v)
@@ -1270,6 +1378,11 @@ class DeriveReconcilerTest {
         val retried = mutableListOf<Pair<UUID, Int>>()
 
         fun firstDeriving() = records.firstOrNull { it.deriveAttempt != null }
+
+        override fun find(mapId: UUID, version: Int) =
+            synchronized(records) {
+                records.singleOrNull { it.mapId == mapId && it.version == version }
+            }
 
         override fun bindExecution(
             identity: DeriveIdentity,

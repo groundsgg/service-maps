@@ -175,6 +175,7 @@ class SceneDeriver(
                         profile,
                         document,
                         requireNotNull(facts.catalogs),
+                        knownStarts,
                     )
             )
         if (problems.any { it.severity != "WARNING" }) throw DialogueValidationException(problems)

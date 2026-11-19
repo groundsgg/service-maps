@@ -120,6 +120,52 @@ class DialogueBundleInputsTest {
     }
 
     @Test
+    fun rejectsCompleteReservedAliasesEvenWithoutCanonicalStory() {
+        listOf(
+                "grounds/DIALOGUE.json",
+                "context/HOST-CATALOG.json",
+                "grounds/dialogue.json/child",
+                "context/host-catalog.json/child",
+                "grounds./dialogue.json",
+                "dialogues /guide.json",
+                "grounds/dialogue.json.",
+                "context/host-catalog.json ",
+            )
+            .forEach { path ->
+                assertThrows<DialogueContentException>(path) { read(listOf(file(path))) }
+                assertThrows<DialogueContentException>(path) {
+                    read(context() + file("dialogues/guide.json") + file(path))
+                }
+            }
+        assertIs<DialogueInputScan.Absent>(
+            read(listOf(file("grounds/unrelated.json"), file("context/other.json")))
+        )
+    }
+
+    @Test
+    fun rejectsNonportableComponentsAndAncestorAliases() {
+        listOf(
+                "nested/foo:bar.json",
+                "nested/CON.json",
+                "nested/CON .json",
+                "nested/COM1 .json",
+                "nested/Lpt9.json",
+                "bad?/guide.json",
+                "nested./guide.json",
+                "nested /guide.json",
+                "nested/" + "é".repeat(128) + ".json",
+            )
+            .forEach { name ->
+                assertThrows<DialogueContentException>(name) {
+                    read(context() + file("dialogues/$name"))
+                }
+            }
+        assertThrows<DialogueContentException> {
+            read(context() + file("dialogues/chapter/a.json") + file("dialogues/CHAPTER/b.json"))
+        }
+    }
+
+    @Test
     fun validInputsKeepRelativeDefinitionAndCanonicalLocaleKeys() {
         val inputs =
             assertIs<DialogueInputScan.Present>(

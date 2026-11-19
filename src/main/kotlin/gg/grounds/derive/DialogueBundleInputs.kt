@@ -3,13 +3,13 @@ package gg.grounds.derive
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DialogueFilePin
+import gg.grounds.domain.DialoguePaths
 import gg.grounds.scene.format.ApplicationAction
 import gg.grounds.scene.format.Npc
 import gg.grounds.scene.format.SceneDocument
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.security.MessageDigest
-import java.text.Normalizer
 import java.util.Locale
 
 sealed interface DialogueInputScan {
@@ -45,14 +45,7 @@ object DialogueBundleInputs {
                 ?.flatMap { it.actions }
                 ?.filterIsInstance<ApplicationAction>()
                 ?.any { it.key.value in knownStartActions } == true
-        // Reject aliases of reserved roots even when they would otherwise evade story discovery.
-        spool.forEach { entry ->
-            val first = entry.path.substringBefore('/')
-            if (first.lowercase(Locale.ROOT) in reserved && first !in reserved)
-                fail(entry.path, "DIALOGUE_PATH", "Reserved dialogue path has noncanonical case")
-            if (entry.path == "dialogues" && !entry.directory)
-                fail(entry.path, "DIALOGUE_STRUCTURE", "dialogues must be a directory")
-        }
+        validateDiscoveryPaths(spool)
         if (definitions.isEmpty() && binding == null && host == null && !trigger)
             return DialogueInputScan.Absent
         if (definitions.isEmpty() || binding == null || host == null)
@@ -66,19 +59,11 @@ object DialogueBundleInputs {
         if (definitions.size > 1024 || locales.size > 64)
             fail("dialogues", "DIALOGUE_INPUT_LIMIT", "Too many dialogue or locale files")
         val relevant = (definitions + locales + binding + host).sortedBy { it.path }
-        val seen = HashSet<String>()
+        if (!DialoguePaths.validInventory(relevant.map { it.path }))
+            fail("dialogues", "DIALOGUE_PATH", "Ambiguous or nonportable dialogue path")
         var libraryBytes = 0L
         relevant.forEach { entry ->
             val path = entry.path
-            if (
-                path.toByteArray(Charsets.UTF_8).size > 1024 ||
-                    path.startsWith('/') ||
-                    '\\' in path ||
-                    path.split('/').any { it.isEmpty() || it == "." || it == ".." } ||
-                    !Normalizer.isNormalized(path, Normalizer.Form.NFC) ||
-                    !seen.add(path.lowercase(Locale.ROOT))
-            )
-                fail(path, "DIALOGUE_PATH", "Ambiguous or nonportable dialogue path")
             if (
                 entry.directory ||
                     entry.file == null ||
@@ -153,6 +138,26 @@ object DialogueBundleInputs {
                 },
             java.util.List.copyOf(pins),
         )
+    }
+
+    /** Validate aliases before deciding absence; context/grounds otherwise remain shared roots. */
+    private fun validateDiscoveryPaths(spool: List<SpoolEntry>) {
+        spool.forEach { entry ->
+            val parts = entry.path.split('/')
+            val first = parts.first()
+            val root = first.trimEnd(' ', '.').lowercase(Locale.ROOT)
+            if (root in reserved && first != root)
+                fail(entry.path, "DIALOGUE_PATH", "Reserved dialogue path is noncanonical")
+            val normalized = parts.map { it.trimEnd(' ', '.').lowercase(Locale.ROOT) }
+            val prefix = normalized.take(2).joinToString("/")
+            if (
+                prefix in setOf("grounds/dialogue.json", "context/host-catalog.json") &&
+                    (entry.path != prefix || entry.directory)
+            )
+                fail(entry.path, "DIALOGUE_PATH", "Reserved dialogue file path is noncanonical")
+            if (entry.path in setOf("dialogues", "texts") && !entry.directory)
+                fail(entry.path, "DIALOGUE_STRUCTURE", "Dialogue source root must be a directory")
+        }
     }
 
     private fun fail(file: String, code: String, message: String): Nothing =

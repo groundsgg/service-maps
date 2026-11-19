@@ -159,7 +159,17 @@ constructor(
                 )
             }
             DeriveJobStatus.SUCCEEDED -> {
-                acceptResult(identity, record)?.let { terminal ->
+                // The candidate may predate the coordinator's immutable contract bind.
+                val current = versions.find(record.mapId, record.version)
+                if (
+                    current == null ||
+                        current.deriveAttempt != identity.attempt ||
+                        current.sourceSha256 != identity.sourceSha256
+                ) {
+                    clearRetry(identity)
+                    return
+                }
+                acceptResult(identity, current)?.let { terminal ->
                     observeTerminal(terminal)
                     logTransition(
                         record,
@@ -469,6 +479,30 @@ constructor(
                     }
                     require(derivedManifest.scene == result.scene) {
                         "derive manifest scene does not match result"
+                    }
+                    if (result.schemaVersion == 2) {
+                        val inventory = derivedManifest.bundleDigestInputs
+                        val dialogue = requireNotNull(result.dialogue)
+                        if (dialogue.status == gg.grounds.domain.DialogueStatus.NONE) {
+                            require(
+                                inventory.none {
+                                    it.startsWith("dialogues/") && it.endsWith(".json") ||
+                                        it == "grounds/dialogue.json" ||
+                                        it == "context/host-catalog.json"
+                                }
+                            ) {
+                                "absence proof contradicts manifest Story inventory"
+                            }
+                        } else {
+                            require(
+                                inventory
+                                    .filter(gg.grounds.domain.DialoguePaths::isStoryFile)
+                                    .toSet() ==
+                                    requireNotNull(dialogue.proof).files.map { it.path }.toSet()
+                            ) {
+                                "dialogue proof inventory does not match manifest"
+                            }
+                        }
                     }
                     val scene = result.scene
                     val projection =

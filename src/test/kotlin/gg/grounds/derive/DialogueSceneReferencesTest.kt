@@ -208,6 +208,21 @@ class DialogueSceneReferencesTest {
     }
 
     @Test
+    fun ordinaryUnregisteredSceneActionRemainsIndependent() {
+        val action = ApplicationAction(ActionKey("test:ordinary"), emptyMap())
+        assertEquals(
+            emptyList(),
+            DialogueSceneReferences.validate(
+                content(),
+                bindings(),
+                profile(),
+                scene(listOf(npc(listOf(action)))),
+                catalogs(),
+            ),
+        )
+    }
+
+    @Test
     fun validUnusedDialogueIsAllowed() {
         assertEquals(
             emptyList(),

@@ -277,6 +277,8 @@ private class PhysicalTar(
             fail("archive path is unsafe")
         if (raw.toByteArray(StandardCharsets.UTF_8).size > limits.maxPathBytes)
             fail("archive path exceeds size limit")
+        if (raw.split('/').any { it.toByteArray(StandardCharsets.UTF_8).size > 255 })
+            fail("archive path component exceeds filesystem limit", raw)
         return raw
     }
 

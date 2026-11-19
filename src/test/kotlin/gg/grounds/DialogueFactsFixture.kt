@@ -38,7 +38,13 @@ object DialogueFactsFixture {
                 profile = profile,
                 hostCatalogSha256 = "e".repeat(64),
                 contentPin = "f".repeat(64),
-                files = listOf(DialogueFilePin("dialogues/guide.json", "0".repeat(64), 1)),
+                files =
+                    listOf(
+                        DialogueFilePin("dialogues/guide.json", "0".repeat(64), 1),
+                        DialogueFilePin("texts/en.json", "0".repeat(64), 1),
+                        DialogueFilePin("grounds/dialogue.json", "0".repeat(64), 1),
+                        DialogueFilePin("context/host-catalog.json", "e".repeat(64), 1),
+                    ),
                 dialogueIds = listOf("guide"),
                 bindingsSchemaVersion = 1,
             ),

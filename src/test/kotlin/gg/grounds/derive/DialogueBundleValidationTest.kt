@@ -70,6 +70,25 @@ class DialogueBundleValidationTest {
     }
 
     @Test
+    fun localeDiagnosticCannotBeMisattributedToSameNamedNestedDefinition() {
+        val base = sources()
+        val input =
+            DialogueInputScan.Present(
+                base.bindingsBytes,
+                base.hostBytes,
+                mapOf("texts/en.json" to base.dialogues.getValue("mechanic.json")),
+                base.texts + ("en" to "{".toByteArray()),
+                emptyList(),
+            )
+        val failure =
+            assertThrows<DialogueValidationException> {
+                DialogueBundleValidation.validate(input, profile())
+            }
+        assertTrue(failure.problems.any { it.file == "texts/en.json" })
+        assertFalse(failure.problems.any { it.file == "dialogues/texts/en.json" })
+    }
+
+    @Test
     fun snapshotMismatchCannotValidate() {
         assertEquals(
             "DIALOGUE_HOST_MISMATCH",
