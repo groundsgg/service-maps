@@ -3,12 +3,16 @@ package gg.grounds.derive
 import gg.grounds.blob.BlobCopyPreconditionException
 import gg.grounds.blob.BlobMetadata
 import gg.grounds.blob.BlobStore
+import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
+import gg.grounds.domain.DialogueProjection
+import gg.grounds.domain.DialogueProof
+import gg.grounds.domain.DialogueStatus
 import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
@@ -32,6 +36,259 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 
 class DeriveReconcilerTest {
+    private fun v2Record() =
+        record(VersionState.DERIVING)
+            .copy(
+                executionContract =
+                    DeriveExecutionContract(2, "worker@sha256:${"f".repeat(64)}", emptyList()),
+                deriveContractLegacy = false,
+            )
+
+    private fun v2Success(
+        v: MapVersionRecord,
+        worker: String = v.executionContract!!.workerImage,
+        fingerprint: String = v.executionContract!!.fingerprint(),
+    ): DeriveSuccess {
+        val execution = v.executionContract!!
+        val dialogue =
+            DialogueProjection(
+                DialogueStatus.NONE,
+                DialogueProof(v.sourceSha256!!, worker, fingerprint),
+                listOf(
+                    DeriveProblem(
+                        DeriveFailureScope.CONTENT,
+                        "texts/en.json",
+                        "NOTE",
+                        null,
+                        "context note",
+                        "dialogue",
+                        "WARNING",
+                        "texts/en.json",
+                        "/",
+                        null,
+                    )
+                ),
+            )
+        val scene = DerivedScene(false, null, null, null, null, emptyList())
+        val manifest =
+            CanonicalJson.write(
+                DerivedManifest(
+                    schemaVersion = 2,
+                    sourceSha256 = v.sourceSha256,
+                    bundleDigestInputs = emptyList(),
+                    scene = scene,
+                    dialogue = dialogue,
+                )
+            )
+        return DeriveSuccess(
+            schemaVersion = 2,
+            mapId = v.mapId,
+            version = v.version,
+            attempt = v.deriveAttempt!!,
+            sourceSha256 = v.sourceSha256,
+            bundleSha256 = "b".repeat(64),
+            bundleSize = 42,
+            manifestSha256 = sha256(manifest),
+            manifestSize = manifest.size.toLong(),
+            scene = scene,
+            dialogue = dialogue,
+        )
+    }
+
+    @Test
+    fun refreshesExecutionAfterTerminalJobObservation() {
+        val bound = v2Record()
+        val listed = bound.copy(executionContract = null)
+        val versions = FakeVersions(listOf(listed))
+        val result = v2Success(bound)
+        val jobs =
+            FakeJobs(
+                mapOf(listed.identity() to DeriveJobStatus.SUCCEEDED),
+                onFind = { versions.bindExecution(it, bound.executionContract!!) },
+            )
+        reconciler(
+                versions,
+                jobs,
+                FakeArtifacts(CanonicalJson.write(result)).assigned(bound).apply {
+                    complete(result)
+                },
+            )
+            .reconcile()
+        assertEquals(1, versions.successes.size)
+        assertTrue(versions.failures.isEmpty())
+    }
+
+    @Test
+    fun noneCannotHideStoryFilesInMatchingManifest() {
+        val v = v2Record()
+        val initial = v2Success(v)
+        val body =
+            CanonicalJson.write(
+                DerivedManifest(
+                    2,
+                    v.sourceSha256!!,
+                    listOf("dialogues/guide.json"),
+                    initial.scene,
+                    initial.dialogue,
+                )
+            )
+        val result = initial.copy(manifestSha256 = sha256(body), manifestSize = body.size.toLong())
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply {
+                complete(result)
+                manifest = body
+                sizes["manifest"] = BlobMetadata(body.size.toLong())
+            }
+        val versions = FakeVersions(listOf(v))
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(versions.successes.isEmpty())
+        assertTrue(artifacts.promotions.isEmpty())
+        assertEquals("RESULT_UNAVAILABLE", versions.failures.single().second.problems.single().code)
+    }
+
+    @Test
+    fun storyProofMustAccountForEveryManifestStoryFileBeforePromotion() {
+        val base = v2Record()
+        val fixture = gg.grounds.DialogueFactsFixture
+        val v = base.copy(sourceSha256 = fixture.source, executionContract = fixture.contract)
+        val scene =
+            DerivedScene(
+                true,
+                fixture.scene.schemaVersion,
+                fixture.scene.sha256,
+                fixture.scene.assetCatalog,
+                fixture.scene.actionCatalog,
+                emptyList(),
+            )
+        val paths = fixture.story.proof!!.files.map { it.path }
+        listOf(paths.drop(1), paths + "texts/de.json").forEach { inventory ->
+            val body =
+                CanonicalJson.write(
+                    DerivedManifest(2, v.sourceSha256!!, inventory, scene, fixture.story)
+                )
+            val result =
+                DeriveSuccess(
+                    2,
+                    v.mapId,
+                    v.version,
+                    v.deriveAttempt!!,
+                    v.sourceSha256,
+                    "b".repeat(64),
+                    42,
+                    sha256(body),
+                    body.size.toLong(),
+                    scene,
+                    dialogue = fixture.story,
+                )
+            val artifacts =
+                FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply {
+                    complete(result)
+                    manifest = body
+                    sizes["manifest"] = BlobMetadata(body.size.toLong())
+                }
+            val versions = FakeVersions(listOf(v))
+            reconciler(
+                    versions,
+                    FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)),
+                    artifacts,
+                )
+                .reconcile()
+            assertTrue(versions.successes.isEmpty())
+            assertTrue(artifacts.promotions.isEmpty())
+            assertEquals(
+                "RESULT_UNAVAILABLE",
+                versions.failures.single().second.problems.single().code,
+            )
+        }
+    }
+
+    @Test
+    fun rejectsOldSchemaForV2Attempt() {
+        val v = v2Record()
+        val result = success(v)
+        val versions = FakeVersions(listOf(v))
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply { complete(result) }
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(artifacts.promotions.isEmpty())
+        assertTrue(versions.successes.isEmpty())
+        assertEquals(DeriveFailureScope.SYSTEM, versions.failures.single().second.scope)
+    }
+
+    @Test
+    fun rejectsResultContextMismatchBeforePromotion() {
+        val v = v2Record()
+        val result = v2Success(v, "wrong@sha256:${"e".repeat(64)}")
+        val versions = FakeVersions(listOf(v))
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply { complete(result) }
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(artifacts.promotions.isEmpty())
+        assertEquals(DeriveFailureScope.SYSTEM, versions.failures.single().second.scope)
+    }
+
+    @Test
+    fun rejectsWrongExecutionDigestBeforePromotion() {
+        val v = v2Record()
+        val result = v2Success(v, fingerprint = "0".repeat(64))
+        val versions = FakeVersions(listOf(v))
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply { complete(result) }
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(artifacts.promotions.isEmpty())
+        assertEquals(DeriveFailureScope.SYSTEM, versions.failures.single().second.scope)
+    }
+
+    @Test
+    fun rejectsResultManifestProfileOrSourceMismatch() {
+        val v = v2Record()
+        val original = v2Success(v)
+        val different = DialogueProjection(original.dialogue!!.status, original.dialogue.proof)
+        val manifest =
+            CanonicalJson.write(
+                DerivedManifest(
+                    schemaVersion = 2,
+                    sourceSha256 = v.sourceSha256!!,
+                    bundleDigestInputs = emptyList(),
+                    scene = original.scene,
+                    dialogue = different,
+                )
+            )
+        val result =
+            original.copy(manifestSha256 = sha256(manifest), manifestSize = manifest.size.toLong())
+        val versions = FakeVersions(listOf(v))
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply {
+                complete(result)
+                this.manifest = manifest
+                sizes["manifest"] = BlobMetadata(manifest.size.toLong())
+            }
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertTrue(artifacts.promotions.isEmpty())
+        assertEquals(DeriveFailureScope.SYSTEM, versions.failures.single().second.scope)
+    }
+
+    @Test
+    fun warningsSurviveSuccessfulPublication() {
+        val v = v2Record()
+        val result = v2Success(v)
+        val versions = FakeVersions(listOf(v))
+        val artifacts =
+            FakeArtifacts(CanonicalJson.write(result)).assigned(v).apply { complete(result) }
+        reconciler(versions, FakeJobs(mapOf(v.identity() to DeriveJobStatus.SUCCEEDED)), artifacts)
+            .reconcile()
+        assertEquals(result.dialogue, versions.successes.single().second.dialogue)
+        assertEquals(
+            "WARNING",
+            versions.successes.single().second.dialogue.problems.single().severity,
+        )
+    }
+
     @Test
     fun `strict manifest parser rejects malformed bytes whose claimed facts match`() {
         val version = record(VersionState.DERIVING)
@@ -850,6 +1107,7 @@ class DeriveReconcilerTest {
             "test",
             null,
             Instant.EPOCH,
+            deriveContractLegacy = true,
         )
 
     private fun MapVersionRecord.identity() =
@@ -1015,6 +1273,8 @@ class DeriveReconcilerTest {
             val body =
                 CanonicalJson.write(
                     DerivedManifest(
+                        schemaVersion = result.schemaVersion,
+                        dialogue = result.dialogue,
                         sourceSha256 = result.sourceSha256,
                         bundleDigestInputs = emptyList(),
                         scene = result.scene,
@@ -1118,6 +1378,30 @@ class DeriveReconcilerTest {
         val retried = mutableListOf<Pair<UUID, Int>>()
 
         fun firstDeriving() = records.firstOrNull { it.deriveAttempt != null }
+
+        override fun find(mapId: UUID, version: Int) =
+            synchronized(records) {
+                records.singleOrNull { it.mapId == mapId && it.version == version }
+            }
+
+        override fun bindExecution(
+            identity: DeriveIdentity,
+            proposed: gg.grounds.domain.DeriveExecutionContract,
+        ): gg.grounds.domain.DeriveExecutionContract =
+            synchronized(records) {
+                val index =
+                    records.indexOfFirst {
+                        it.mapId == identity.mapId &&
+                            it.version == identity.version &&
+                            it.deriveAttempt == identity.attempt
+                    }
+                require(index >= 0)
+                val existing = records[index].executionContract
+                if (existing != null && existing != proposed)
+                    throw DeriveResultIntegrityException("conflicting execution")
+                records[index] = records[index].copy(executionContract = proposed)
+                proposed
+            }
 
         override fun listReconcileCandidates() =
             synchronized(records) {

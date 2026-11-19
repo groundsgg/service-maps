@@ -310,3 +310,78 @@ and packet serialization. Missing rights do not load the optional source. It doe
 not delete terrain previously cached by Voxy or change normal map delivery.
 
 Automatic, private Stage Lobby LOD generation and permission-gated serving are described in [docs/lod-serving.md](docs/lod-serving.md).
+
+### Dialogue content qualification (E1)
+
+`dialogues/**/*.json`, direct `texts/<locale>.json`, `context/host-catalog.json` and
+`grounds/dialogue.json` travel with the world. The worker uses the public
+`dialogue-core` / `dialogue-json` 0.1.0 validator in process; no authoring CLI or
+Minestom session runtime is required by the service. Authored dialogue/text/context
+bytes remain unchanged. Grounds additionally checks speaker/gesture/start-action
+references against the final normalized Scene and its exact catalogs.
+
+Exact-version reads expose `dialogue.status`, a static `proof`, and structured
+`problems` (`component`, `scope`, `severity`, `code`, `file`, `pointer`, `nodeId`,
+`message`). `UNKNOWN` is an uninspected legacy version; only a complete schema-2
+execution can attest `NONE` or `VALID`. A failure has no positive proof. `VALID`
+means statically checked content: E1 deliberately refuses every Story activation
+with `DIALOGUE_RUNTIME_UNAVAILABLE`, in every environment, even when the Scene
+runtime guard is disabled. E2 must supply a real operator-owned runtime contract.
+
+| Environment setting | Default | Meaning |
+| --- | --- | --- |
+| `MAPS_DERIVE_REQUEST_SCHEMA_VERSION` | `1` | Explicit request/result contract; use `2` only with a qualified immutable JVM worker image. |
+| `MAPS_DIALOGUE_VALIDATION_REQUIRED` | `false` | Require checked sources for publication/forks and new pins, including rollbacks. Requires derivation enabled **and** required, plus schema 2. |
+| `MAPS_DIALOGUE_PROFILE_ORIGIN` | empty | Trusted HTTPS CDN origin for immutable profile artifacts. |
+| `MAPS_DIALOGUE_PROFILES_JSON` | `[]` | At most eight operator pins: `id`, `version`, `sha256`, `sizeBytes`, `uri`. |
+
+Profiles are bounded to 1 MiB and selected by identity/digest in
+`grounds/dialogue.json`; an author cannot supply a download URL or runtime
+capabilities. URLs must be under
+`<origin>/dialogue/profiles/.../<version>/<sha256>/profile.json`, without query,
+fragment or redirect. Every configured profile is verified before absence can be
+attested. An unavailable/mismatched operator artifact is a retryable SYSTEM
+failure; an unknown author-selected profile or malformed content is CONTENT.
+The full execution snapshot (worker, profiles, catalog candidates, normalization
+and shape requirements) is bound once per attempt and retained across restarts.
+Result and manifest must agree with that snapshot before promotion. Manual retry
+creates a new attempt/context; an old result cannot replace it.
+
+The worker emits at most 1 MiB of result JSON and a 4 MiB manifest. Diagnostics
+are bounded to 1000 entries and the result's remaining byte budget, with explicit
+truncation; oversize proofs fail with `PROOF_REPORT_LIMIT` before artifact upload.
+The API checks the bounded manifest digest/size and artifact metadata; the pinned
+worker computes the full bundle hash while streaming. The API does not download
+another multi-GiB bundle to recompute it.
+
+**Rollout prerequisite:** fence/drain pre-E1 API writers **before V11 migration**.
+V11 marks existing rows legacy, while new rows default to nonlegacy. Running an
+old writer alongside that migration would create unbound schema-1 jobs that the
+new result guard correctly refuses. Bring up the compatible reader/scheduler
+with the upload gate still off; qualify consumers and a schema-2 worker by its
+actual build digest, then enable schema 2 and, separately, the required gate.
+Pre-existing schema-1 jobs may complete as `UNKNOWN`, never as absence proofs.
+Invalid flag combinations fail startup/readiness. No existing active pin is moved
+by a migration or flag change.
+
+Before the first guarded pin, revalidate the exact desired old map through the
+existing path: `/map pull <namespace/name> <version>`, then `/map push`. This creates
+a new immutable version with its parent reference; the reserved old
+`grounds/derived-manifest.json` is removed during packing, while Scene, worlds
+and authored Story files are preserved. A byte-identical checked fork inherits
+the original source, manifest and full proof; changed bytes need a fresh derive.
+Do not relabel an old row as checked or upload a claimed proof.
+
+Before rolling back to an older API, pause/drain new attempts and keep Story
+activation blocked. An old worker must never process a schema-2 request. Keep an
+already-checked pure-map version available for a compatible pin; do not silently
+remove the validation boundary to make an unknown rollback succeed.
+
+Qualification uses `scripts/chart-render-assertions.sh`, the generated production
+OpenAPI snapshot, and `ci/verify-native.py`: real isolated Postgres/S3/NATS,
+standalone JVM Jobs and the production Native API, including schema-2 pure maps,
+a complete NPC Story, graph/host failures, profile outage, checked forks and
+closed Story activation. The harness binds the Job descriptor to the actual
+Buildx receipt/repository digest and executes the corresponding local image ID;
+it never substitutes a placeholder digest. Externally built local workers must
+supply `MAPS_WORKER_METADATA` or retain their actual `RepoDigests`.

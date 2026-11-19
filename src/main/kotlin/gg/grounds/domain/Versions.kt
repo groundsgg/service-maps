@@ -50,6 +50,9 @@ data class MapVersionRecord(
     val deriveRequested: Boolean = false,
     /** Owning map trust decides which isolated public bucket receives a derived bundle. */
     val trust: MapTrust = MapTrust.FIRST_PARTY,
+    val dialogue: DialogueProjection = DialogueProjection(),
+    val executionContract: DeriveExecutionContract? = null,
+    val deriveContractLegacy: Boolean = false,
 )
 
 /** What a publish supplies about the assembled bundle. */
@@ -77,6 +80,13 @@ class VersionNotPublishableException(val state: VersionState) :
     RuntimeException("a version in state $state cannot be published")
 
 interface MapVersionRepository {
+    fun bindExecution(
+        identity: DeriveIdentity,
+        proposed: DeriveExecutionContract,
+    ): DeriveExecutionContract =
+        throw UnsupportedOperationException(
+            "Repository does not support immutable execution contracts"
+        )
 
     /**
      * Allocates the next integer for this map and records the commit.

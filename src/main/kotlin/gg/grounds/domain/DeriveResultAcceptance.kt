@@ -24,6 +24,7 @@ data class DerivedFacts(
     val presentChunks: Int?,
     val estLoadedMib: Int?,
     val scene: SceneProjection,
+    val dialogue: DialogueProjection = DialogueProjection(),
 ) {
     init {
         require(SHA_256.matches(bundleSha256)) { "bundleSha256 must be a lowercase SHA-256" }
@@ -37,6 +38,19 @@ data class DerivedFacts(
         require(estLoadedMib == null || estLoadedMib >= 0) { "estLoadedMib must be non-negative" }
         require(scene.status == SceneStatus.VALID || scene.status == SceneStatus.NONE) {
             "successful derivation requires a valid or absent scene"
+        }
+        require(
+            dialogue.status in
+                setOf(DialogueStatus.UNKNOWN, DialogueStatus.NONE, DialogueStatus.VALID)
+        )
+        if (dialogue.status == DialogueStatus.VALID) {
+            val proof = requireNotNull(dialogue.proof)
+            require(
+                scene.status == SceneStatus.VALID &&
+                    proof.sceneSha256 == scene.sha256 &&
+                    proof.assetCatalog == scene.assetCatalog &&
+                    proof.actionCatalog == scene.actionCatalog
+            )
         }
         require(scene.problems.isEmpty()) { "successful derivation cannot retain problems" }
         when (scene.status) {

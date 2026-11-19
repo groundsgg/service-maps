@@ -1,0 +1,92 @@
+{
+  "kind": "SUCCESS",
+  "schemaVersion": 2,
+  "mapId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "version": 1,
+  "attempt": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "bundleSha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "bundleSize": 42,
+  "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000003",
+  "manifestSize": 9,
+  "scene": {
+    "present": true,
+    "schemaVersion": "1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "assetCatalog": {
+      "id": "assets",
+      "version": "2026.08"
+    },
+    "actionCatalog": {
+      "id": "grounds",
+      "version": "1"
+    },
+    "requiredActions": [
+      "a.action",
+      "z.action"
+    ]
+  },
+  "dialogue": {
+    "status": "VALID",
+    "problems": [],
+    "proof": {
+      "schemaVersion": 1,
+      "proof": "STATIC_VALIDATION",
+      "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "workerImage": "test@sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "validatorCoordinate": "gg.grounds:dialogue-json:0.1.0",
+      "files": [
+        {
+          "path": "dialogues/guide.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+          "sizeBytes": 2
+        },
+        {
+          "path": "texts/en.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "sizeBytes": 2
+        },
+        {
+          "path": "grounds/dialogue.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "sizeBytes": 2
+        },
+        {
+          "path": "context/host-catalog.json",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+          "sizeBytes": 2
+        }
+      ],
+      "dialogueIds": [
+        "test:guide"
+      ],
+      "requirements": [
+        {
+          "kind": "speaker",
+          "key": "guide",
+          "required": true
+        }
+      ],
+      "sceneSha256": "0000000000000000000000000000000000000000000000000000000000000004",
+      "assetCatalog": {
+        "id": "assets",
+        "version": "2026.08"
+      },
+      "actionCatalog": {
+        "id": "grounds",
+        "version": "1"
+      },
+      "profile": {
+        "id": "test:host",
+        "version": "1",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+        "sizeBytes": 50,
+        "uri": "https://cdn.test/dialogue/profiles/test/1/0000000000000000000000000000000000000000000000000000000000000006/profile.json"
+      },
+      "hostCatalogSha256": "0000000000000000000000000000000000000000000000000000000000000006",
+      "contentPin": "0000000000000000000000000000000000000000000000000000000000000007",
+      "bindingsSchemaVersion": 1,
+      "executionSha256": "eb48ff487118a8b7d7398ac7f92f241f85a0bc9df1a8dd55d706c9d7e38b6f2c"
+    }
+  }
+}

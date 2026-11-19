@@ -10,3 +10,6 @@
 *.log
 README.md
 devspace.yaml
+
+.superpowers
+__pycache__

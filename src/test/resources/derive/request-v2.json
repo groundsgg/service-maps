@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "mapId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "version": 1,
+  "attempt": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "sourceUrl": "https://example.test/source",
+  "bundleUrl": "https://example.test/bundle",
+  "manifestUrl": "https://example.test/manifest",
+  "resultUrl": "https://example.test/result",
+  "catalogCandidates": [],
+  "workerImage": "test@sha256:0000000000000000000000000000000000000000000000000000000000000008",
+  "dialogueProfiles": []
+}

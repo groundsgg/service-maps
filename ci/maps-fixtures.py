@@ -86,6 +86,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             'token_endpoint': issuer + '/token', 'authorization_endpoint': issuer + '/authorize'})
         elif path == '/realm/certs':
             self.reply(200, json.loads((ROOT / 'jwks.json').read_text()))
+        elif path.startswith('/dialogue/profiles/'):
+            if (ROOT / 'profile-unavailable').exists():
+                self.reply(503, {'detail': 'fixture unavailable'})
+            else:
+                self.reply(200, raw=(ROOT / 'dialogue-profile.json').read_bytes())
+        elif path.startswith('/resourcepacks/catalog-pins/contract/e1-contract/'):
+            self.reply(200, raw=(ROOT / 'dialogue-catalog.jar').read_bytes())
         elif path.startswith('/resourcepacks/'):
             channel = 'edge' if '/edge.json' in path or '/builds/' in path else 'stable'
             pointer, manifest = documents(channel)

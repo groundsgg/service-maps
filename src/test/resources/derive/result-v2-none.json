@@ -1,0 +1,44 @@
+{
+  "kind": "SUCCESS",
+  "schemaVersion": 2,
+  "mapId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "version": 1,
+  "attempt": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "bundleSha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "bundleSize": 42,
+  "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000003",
+  "manifestSize": 9,
+  "scene": {
+    "present": true,
+    "schemaVersion": "1",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+    "assetCatalog": {
+      "id": "assets",
+      "version": "2026.08"
+    },
+    "actionCatalog": {
+      "id": "grounds",
+      "version": "1"
+    },
+    "requiredActions": [
+      "a.action",
+      "z.action"
+    ]
+  },
+  "dialogue": {
+    "status": "NONE",
+    "problems": [],
+    "proof": {
+      "schemaVersion": 1,
+      "proof": "STATIC_VALIDATION",
+      "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "workerImage": "test@sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "validatorCoordinate": "gg.grounds:dialogue-json:0.1.0",
+      "files": [],
+      "dialogueIds": [],
+      "requirements": [],
+      "executionSha256": "9b8ee8da2c787054acbb22042eb40f816334739a31c81715744da79e06d09de2"
+    }
+  }
+}

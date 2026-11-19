@@ -161,7 +161,7 @@ class Fabric8DeriveJobGateway(
                 .withContainers(
                     ContainerBuilder()
                         .withName("derive-worker")
-                        .withImage(image)
+                        .withImage(request.workerImage ?: image)
                         .withImagePullPolicy("IfNotPresent")
                         .withCommand(
                             "java",

@@ -2,6 +2,8 @@ package gg.grounds.derive
 
 import gg.grounds.blob.BlobStore
 import gg.grounds.catalog.PackSetCatalogProvider
+import gg.grounds.catalog.PinnedDialogueProfiles
+import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
@@ -10,6 +12,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.net.URI
 import java.time.Duration
+import java.util.Optional
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
@@ -27,8 +30,20 @@ constructor(
     private val urlTtl: Duration,
     private val runtimes: gg.grounds.compatibility.MapRuntimeCompatibility? = null,
     private val maps: gg.grounds.domain.MapRepository? = null,
+    @param:ConfigProperty(name = "grounds.maps.derive.image")
+    private val configuredImage: Optional<String> = Optional.empty(),
+    @param:ConfigProperty(name = "grounds.maps.derive.request-schema-version", defaultValue = "1")
+    private val requestSchemaVersion: Int = 1,
+    @param:ConfigProperty(name = "grounds.maps.dialogue.profiles-json", defaultValue = "[]")
+    profilesJson: String = "[]",
+    @param:ConfigProperty(name = "grounds.maps.dialogue.profile-origin", defaultValue = "")
+    profileOrigin: Optional<String> = Optional.empty(),
 ) {
+    private val configuredProfiles =
+        PinnedDialogueProfiles.parse(profilesJson, URI(profileOrigin.orElse(""))).pins()
+
     init {
+        require(requestSchemaVersion in 1..2) { "unsupported derive request schema" }
         require(!enabled || urlTtl >= MINIMUM_URL_TTL) {
             "derive URL TTL must be at least 30 minutes"
         }
@@ -44,7 +59,20 @@ constructor(
         enabled: Boolean,
         runtimes: gg.grounds.compatibility.MapRuntimeCompatibility? = null,
         maps: gg.grounds.domain.MapRepository? = null,
-    ) : this(versions, jobs, null, null, enabled, BlobStore.PRESIGN_TTL, runtimes, maps) {
+        workerImage: String = "worker-test@sha256:${"a".repeat(64)}",
+        requestSchemaVersion: Int = 1,
+    ) : this(
+        versions,
+        jobs,
+        null,
+        null,
+        enabled,
+        BlobStore.PRESIGN_TTL,
+        runtimes,
+        maps,
+        Optional.of(workerImage),
+        requestSchemaVersion,
+    ) {
         testCandidates = candidates
     }
 
@@ -52,13 +80,7 @@ constructor(
         if (!enabled) return
         val claimed = versions.claimForDerive(mapId, version, UUID.randomUUID()) ?: return
         try {
-            createFor(
-                claimed.mapId,
-                claimed.version,
-                requireNotNull(claimed.deriveAttempt),
-                requireNotNull(claimed.sourceSha256),
-                requireNotNull(claimed.sourceKey),
-            )
+            createFor(claimed)
         } catch (failure: Exception) {
             throw DeriveJobCreationException(claimed, failure)
         }
@@ -83,78 +105,65 @@ constructor(
                 attempt,
                 requireNotNull(record.sourceSha256),
             )
-        if (status == null || status == DeriveJobStatus.MISSING)
-            createFor(
-                record.mapId,
-                record.version,
-                attempt,
-                identity.sourceSha256,
-                requireNotNull(record.sourceKey),
-            )
+        if (status == null || status == DeriveJobStatus.MISSING) createFor(record)
     }
 
-    private fun createFor(
-        mapId: UUID,
-        version: Int,
-        attempt: UUID,
-        sourceSha256: String,
-        sourceKey: String,
-    ) {
+    private fun createFor(record: MapVersionRecord) {
+        val mapId = record.mapId
+        val version = record.version
+        val attempt = requireNotNull(record.deriveAttempt)
+        val sourceSha256 = requireNotNull(record.sourceSha256)
+        val sourceKey = requireNotNull(record.sourceKey)
         val identity = DeriveIdentity(mapId, version, attempt, sourceSha256)
         val test = testCandidates
+        val execution =
+            record.executionContract
+                ?: run {
+                    val address = maps?.findById(mapId)?.address?.toString()
+                    val schema = if (record.deriveContractLegacy) 1 else requestSchemaVersion
+                    versions.bindExecution(
+                        identity,
+                        DeriveExecutionContract(
+                            schema,
+                            configuredImage.orElse(""),
+                            if (schema == 2) configuredProfiles else emptyList(),
+                            if (test != null) test() else requireNotNull(catalogs).candidates(),
+                            address?.let { runtimes?.normalizationCatalog(it) },
+                            address?.let { runtimes?.shapeRequirements(it) },
+                        ),
+                    )
+                }
+        fun source() =
+            if (test != null) URI("https://example.test/source")
+            else URI(requireNotNull(blobs).presignGet(sourceKey, urlTtl))
+        fun output(key: String, testName: String) =
+            if (test != null) URI("https://example.test/$testName")
+            else URI(requireNotNull(blobs).presignPut(key, urlTtl))
         val request =
-            if (test != null)
-                DeriveRequest(
-                    mapId = mapId,
-                    version = version,
-                    attempt = attempt,
-                    sourceSha256 = sourceSha256,
-                    sourceUrl = URI("https://example.test/source"),
-                    bundleUrl = URI("https://example.test/bundle"),
-                    manifestUrl = URI("https://example.test/manifest"),
-                    resultUrl = URI("https://example.test/result"),
-                    catalogCandidates = test(),
-                )
-            else
-                DeriveRequest(
-                    mapId = mapId,
-                    version = version,
-                    attempt = attempt,
-                    sourceSha256 = sourceSha256,
-                    sourceUrl = URI(requireNotNull(blobs).presignGet(sourceKey, urlTtl)),
-                    bundleUrl =
-                        URI(
-                            requireNotNull(blobs)
-                                .presignPut(
-                                    BlobStore.deriveBundleKey(mapId, version, attempt),
-                                    urlTtl,
-                                )
-                        ),
-                    manifestUrl =
-                        URI(
-                            requireNotNull(blobs)
-                                .presignPut(
-                                    BlobStore.deriveManifestKey(mapId, version, attempt),
-                                    urlTtl,
-                                )
-                        ),
-                    resultUrl =
-                        URI(
-                            requireNotNull(blobs)
-                                .presignPut(
-                                    BlobStore.deriveResultKey(mapId, version, attempt),
-                                    urlTtl,
-                                )
-                        ),
-                    catalogCandidates = requireNotNull(catalogs).candidates(),
-                )
-        val address = maps?.findById(mapId)?.address?.toString()
-        val configured =
-            request.copy(
-                normalizationCatalog = address?.let { runtimes?.normalizationCatalog(it) },
-                shapeRequirements = address?.let { runtimes?.shapeRequirements(it) },
+            DeriveRequest(
+                schemaVersion = execution.schemaVersion,
+                mapId = mapId,
+                version = version,
+                attempt = attempt,
+                sourceSha256 = sourceSha256,
+                sourceUrl = source(),
+                bundleUrl = output(BlobStore.deriveBundleKey(mapId, version, attempt), "bundle"),
+                manifestUrl =
+                    output(BlobStore.deriveManifestKey(mapId, version, attempt), "manifest"),
+                resultUrl = output(BlobStore.deriveResultKey(mapId, version, attempt), "result"),
+                catalogCandidates = execution.catalogCandidates,
+                normalizationCatalog = execution.normalizationCatalog,
+                shapeRequirements = execution.shapeRequirements,
+                workerImage = if (execution.schemaVersion == 2) execution.workerImage else null,
+                dialogueProfiles = execution.dialogueProfiles,
             )
-        jobs.create(DeriveJobRequest(identity, CanonicalJson.write(configured).decodeToString()))
+        jobs.create(
+            DeriveJobRequest(
+                identity,
+                CanonicalJson.write(request).decodeToString(),
+                execution.workerImage,
+            )
+        )
     }
 
     private companion object {

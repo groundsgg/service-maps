@@ -25,13 +25,15 @@ import urllib.parse
 import uuid
 import zlib
 import zipfile
+from dialogue_fixtures import prepare as prepare_dialogue
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PREFIX = os.environ.get('NATIVE_IMAGE_PREFIX', 'grounds/service-maps')
 IMAGE = os.environ.get('MAPS_CONTRACT_IMAGE', PREFIX + ':native-micro-pilot')
 WORKER = os.environ.get('MAPS_WORKER_IMAGE', PREFIX + ':jvm-worker-contract')
 LOD_RUN_ID = str(uuid.uuid4())
-WORKER_DIGEST = 'ghcr.io/groundsgg/service-maps@sha256:' + 'a' * 64
+WORKER_DIGEST = None
+WORKER_CONFIG_ID = None
 
 
 def command(*args, check=True, **kwargs):
@@ -71,20 +73,39 @@ def eventually(action, seconds=75):
 
 
 def worker_image():
-    if 'MAPS_WORKER_IMAGE' in os.environ:
-        return
-    properties = {}
-    path = pathlib.Path(os.environ.get('GRADLE_USER_HOME', pathlib.Path.home() / '.gradle')) / 'gradle.properties'
-    if path.exists():
-        properties = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line and not line.startswith('#'))
-    token = os.environ.get('PACKAGES_TOKEN', properties.get('github.token'))
-    actor = os.environ.get('GITHUB_ACTOR', properties.get('github.user'))
-    assert token and actor, 'protected package credentials are required to build JVM workers'
-    with tempfile.NamedTemporaryFile() as secret:
-        secret.write(token.encode())
-        secret.flush()
-        docker('build', '--build-arg', 'GITHUB_USER=' + actor, '--secret', 'id=github_token,src=' + secret.name,
-               '-t', WORKER, '.', cwd=ROOT)
+    global WORKER_DIGEST, WORKER_CONFIG_ID
+    metadata = os.environ.get('MAPS_WORKER_METADATA')
+    if 'MAPS_WORKER_IMAGE' not in os.environ:
+        properties = {}
+        path = pathlib.Path(os.environ.get('GRADLE_USER_HOME', pathlib.Path.home() / '.gradle')) / 'gradle.properties'
+        if path.exists():
+            properties = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line and not line.startswith('#'))
+        token = os.environ.get('PACKAGES_TOKEN', properties.get('github.token'))
+        actor = os.environ.get('GITHUB_ACTOR', properties.get('github.user'))
+        assert token and actor, 'protected package credentials are required to build JVM workers'
+        with tempfile.TemporaryDirectory(prefix='maps-worker-build-') as temporary:
+            secret = pathlib.Path(temporary) / 'token'
+            secret.write_text(token)
+            secret.chmod(0o600)
+            receipt = pathlib.Path(temporary) / 'metadata.json'
+            docker('buildx', 'build', '--load', '--metadata-file', str(receipt), '--build-arg', 'GITHUB_USER=' + actor,
+                   '--secret', 'id=github_token,src=' + str(secret), '-t', WORKER, '.', cwd=ROOT)
+            metadata = json.loads(receipt.read_text())
+    elif metadata:
+        metadata = json.loads(pathlib.Path(metadata).read_text())
+    inspected = json.loads(docker('image', 'inspect', WORKER))[0]
+    WORKER_CONFIG_ID = inspected['Id']
+    if metadata:
+        sha = metadata['containerimage.digest']
+        matching = [ref for ref in inspected.get('RepoDigests', []) if ref.endswith('@' + sha)]
+        assert matching or metadata.get('containerimage.config.digest') == WORKER_CONFIG_ID, 'build receipt does not identify this worker'
+        assert len(sha) == 71 and sha.startswith('sha256:')
+        WORKER_DIGEST = matching[0] if matching else WORKER.rsplit(':', 1)[0] + '@' + sha
+    else:
+        references = inspected.get('RepoDigests', [])
+        assert references, 'externally built workers need a real repository digest or MAPS_WORKER_METADATA build receipt'
+        WORKER_DIGEST = references[0]
+    print('Qualified worker descriptor:', WORKER_DIGEST, 'local config:', WORKER_CONFIG_ID, flush=True)
 
 
 class Contract:
@@ -194,7 +215,7 @@ class Contract:
         for key, value in env.items():
             options += ['-e', key]
         self.containers.append(name)
-        docker(*options, '--entrypoint', 'java', WORKER, *container['command'][1:], env={**os.environ, **env})
+        docker(*options, '--entrypoint', 'java', WORKER_CONFIG_ID, *container['command'][1:], env={**os.environ, **env})
         self.request('/contract/complete/' + job['metadata']['name'], 'POST', {}, service='control')
 
     def sql(self, statement, variables=None, check=True):
@@ -209,11 +230,11 @@ class Contract:
         docker('network', 'rm', self.name, check=False)
 
 
-def source_bundle(populated=False, label=b'packaged maps contract\n'):
+def source_bundle(populated=False, label=b'packaged maps contract\n', extra=None):
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode='w') as tar:
         # An empty Anvil region is a valid world and exercises the real Zstd/archive worker.
-        for name, body in [('region/r.0.0.mca', populated_region() if populated else bytes(8192)), ('native-contract.txt', label)]:
+        for name, body in [('region/r.0.0.mca', populated_region() if populated else bytes(8192)), ('native-contract.txt', label)] + sorted((extra or {}).items()):
             entry = tarfile.TarInfo(name)
             entry.size = len(body)
             tar.addfile(entry, io.BytesIO(body))
@@ -469,6 +490,9 @@ def operator_registration_contract(c):
     assert 'ERROR' in c.sql(serving_script,serving_vars,check=False)
     assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='10'
     print('Maps: serving operator script refuses absent artifact and cannot reset an existing pilot passed')
+    # This row deliberately has no terrain bytes: retire it before restarting background lighting.
+    # The API is stopped while these SQL-only operator contracts run.
+    c.sql(f"UPDATE map_version SET state='TAKEN_DOWN' WHERE map='{map_id}' AND version=13;")
     print('Maps: exact Lobby operator registration refuses changed input, rolls back empty selection and never resets an existing budget passed')
 
 
@@ -513,6 +537,7 @@ def contracts(c):
     version = c.request(path + '/versions', 'POST', {'uploadId': upload['uploadId'],
                         'sourceSha256': digest(bundle), 'note': 'legacy assembled bundle'}, staff, 201)
     assert version['version'] == 1 and version['state'] == 'DRAFT' and version['scene']['status'] == 'PENDING'
+    assert version['dialogue']['status'] == 'UNKNOWN', 'Native API must expose unattested legacy content'
     c.request(path + '/pins/stage', 'POST', {'version': 1}, staff, 409)
     published = c.request(path + '/versions/1/publish', 'POST', {'bundleSha256': digest(bundle),
                           'sizeBytes': len(bundle), 'presentChunks': 0, 'estLoadedMib': 1}, staff)
@@ -707,11 +732,137 @@ def contracts(c):
     print('Maps: unauthenticated Prometheus endpoint exports HTTP and populated derive metrics')
 
 
+def dialogue_contract(c, env, fixtures, arguments, profile, catalog, authored):
+    qualified = {**env, 'MAPS_DERIVE_REQUEST_SCHEMA_VERSION': '2', 'MAPS_DERIVE_REQUIRED': 'true',
+                 'MAPS_DIALOGUE_VALIDATION_REQUIRED': 'true', 'MAPS_DIALOGUE_PROFILE_ORIGIN': 'https://maps-fixtures',
+                 'MAPS_DIALOGUE_PROFILES_JSON': json.dumps([profile]), 'MAPS_CATALOGS_PINNED_JSON': json.dumps([catalog]),
+                 'MAPS_LIT_ENABLED': 'false', 'MAPS_LOD_ENABLED': 'false', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
+                 'MAPS_LOD_PILOT_ENABLED': 'false'}
+    c.run('dialogue-api', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+          ports=(9000,), env=qualified, command_args=arguments)
+    c.ports['api', 9000] = c.ports['dialogue-api', 9000]
+    eventually(lambda: c.request('/q/health/ready'))
+    staff = c.token()
+    legacy = '/v1/maps/grounds/native-contract'
+    active_pins = c.request(legacy + '/pins', token=staff)
+    active_file = c.s3('/public/pins/stage.json')
+    refused = c.request(legacy + '/pins/stage', 'POST', {'version': 1}, staff, 409)
+    assert 'DIALOGUE_PROOF_REQUIRED' in refused['detail']
+    assert c.request(legacy + '/pins', token=staff) == active_pins and c.s3('/public/pins/stage.json') == active_file
+    path = '/v1/maps/grounds/dialogue-contract'
+    c.request('/v1/maps', 'POST', {'address': 'grounds/dialogue-contract', 'kind': 'ARENA'}, staff, 201)
+    c.request(path + '/versions', 'POST', {}, staff, 409)
+
+    def derive(files, expected, scope=None):
+        archive = source_bundle(extra=files)
+        upload = c.request(path + '/uploads', 'POST', token=staff)
+        c.presigned(upload['url'], 'PUT', archive)
+        version = c.request(path + '/versions', 'POST', {'uploadId': upload['uploadId'],
+            'sourceSha256': digest(archive), 'derive': True}, staff, 201)
+        def matching_job():
+            matches = [j for j in c.jobs('service-maps-derive') if json.loads(next(e['value']
+                for e in j['spec']['template']['spec']['containers'][0]['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))['attempt'] == version['deriveAttempt']]
+            assert matches, 'exact dialogue attempt has no job yet'
+            return matches[0]
+        job = eventually(matching_job)
+        descriptor = job['spec']['template']['spec']['containers'][0]
+        request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
+        assert request['schemaVersion'] == 2 and request['workerImage'] == WORKER_DIGEST
+        assert request['dialogueProfiles'] == [profile] and request['sourceSha256'] == digest(archive)
+        c.execute(job)
+        def terminal():
+            current = c.request(path + '/versions/' + str(version['version']), token=staff)
+            assert current['state'] in ('PUBLISHED', 'DERIVE_FAILED'), current
+            return current
+        current = eventually(terminal)
+        assert current['dialogue']['status'] == expected, current
+        assert current['sourceSha256'] == digest(archive)
+        if scope:
+            assert current['state'] == 'DERIVE_FAILED' and current['deriveFailureScope'] == scope, current
+            assert current['dialogue']['proof'] is None
+        else:
+            proof = current['dialogue']['proof']
+            assert current['state'] == 'PUBLISHED' and proof['sourceSha256'] == digest(archive)
+            assert proof['workerImage'] == WORKER_DIGEST and proof['proof'] == 'STATIC_VALIDATION'
+            assert len(proof['executionSha256']) == 64
+        return current
+
+    pure = derive({}, 'NONE')
+    assert pure['dialogue']['proof']['files'] == []
+    story = derive(authored, 'VALID')
+    proof = story['dialogue']['proof']
+    assert proof['profile'] == profile and proof['dialogueIds'] == ['demo:mechanic']
+    # Frozen against the published standalone CLI 0.1.0 on these exact definition/text bytes.
+    assert proof['contentPin'] == '2c71e95da87ece2edd26edfe57393ca05fd6e397b0218150aadf9711d80736ac', proof['contentPin']
+    evidence = os.environ.get('MAPS_CONTRACT_EVIDENCE_DIR')
+    if evidence:
+        destination = pathlib.Path(evidence)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / 'dialogue-proof.json').write_bytes(encoded(proof))
+    assert proof['sceneSha256'] == story['scene']['sha256']
+    assert {f['path']: (f['sha256'], f['sizeBytes']) for f in proof['files']} == {
+        path: (digest(data), len(data)) for path, data in authored.items() if path != 'scene.json'}
+    pins = c.s3('/public/pins/stage.json')
+    rejected = c.request(path + '/pins/stage', 'POST', {'version': story['version']}, staff, 409)
+    assert 'DIALOGUE_RUNTIME_UNAVAILABLE' in rejected['detail']
+    assert c.s3('/public/pins/stage.json') == pins and not c.request(path + '/pins', token=staff)
+    c.request(path + '/forks', 'POST', {'target': 'grounds/dialogue-fork', 'fromVersion': story['version']}, staff, 201)
+    fork = c.request('/v1/maps/grounds/dialogue-fork/versions/1', token=staff)
+    assert fork['dialogue'] == story['dialogue'] and fork['sourceSha256'] == story['sourceSha256']
+    broken = dict(authored)
+    definition = json.loads(broken['dialogues/mechanic.json'])
+    definition['nodes']['farewell']['next'] = 'missing'
+    broken['dialogues/mechanic.json'] = encoded(definition)
+    invalid = derive(broken, 'INVALID', 'CONTENT')
+    problems = invalid['dialogue']['problems']
+    assert any(p['file'] == 'dialogues/mechanic.json' and p['pointer'] == '/nodes/farewell'
+               and p['nodeId'] == 'farewell' and p['severity'] == 'ERROR' for p in problems), problems
+    assert invalid['scene']['status'] == 'PENDING'
+    forged = dict(authored)
+    forged['context/host-catalog.json'] = encoded({'schemaVersion': 1, 'generation': 'author-forged'})
+    derive(forged, 'INVALID', 'CONTENT')
+    (fixtures / 'profile-unavailable').touch()
+    try:
+        unavailable = derive(authored, 'INVALID', 'SYSTEM')
+        assert unavailable['deriveRetryable'] is True
+    finally:
+        (fixtures / 'profile-unavailable').unlink()
+    docker('stop', c.name + '-dialogue-api')
+    # A correctly hashed operator envelope can still contain an invalid public HostCatalog.
+    healthy_bytes = (fixtures / 'dialogue-profile.json').read_bytes()
+    broken_profile = json.loads(healthy_bytes)
+    broken_profile.update(version='bad-host', hostCatalogJson='{}')
+    broken_bytes = encoded(broken_profile)
+    broken_sha = digest(broken_bytes)
+    profile = dict(id=broken_profile['id'], version='bad-host', sha256=broken_sha, sizeBytes=len(broken_bytes),
+                   uri=f'https://maps-fixtures/dialogue/profiles/contract/bad-host/{broken_sha}/profile.json')
+    (fixtures / 'dialogue-profile.json').write_bytes(broken_bytes)
+    c.run('dialogue-invalid-host', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+          ports=(9000,), env={**qualified, 'MAPS_DIALOGUE_PROFILES_JSON': json.dumps([profile])}, command_args=arguments)
+    c.ports['api', 9000] = c.ports['dialogue-invalid-host', 9000]
+    try:
+        eventually(lambda: c.request('/q/health/ready'))
+        derive({}, 'INVALID', 'SYSTEM')
+    finally:
+        docker('stop', c.name + '-dialogue-invalid-host')
+        (fixtures / 'dialogue-profile.json').write_bytes(healthy_bytes)
+    invalid_flags = {**qualified, 'MAPS_DERIVE_REQUEST_SCHEMA_VERSION': '1'}
+    c.run('dialogue-invalid', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+          env=invalid_flags, command_args=arguments)
+    def refuses_invalid_flags():
+        assert docker('inspect', '-f', '{{.State.Running}}', c.name + '-dialogue-invalid') == 'false'
+        logs = docker('logs', c.name + '-dialogue-invalid')
+        assert 'dialogue.validation-required requires' in logs
+    eventually(refuses_invalid_flags)
+    print('Maps E1: real schema-2 JVM archive validation → native result acceptance → Postgres/API; NONE, Story, graph, forged host, profile outage, invalid operator host, fork and closed activation passed', flush=True)
+
+
 def main():
     worker_image()
     with tempfile.TemporaryDirectory(prefix='maps-contract-') as temporary:
         fixtures = pathlib.Path(temporary)
         fixtures.chmod(0o755)
+        dialogue_profile, dialogue_catalog, dialogue_sources = prepare_dialogue(fixtures)
         command('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(fixtures / 'key.pem'),
                 '-out', str(fixtures / 'cert.pem'), '-days', '1', '-subj', '/CN=maps-fixtures',
                 '-addext', 'subjectAltName=DNS:maps-fixtures')
@@ -772,10 +923,12 @@ def main():
             eventually(ready)
             contracts(contract)
             lod_contract(contract)
-            operator_registration_contract(contract)
-            # Exercise the packaged pilot process itself, including internal/direct requests.
+            # SQL-only synthetic operator fixtures must not enter the live lighting queue.
             docker('stop', contract.name + '-api')
+            operator_registration_contract(contract)
             entitled_contract(contract, env, fixtures, arguments)
+            # Story fixtures intentionally have lighting disabled; run them after lighting contracts.
+            dialogue_contract(contract, env, fixtures, arguments, dialogue_profile, dialogue_catalog, dialogue_sources)
             isolated = {**env, 'MAPS_DERIVE_ENABLED': 'false', 'MAPS_LIT_ENABLED': 'false',
                         'MAPS_LOD_ENABLED': 'false', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
                         'MAPS_LOD_PILOT_ISOLATED': 'true',

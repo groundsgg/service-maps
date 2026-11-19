@@ -139,7 +139,7 @@ class DeriveStateRepositoryIT {
     fun `concurrent duplicate successes serialize and both return the committed publication`() {
         val map = committed("duplicate-success-overlap")
         val attempt = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
+        assertNotNull(claimV1(map.id, 1, attempt))
         val identity = identity(map.id, attempt)
         val executor = Executors.newFixedThreadPool(2)
         val lock = lockVersion(map.id, 1)
@@ -171,7 +171,7 @@ class DeriveStateRepositoryIT {
     fun `concurrent duplicate failures serialize and both return the committed failure`() {
         val map = committed("duplicate-failure-overlap")
         val attempt = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
+        assertNotNull(claimV1(map.id, 1, attempt))
         val identity = identity(map.id, attempt)
         val failure = systemFailure("TEMPORARY")
         val executor = Executors.newFixedThreadPool(2)
@@ -204,7 +204,7 @@ class DeriveStateRepositoryIT {
     fun `queued acceptance finishes before retry and its returned record stays immutable`() {
         val map = committed("accept-retry-overlap")
         val first = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, first))
+        assertNotNull(claimV1(map.id, 1, first))
         val executor = Executors.newFixedThreadPool(2)
         val acceptedCommit = CountDownLatch(1)
         val retryFinished = CountDownLatch(1)
@@ -246,10 +246,18 @@ class DeriveStateRepositoryIT {
     fun `stale acceptance queued ahead of current acceptance cannot finish the retried attempt`() {
         val map = committed("stale-accept-overlap")
         val first = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, first))
+        assertNotNull(claimV1(map.id, 1, first))
         versions.acceptFailure(identity(map.id, first), systemFailure("TRANSIENT"))
         val retried = versions.retrySystemFailure(map.id, 1)
         val second = requireNotNull(retried.deriveAttempt)
+        versions.bindExecution(
+            identity(map.id, second),
+            gg.grounds.domain.DeriveExecutionContract(
+                1,
+                "legacy@sha256:${"a".repeat(64)}",
+                emptyList(),
+            ),
+        )
         val executor = Executors.newFixedThreadPool(2)
         val lock = lockVersion(map.id, 1)
         try {
@@ -281,8 +289,8 @@ class DeriveStateRepositoryIT {
         val secondMap = committed("same-digest-second")
         val firstAttempt = UUID.randomUUID()
         val secondAttempt = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
-        assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
+        assertNotNull(claimV1(firstMap.id, 1, firstAttempt))
+        assertNotNull(claimV1(secondMap.id, 1, secondAttempt))
         val executor = Executors.newFixedThreadPool(2)
         val versionLocks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
         val blobLock = lockBlobTable()
@@ -335,8 +343,8 @@ class DeriveStateRepositoryIT {
         val secondMap = committed("conflicting-digest-second")
         val firstAttempt = UUID.randomUUID()
         val secondAttempt = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(firstMap.id, 1, firstAttempt))
-        assertNotNull(versions.claimForDerive(secondMap.id, 1, secondAttempt))
+        assertNotNull(claimV1(firstMap.id, 1, firstAttempt))
+        assertNotNull(claimV1(secondMap.id, 1, secondAttempt))
         val executor = Executors.newFixedThreadPool(2)
         val versionLocks = listOf(lockVersion(firstMap.id, 1), lockVersion(secondMap.id, 1))
         val blobLock = lockBlobTable()
@@ -392,7 +400,7 @@ class DeriveStateRepositoryIT {
     fun `a stale attempt cannot finish after a system retry`() {
         val map = committed("stale-attempt")
         val first = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, first))
+        assertNotNull(claimV1(map.id, 1, first))
         val identity = identity(map.id, first)
         versions.acceptFailure(identity, systemFailure("FIRST"))
         val retried = versions.retrySystemFailure(map.id, 1)
@@ -409,7 +417,7 @@ class DeriveStateRepositoryIT {
     fun `matching duplicate success preserves every code-point-ordered action`() {
         val map = committed("idempotent-success")
         val attempt = UUID.randomUUID()
-        assertNotNull(versions.claimForDerive(map.id, 1, attempt))
+        assertNotNull(claimV1(map.id, 1, attempt))
         val identity = identity(map.id, attempt)
         val accepted = versions.acceptSuccess(identity, facts(), "derive-worker")
         val repeated = versions.acceptSuccess(identity, facts(), "derive-worker")
@@ -444,9 +452,9 @@ class DeriveStateRepositoryIT {
                 "builder",
             )
         val lowerAttempt = UUID.randomUUID()
-        versions.claimForDerive(lowerMap.id, lowerDeriving.version, lowerAttempt)
+        claimV1(lowerMap.id, lowerDeriving.version, lowerAttempt)
         val higherRetryableAttempt = UUID.randomUUID()
-        versions.claimForDerive(retryableMap.id, 1, higherRetryableAttempt)
+        claimV1(retryableMap.id, 1, higherRetryableAttempt)
         versions.acceptFailure(
             DeriveIdentity(
                 retryableMap.id,
@@ -497,10 +505,10 @@ class DeriveStateRepositoryIT {
         val published = committed("reconcile-published")
         val missingAttempt = committed("reconcile-missing-attempt")
         val publishedAttempt = UUID.randomUUID()
-        versions.claimForDerive(published.id, 1, publishedAttempt)
+        claimV1(published.id, 1, publishedAttempt)
         versions.acceptSuccess(identity(published.id, publishedAttempt), facts(), "derive")
         val contentAttempt = UUID.randomUUID()
-        versions.claimForDerive(contentFailure.id, 1, contentAttempt)
+        claimV1(contentFailure.id, 1, contentAttempt)
         versions.acceptFailure(
             identity(contentFailure.id, contentAttempt),
             DerivedFailure(
@@ -510,10 +518,10 @@ class DeriveStateRepositoryIT {
             ),
         )
         val missingAttemptId = UUID.randomUUID()
-        versions.claimForDerive(missingAttempt.id, 1, missingAttemptId)
+        claimV1(missingAttempt.id, 1, missingAttemptId)
         clearDeriveAttempt(missingAttempt.id, 1)
         val nonRetryableAttempt = UUID.randomUUID()
-        versions.claimForDerive(nonRetryableSystem.id, 1, nonRetryableAttempt)
+        claimV1(nonRetryableSystem.id, 1, nonRetryableAttempt)
         versions.acceptFailure(
             identity(nonRetryableSystem.id, nonRetryableAttempt),
             systemFailure("TEMPORARY"),
@@ -558,8 +566,8 @@ class DeriveStateRepositoryIT {
                     )
             }
         )
-        assertNull(versions.claimForDerive(missingSourceSha.id, 1, UUID.randomUUID()))
-        assertNull(versions.claimForDerive(missingSourceKey.id, 1, UUID.randomUUID()))
+        assertNull(claimV1(missingSourceSha.id, 1, UUID.randomUUID()))
+        assertNull(claimV1(missingSourceKey.id, 1, UUID.randomUUID()))
     }
 
     @Test
@@ -575,7 +583,7 @@ class DeriveStateRepositoryIT {
             "builder",
         )
         val attempt = UUID.randomUUID()
-        versions.claimForDerive(map.id, 1, attempt)
+        claimV1(map.id, 1, attempt)
         val expected = identity(map.id, attempt)
         val cases =
             listOf(
@@ -597,7 +605,7 @@ class DeriveStateRepositoryIT {
     fun `content and system failures preserve retry policy and invalidate every scene`() {
         val contentMap = committed("content-failure")
         val contentAttempt = UUID.randomUUID()
-        versions.claimForDerive(contentMap.id, 1, contentAttempt)
+        claimV1(contentMap.id, 1, contentAttempt)
         val content =
             versions.acceptFailure(
                 identity(contentMap.id, contentAttempt),
@@ -638,7 +646,7 @@ class DeriveStateRepositoryIT {
 
         val systemMap = committed("system-failure")
         val systemAttempt = UUID.randomUUID()
-        versions.claimForDerive(systemMap.id, 1, systemAttempt)
+        claimV1(systemMap.id, 1, systemAttempt)
         val system =
             versions.acceptFailure(
                 identity(systemMap.id, systemAttempt),
@@ -654,7 +662,7 @@ class DeriveStateRepositoryIT {
     fun `retry replaces old system problems with the next terminal result`() {
         val map = committed("replacement")
         val first = UUID.randomUUID()
-        versions.claimForDerive(map.id, 1, first)
+        claimV1(map.id, 1, first)
         versions.acceptFailure(identity(map.id, first), systemFailure("OLD"))
 
         val retried = versions.retrySystemFailure(map.id, 1)
@@ -671,7 +679,7 @@ class DeriveStateRepositoryIT {
     fun `valid success requires the claimed non-null asset catalog`() {
         val map = committed("catalog-identity")
         val attempt = UUID.randomUUID()
-        versions.claimForDerive(map.id, 1, attempt)
+        claimV1(map.id, 1, attempt)
 
         assertThrows<DeriveResultRejectedException> {
             versions.acceptSuccess(
@@ -680,6 +688,24 @@ class DeriveStateRepositoryIT {
                 "derive",
             )
         }
+    }
+
+    /** These pre-dialogue acceptance tests exercise explicitly bound schema-1 attempts. */
+    private fun claimV1(
+        mapId: UUID,
+        version: Int,
+        attempt: UUID,
+    ): gg.grounds.domain.MapVersionRecord? {
+        val claimed = versions.claimForDerive(mapId, version, attempt) ?: return null
+        versions.bindExecution(
+            DeriveIdentity(mapId, version, attempt, claimed.sourceSha256!!),
+            gg.grounds.domain.DeriveExecutionContract(
+                1,
+                "legacy@sha256:${"a".repeat(64)}",
+                emptyList(),
+            ),
+        )
+        return versions.find(mapId, version)
     }
 
     private fun committed(name: String) =
