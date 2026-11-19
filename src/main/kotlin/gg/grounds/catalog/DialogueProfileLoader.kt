@@ -22,6 +22,16 @@ class DialogueProfileLoader internal constructor(private val transfer: WorkerHtt
             val profile = DialogueContentContracts.readProfile(Files.readAllBytes(file))
             if (profile.id != pin.id || profile.version != pin.version)
                 throw CatalogTransferException("Dialogue profile identity mismatch")
+            // Validate the operator-owned host contract even when the map has no Story.
+            // Use the public codec; an empty text map performs no author text validation here.
+            val host =
+                gg.grounds.dialogue.json
+                    .DialogueJsonCodec()
+                    .prepareContext(emptyMap(), profile.hostCatalogBytes)
+            if (!host.isValid)
+                throw CatalogTransferException(
+                    "Dialogue profile contains invalid shared host metadata"
+                )
             return profile
         } catch (failure: CatalogTransferException) {
             throw failure

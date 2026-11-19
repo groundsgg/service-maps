@@ -828,6 +828,24 @@ def dialogue_contract(c, env, fixtures, arguments, profile, catalog, authored):
     finally:
         (fixtures / 'profile-unavailable').unlink()
     docker('stop', c.name + '-dialogue-api')
+    # A correctly hashed operator envelope can still contain an invalid public HostCatalog.
+    healthy_bytes = (fixtures / 'dialogue-profile.json').read_bytes()
+    broken_profile = json.loads(healthy_bytes)
+    broken_profile.update(version='bad-host', hostCatalogJson='{}')
+    broken_bytes = encoded(broken_profile)
+    broken_sha = digest(broken_bytes)
+    profile = dict(id=broken_profile['id'], version='bad-host', sha256=broken_sha, sizeBytes=len(broken_bytes),
+                   uri=f'https://maps-fixtures/dialogue/profiles/contract/bad-host/{broken_sha}/profile.json')
+    (fixtures / 'dialogue-profile.json').write_bytes(broken_bytes)
+    c.run('dialogue-invalid-host', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+          ports=(9000,), env={**qualified, 'MAPS_DIALOGUE_PROFILES_JSON': json.dumps([profile])}, command_args=arguments)
+    c.ports['api', 9000] = c.ports['dialogue-invalid-host', 9000]
+    try:
+        eventually(lambda: c.request('/q/health/ready'))
+        derive({}, 'INVALID', 'SYSTEM')
+    finally:
+        docker('stop', c.name + '-dialogue-invalid-host')
+        (fixtures / 'dialogue-profile.json').write_bytes(healthy_bytes)
     invalid_flags = {**qualified, 'MAPS_DERIVE_REQUEST_SCHEMA_VERSION': '1'}
     c.run('dialogue-invalid', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
           env=invalid_flags, command_args=arguments)
@@ -836,7 +854,7 @@ def dialogue_contract(c, env, fixtures, arguments, profile, catalog, authored):
         logs = docker('logs', c.name + '-dialogue-invalid')
         assert 'dialogue.validation-required requires' in logs
     eventually(refuses_invalid_flags)
-    print('Maps E1: real schema-2 JVM archive validation → native result acceptance → Postgres/API; NONE, Story, graph, forged host, profile outage, fork and closed activation passed', flush=True)
+    print('Maps E1: real schema-2 JVM archive validation → native result acceptance → Postgres/API; NONE, Story, graph, forged host, profile outage, invalid operator host, fork and closed activation passed', flush=True)
 
 
 def main():

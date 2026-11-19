@@ -12,9 +12,36 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 class DialogueProfileLoaderTest {
+    private fun profile(host: String) =
+        com.fasterxml.jackson.databind
+            .ObjectMapper()
+            .writeValueAsBytes(
+                mapOf(
+                    "schemaVersion" to 1,
+                    "id" to "grounds:test",
+                    "version" to "1",
+                    "hostCatalogJson" to host,
+                    "assetCatalog" to mapOf("id" to "assets", "version" to "1"),
+                    "actionCatalogs" to listOf(mapOf("id" to "actions", "version" to "1")),
+                    "startActions" to emptyMap<String, Any>(),
+                    "npcAssets" to emptyMap<String, Any>(),
+                )
+            )
+
     private val body =
-        """{"schemaVersion":1,"id":"grounds:test","version":"1","hostCatalogJson":"{}","assetCatalog":{"id":"assets","version":"1"},"actionCatalogs":[{"id":"actions","version":"1"}],"startActions":{},"npcAssets":{}}"""
-            .toByteArray()
+        profile(
+            """{"schemaVersion":1,"generation":"test","speakers":[],"conditions":{},"actions":{},"gestures":[],"capabilities":[],"durableOutcomes":false}"""
+        )
+
+    @Test
+    fun rejectsInvalidSharedHostMetadata() {
+        val invalid = profile("{}")
+        server(bytes = invalid) { loader ->
+            assertThrows<CatalogTransferException> {
+                loader.load(pin(size = invalid.size.toLong(), sha = digest(invalid)))
+            }
+        }
+    }
 
     private fun digest(bytes: ByteArray) =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
