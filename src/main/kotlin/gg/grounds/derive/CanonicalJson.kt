@@ -1,8 +1,8 @@
 package gg.grounds.derive
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.core.JsonFactory
 import com.fasterxml.jackson.core.StreamReadFeature
-import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JsonMappingException
 import com.fasterxml.jackson.databind.JsonNode
@@ -13,7 +13,9 @@ import com.fasterxml.jackson.module.kotlin.KotlinModule
 
 object CanonicalJson {
     private val mapper: ObjectMapper =
-        ObjectMapper(JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())
+        ObjectMapper(
+                JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build()
+            )
             .registerModule(KotlinModule.Builder().build())
             .setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
@@ -21,12 +23,13 @@ object CanonicalJson {
 
     fun write(value: Any): ByteArray {
         val node: JsonNode = mapper.valueToTree(value)
-        val schema = when (value) {
-            is DeriveRequest -> value.schemaVersion
-            is DeriveResult -> value.schemaVersion
-            is DerivedManifest -> value.schemaVersion
-            else -> null
-        }
+        val schema =
+            when (value) {
+                is DeriveRequest -> value.schemaVersion
+                is DeriveResult -> value.schemaVersion
+                is DerivedManifest -> value.schemaVersion
+                else -> null
+            }
         if (schema == 1 && node is ObjectNode) {
             node.remove(listOf("workerImage", "dialogueProfiles", "dialogue"))
             node.path("problems").forEach { problem ->
@@ -34,15 +37,20 @@ object CanonicalJson {
             }
         }
         val bytes = mapper.writeValueAsBytes(sort(node)).plus('\n'.code.toByte())
-        if (schema == 2 && ((value is DeriveResult && bytes.size > 1048576) ||
-                (value is DerivedManifest && bytes.size > 4194304))) throw ProofReportLimitException()
+        if (
+            schema == 2 &&
+                ((value is DeriveResult && bytes.size > 1048576) ||
+                    (value is DerivedManifest && bytes.size > 4194304))
+        )
+            throw ProofReportLimitException()
         return bytes
     }
 
     fun readRequest(bytes: ByteArray): DeriveRequest {
         val node = mapper.readTree(bytes)
         val schema = schema(node)
-        if (schema == 1) rejectExtensions(node, setOf("workerImage", "dialogueProfiles", "dialogue"))
+        if (schema == 1)
+            rejectExtensions(node, setOf("workerImage", "dialogueProfiles", "dialogue"))
         else {
             requireTypes(node, "request", setOf("workerImage"))
             requireArray(node.path("dialogueProfiles"), "dialogue profiles")
@@ -72,7 +80,8 @@ object CanonicalJson {
     fun readResult(bytes: ByteArray): DeriveResult {
         val node = mapper.readTree(bytes)
         val schema = schema(node)
-        if (schema == 1) rejectExtensions(node, setOf("dialogue", "workerImage", "dialogueProfiles"))
+        if (schema == 1)
+            rejectExtensions(node, setOf("dialogue", "workerImage", "dialogueProfiles"))
         requireFields(node, "result", RESULT_FIELDS)
         requireTypes(node, "result", RESULT_TEXT_FIELDS, RESULT_INTEGER_FIELDS)
         when (node.path("kind").asText()) {
@@ -95,8 +104,17 @@ object CanonicalJson {
                     requireFields(it, "failure problem", PROBLEM_FIELDS)
                     requireTypes(it, "failure problem", PROBLEM_TEXT_FIELDS)
                     if (schema == 1) rejectExtensions(it, NEW_PROBLEM_FIELDS)
-                    requireOptionalText(it, "failure problem", OPTIONAL_PROBLEM_TEXT_FIELDS + if (schema == 2) NEW_PROBLEM_FIELDS else emptySet())
-                    if (it.hasNonNull("severity") && it.path("severity").asText() !in setOf("ERROR", "WARNING")) invalid("Invalid diagnostic severity")
+                    requireOptionalText(
+                        it,
+                        "failure problem",
+                        OPTIONAL_PROBLEM_TEXT_FIELDS +
+                            if (schema == 2) NEW_PROBLEM_FIELDS else emptySet(),
+                    )
+                    if (
+                        it.hasNonNull("severity") &&
+                            it.path("severity").asText() !in setOf("ERROR", "WARNING")
+                    )
+                        invalid("Invalid diagnostic severity")
                 }
             }
             else -> invalid("result kind must be SUCCESS or FAILURE")
@@ -135,21 +153,60 @@ object CanonicalJson {
     }
 
     private fun validateProfilePin(node: JsonNode) {
-        requireFields(node, "dialogue profile", setOf("id", "version", "sha256", "sizeBytes", "uri"))
-        requireTypes(node, "dialogue profile", setOf("id", "version", "sha256", "uri"), setOf("sizeBytes"))
+        requireFields(
+            node,
+            "dialogue profile",
+            setOf("id", "version", "sha256", "sizeBytes", "uri"),
+        )
+        requireTypes(
+            node,
+            "dialogue profile",
+            setOf("id", "version", "sha256", "uri"),
+            setOf("sizeBytes"),
+        )
     }
 
     private fun validateDialogue(node: JsonNode) {
         requireFields(node, "dialogue", setOf("status", "proof", "problems"))
         requireTypes(node, "dialogue", setOf("status"))
-        if (node.path("status").asText() !in setOf("NONE", "VALID")) invalid("Successful dialogue proof must be NONE or VALID")
+        if (node.path("status").asText() !in setOf("NONE", "VALID"))
+            invalid("Successful dialogue proof must be NONE or VALID")
         val proof = node.path("proof")
-        requireFields(proof, "dialogue proof", setOf("schemaVersion", "proof", "sourceSha256", "workerImage", "executionSha256", "validatorCoordinate", "files", "dialogueIds", "requirements"))
-        requireTypes(proof, "dialogue proof", setOf("proof", "sourceSha256", "workerImage", "executionSha256", "validatorCoordinate"), setOf("schemaVersion"))
-        requireOptionalText(proof, "dialogue proof", setOf("sceneSha256", "hostCatalogSha256", "contentPin"))
-        if (proof.hasNonNull("bindingsSchemaVersion") && !proof.path("bindingsSchemaVersion").isIntegralNumber) invalid("Invalid bindings schema type")
-        if (proof.hasNonNull("assetCatalog")) validateCatalog(proof.path("assetCatalog"), "dialogue asset catalog")
-        if (proof.hasNonNull("actionCatalog")) validateCatalog(proof.path("actionCatalog"), "dialogue action catalog")
+        requireFields(
+            proof,
+            "dialogue proof",
+            setOf(
+                "schemaVersion",
+                "proof",
+                "sourceSha256",
+                "workerImage",
+                "executionSha256",
+                "validatorCoordinate",
+                "files",
+                "dialogueIds",
+                "requirements",
+            ),
+        )
+        requireTypes(
+            proof,
+            "dialogue proof",
+            setOf("proof", "sourceSha256", "workerImage", "executionSha256", "validatorCoordinate"),
+            setOf("schemaVersion"),
+        )
+        requireOptionalText(
+            proof,
+            "dialogue proof",
+            setOf("sceneSha256", "hostCatalogSha256", "contentPin"),
+        )
+        if (
+            proof.hasNonNull("bindingsSchemaVersion") &&
+                !proof.path("bindingsSchemaVersion").isIntegralNumber
+        )
+            invalid("Invalid bindings schema type")
+        if (proof.hasNonNull("assetCatalog"))
+            validateCatalog(proof.path("assetCatalog"), "dialogue asset catalog")
+        if (proof.hasNonNull("actionCatalog"))
+            validateCatalog(proof.path("actionCatalog"), "dialogue action catalog")
         if (proof.hasNonNull("profile")) validateProfilePin(proof.path("profile"))
         requireArray(proof.path("files"), "dialogue files")
         proof.path("files").forEach { file ->
@@ -161,15 +218,25 @@ object CanonicalJson {
         requireArray(proof.path("requirements"), "dialogue requirements")
         proof.path("requirements").forEach { req ->
             requireFields(req, "dialogue requirement", setOf("kind", "key", "required"))
-            requireTypes(req, "dialogue requirement", setOf("kind", "key"), booleanFields=setOf("required"))
+            requireTypes(
+                req,
+                "dialogue requirement",
+                setOf("kind", "key"),
+                booleanFields = setOf("required"),
+            )
             requireOptionalText(req, "dialogue requirement", setOf("speaker"))
         }
         requireArray(node.path("problems"), "dialogue problems")
         node.path("problems").forEach { problem ->
             requireFields(problem, "dialogue problem", PROBLEM_FIELDS)
             requireTypes(problem, "dialogue problem", PROBLEM_TEXT_FIELDS)
-            requireOptionalText(problem, "dialogue problem", OPTIONAL_PROBLEM_TEXT_FIELDS + NEW_PROBLEM_FIELDS)
-            if (problem.path("severity").asText() != "WARNING") invalid("Successful proof cannot carry errors")
+            requireOptionalText(
+                problem,
+                "dialogue problem",
+                OPTIONAL_PROBLEM_TEXT_FIELDS + NEW_PROBLEM_FIELDS,
+            )
+            if (problem.path("severity").asText() != "WARNING")
+                invalid("Successful proof cannot carry errors")
         }
     }
 

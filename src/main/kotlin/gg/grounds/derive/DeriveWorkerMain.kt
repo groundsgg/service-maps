@@ -1,11 +1,11 @@
 package gg.grounds.derive
 
 import gg.grounds.catalog.CatalogJarLoader
-import gg.grounds.catalog.DialogueProfileLoader
-import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.catalog.DefaultNamespaceCatalogResolver
+import gg.grounds.catalog.DialogueProfileLoader
 import gg.grounds.catalog.NamespaceCatalogResolver
 import gg.grounds.domain.CatalogReference
+import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
 import gg.grounds.scene.format.SceneCatalogReferences
@@ -36,7 +36,9 @@ object DeriveWorkerMain {
         catalogLoaderFactory: (Path, Boolean) -> CatalogJarLoader = { directory, loopback ->
             CatalogJarLoader(directory, allowLoopbackHttp = loopback)
         },
-        profileLoaderFactory: (Boolean) -> DialogueProfileLoader = { DialogueProfileLoader(WorkerHttpTransfer(it,1048576)) },
+        profileLoaderFactory: (Boolean) -> DialogueProfileLoader = {
+            DialogueProfileLoader(WorkerHttpTransfer(it, 1048576))
+        },
     ): Int {
         val options =
             try {
@@ -67,7 +69,14 @@ object DeriveWorkerMain {
                 if (actual != request.sourceSha256)
                     throw ContentFailure("source digest does not match request")
                 val result =
-                    derive(request, source, root, options.allowLoopbackHttp, catalogLoaderFactory, profileLoaderFactory)
+                    derive(
+                        request,
+                        source,
+                        root,
+                        options.allowLoopbackHttp,
+                        catalogLoaderFactory,
+                        profileLoaderFactory,
+                    )
                 when (result) {
                     is SceneDerivationOutcome.Invalid ->
                         return failure(request, result.problems, transfer)
@@ -82,10 +91,7 @@ object DeriveWorkerMain {
                             val manifest = root.resolve("manifest.json")
                             Files.write(manifest, result.manifest)
                             transfer.upload(request.manifestUrl, manifest, digest(result.manifest))
-                            transfer.upload(
-                                request.resultUrl,
-                                resultBytes,
-                            )
+                            transfer.upload(request.resultUrl, resultBytes)
                             return 0
                         } catch (e: Exception) {
                             return systemFailure(request, e, transfer)
@@ -128,11 +134,20 @@ object DeriveWorkerMain {
                 SceneDeriver(
                         resolver,
                         shapeRequirements = request.shapeRequirements,
-                        dialogueContext = if (request.schemaVersion == 2) DialogueDeriveContext(
-                            DeriveExecutionContract(2,requireNotNull(request.workerImage),request.dialogueProfiles,
-                                request.catalogCandidates,request.normalizationCatalog,request.shapeRequirements),
-                            profileLoaderFactory(loopback),
-                        ) else null,
+                        dialogueContext =
+                            if (request.schemaVersion == 2)
+                                DialogueDeriveContext(
+                                    DeriveExecutionContract(
+                                        2,
+                                        requireNotNull(request.workerImage),
+                                        request.dialogueProfiles,
+                                        request.catalogCandidates,
+                                        request.normalizationCatalog,
+                                        request.shapeRequirements,
+                                    ),
+                                    profileLoaderFactory(loopback),
+                                )
+                            else null,
                         normalizationAssets =
                             request.normalizationCatalog?.let { reference ->
                                 {
@@ -228,7 +243,10 @@ object DeriveWorkerMain {
                                 sourceSha256 = request.sourceSha256,
                                 scope = DeriveFailureScope.CONTENT,
                                 retryable = false,
-                                problems = if (request.schemaVersion == 2) DialogueDiagnostics.bounded(problems,1048576-16384) else problems,
+                                problems =
+                                    if (request.schemaVersion == 2)
+                                        DialogueDiagnostics.bounded(problems, 1048576 - 16384)
+                                    else problems,
                             )
                         ),
                     )
@@ -262,7 +280,8 @@ object DeriveWorkerMain {
                                             DeriveFailureScope.SYSTEM,
                                             when (e) {
                                                 is ProofReportLimitException -> "PROOF_REPORT_LIMIT"
-                                                is DialogueProfileConfigurationException -> "DIALOGUE_PROFILE_CONFIG_MISSING"
+                                                is DialogueProfileConfigurationException ->
+                                                    "DIALOGUE_PROFILE_CONFIG_MISSING"
                                                 else -> "SYSTEM"
                                             },
                                             redact(e.message ?: "worker failure"),

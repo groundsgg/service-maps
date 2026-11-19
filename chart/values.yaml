@@ -23,6 +23,7 @@ serviceAccount:
 # Derivation stays off until the service has the narrowly-scoped Kubernetes API access it needs.
 # The worker image is intentionally empty: enabling derives requires an immutable digest.
 derive:
+  requestSchemaVersion: 1
   enabled: false
   required: false
   # Empty uses the namespace of the Helm release.
@@ -42,6 +43,12 @@ derive:
     # Additional immutable catalog metadata; operator configuration, never map input.
     # At most eight entries. Each URI is under <baseUri>/resourcepacks/catalog-pins/.
     pinned: []
+
+# Operator-owned immutable host profiles; map content can only select their identity.
+dialogue:
+  validationRequired: false
+  profileOrigin: ""
+  profiles: []
 
 service:
   port: 9000

@@ -6,17 +6,18 @@ import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import com.fasterxml.jackson.annotation.JsonTypeName
 import gg.grounds.domain.CatalogReference
+import gg.grounds.domain.DeriveFailureScope
+import gg.grounds.domain.DeriveProblem
 import gg.grounds.domain.DialogueProfilePin
 import gg.grounds.domain.DialogueProjection
 import gg.grounds.domain.DialogueStatus
-import gg.grounds.domain.DeriveFailureScope
-import gg.grounds.domain.DeriveProblem
 import java.net.URI
 import java.util.UUID
 
 private const val CONTRACT_SCHEMA_VERSION = 1
 
 class ProofReportLimitException : IllegalStateException("PROOF_REPORT_LIMIT")
+
 private val SHA_256 = Regex("[0-9a-f]{64}")
 
 data class AssetCatalogCandidate(
@@ -65,8 +66,14 @@ data class DeriveRequest(
         requireHttpUrl("manifestUrl", manifestUrl)
         requireHttpUrl("resultUrl", resultUrl)
         if (schemaVersion == 2) {
-            require(workerImage != null && workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}")))
-            require(dialogueProfiles.size <= 8 && dialogueProfiles.map { it.id to it.version }.distinct().size == dialogueProfiles.size)
+            require(
+                workerImage != null && workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}"))
+            )
+            require(
+                dialogueProfiles.size <= 8 &&
+                    dialogueProfiles.map { it.id to it.version }.distinct().size ==
+                        dialogueProfiles.size
+            )
         } else require(workerImage == null && dialogueProfiles.isEmpty())
     }
 }
@@ -244,14 +251,27 @@ constructor(
     }
 }
 
-private fun requireDialogue(schemaVersion: Int, source: String, scene: DerivedScene, dialogue: DialogueProjection?) {
-    if (schemaVersion == 1) { require(dialogue == null); return }
+private fun requireDialogue(
+    schemaVersion: Int,
+    source: String,
+    scene: DerivedScene,
+    dialogue: DialogueProjection?,
+) {
+    if (schemaVersion == 1) {
+        require(dialogue == null)
+        return
+    }
     requireNotNull(dialogue)
     require(dialogue.status == DialogueStatus.NONE || dialogue.status == DialogueStatus.VALID)
     val proof = requireNotNull(dialogue.proof)
     require(proof.sourceSha256 == source)
     if (dialogue.status == DialogueStatus.VALID) {
-        require(scene.present && proof.sceneSha256 == scene.sha256 && proof.assetCatalog == scene.assetCatalog && proof.actionCatalog == scene.actionCatalog)
+        require(
+            scene.present &&
+                proof.sceneSha256 == scene.sha256 &&
+                proof.assetCatalog == scene.assetCatalog &&
+                proof.actionCatalog == scene.actionCatalog
+        )
     }
 }
 
@@ -262,9 +282,7 @@ private fun requireIdentity(schemaVersion: Int, version: Int, sourceSha256: Stri
 }
 
 private fun requireSchema(schemaVersion: Int) {
-    require(schemaVersion in 1..2) {
-        "unsupported schemaVersion: $schemaVersion"
-    }
+    require(schemaVersion in 1..2) { "unsupported schemaVersion: $schemaVersion" }
 }
 
 private fun requireSha256(name: String, value: String) {

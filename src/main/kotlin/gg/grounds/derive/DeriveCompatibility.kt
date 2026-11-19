@@ -7,12 +7,17 @@ import org.eclipse.microprofile.config.inject.ConfigProperty
 /** The rollout gates are one invariant: requiring derivation without enabling it is nonsense. */
 @Startup
 @ApplicationScoped
-class DeriveCompatibility @jakarta.inject.Inject constructor(
+class DeriveCompatibility
+@jakarta.inject.Inject
+constructor(
     @param:ConfigProperty(name = "grounds.maps.derive.enabled", defaultValue = "false")
     val enabled: Boolean,
     @param:ConfigProperty(name = "grounds.maps.derive.required", defaultValue = "false")
     val required: Boolean,
-    @param:ConfigProperty(name = "grounds.maps.dialogue.validation-required", defaultValue = "false")
+    @param:ConfigProperty(
+        name = "grounds.maps.dialogue.validation-required",
+        defaultValue = "false",
+    )
     val dialogueRequired: Boolean = false,
     @param:ConfigProperty(name = "grounds.maps.derive.request-schema-version", defaultValue = "1")
     val requestSchemaVersion: Int = 1,

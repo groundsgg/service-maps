@@ -5,20 +5,54 @@ import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveProblem
 
 object DialogueDiagnostics {
-    fun fromLibrary(problem: ValidationReport.Problem, definitionPaths: Set<String> = emptySet()): DeriveProblem {
+    fun fromLibrary(
+        problem: ValidationReport.Problem,
+        definitionPaths: Set<String> = emptySet(),
+    ): DeriveProblem {
         val original = problem.file()
-        val file = if (original != null && original in definitionPaths) "dialogues/$original" else original
-        return DeriveProblem(DeriveFailureScope.CONTENT, file, problem.code(), problem.nodeId(), problem.message(),
-            "dialogue", problem.severity().name, file, problem.path(), problem.nodeId())
+        val file =
+            if (original != null && original in definitionPaths) "dialogues/$original" else original
+        return DeriveProblem(
+            DeriveFailureScope.CONTENT,
+            file,
+            problem.code(),
+            problem.nodeId(),
+            problem.message(),
+            "dialogue",
+            problem.severity().name,
+            file,
+            problem.path(),
+            problem.nodeId(),
+        )
     }
 
-    /** Bound the serialized UTF-8 array, not its character count; truncation cannot hide failure. */
+    /**
+     * Bound the serialized UTF-8 array, not its character count; truncation cannot hide failure.
+     */
     fun bounded(problems: List<DeriveProblem>, maxBytes: Int = 1048576): List<DeriveProblem> {
         require(maxBytes in 1024..1048576)
-        val sorted = problems.sortedWith(compareBy({ it.file ?: it.path ?: "" }, { it.pointer ?: "" }, { it.code }, { it.nodeId ?: "" }))
+        val sorted =
+            problems.sortedWith(
+                compareBy(
+                    { it.file ?: it.path ?: "" },
+                    { it.pointer ?: "" },
+                    { it.code },
+                    { it.nodeId ?: "" },
+                )
+            )
         val error = problems.any { it.severity == null || it.severity == "ERROR" }
-        val marker = DeriveProblem(if (problems.any { it.scope == DeriveFailureScope.SYSTEM }) DeriveFailureScope.SYSTEM else DeriveFailureScope.CONTENT,
-            null, "DIAGNOSTICS_TRUNCATED", null, "Diagnostic report truncated", "dialogue", if (error) "ERROR" else "WARNING")
+        val marker =
+            DeriveProblem(
+                if (problems.any { it.scope == DeriveFailureScope.SYSTEM })
+                    DeriveFailureScope.SYSTEM
+                else DeriveFailureScope.CONTENT,
+                null,
+                "DIAGNOSTICS_TRUNCATED",
+                null,
+                "Diagnostic report truncated",
+                "dialogue",
+                if (error) "ERROR" else "WARNING",
+            )
         val markerBytes = CanonicalJson.write(marker).size - 1
         val kept = mutableListOf<DeriveProblem>()
         val sizes = mutableListOf<Int>()
@@ -32,7 +66,9 @@ object DialogueDiagnostics {
             bytes = next.toInt()
         }
         if (kept.size == sorted.size) return java.util.List.copyOf(kept)
-        while (kept.isNotEmpty() && (kept.size >= 1000 || bytes.toLong() + markerBytes + 1 > maxBytes)) {
+        while (
+            kept.isNotEmpty() && (kept.size >= 1000 || bytes.toLong() + markerBytes + 1 > maxBytes)
+        ) {
             val size = sizes.removeAt(sizes.lastIndex)
             kept.removeAt(kept.lastIndex)
             bytes -= size + if (kept.isEmpty()) 0 else 1

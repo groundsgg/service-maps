@@ -1,12 +1,10 @@
 package gg.grounds.persistence
 
 import gg.grounds.derive.CanonicalJson
-import gg.grounds.domain.DeriveExecutionContract
-import gg.grounds.domain.DialogueProjection
-import gg.grounds.domain.DialogueStatus
 import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
 import gg.grounds.domain.CatalogReference
+import gg.grounds.domain.DeriveExecutionContract
 import gg.grounds.domain.DeriveFailureScope
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.DeriveProblem
@@ -14,6 +12,8 @@ import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
+import gg.grounds.domain.DialogueProjection
+import gg.grounds.domain.DialogueStatus
 import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
@@ -46,39 +46,59 @@ constructor(
     private val dataSource: DataSource,
     @param:ConfigProperty(name = "grounds.maps.derive.reconcile-batch-size", defaultValue = "100")
     private val reconcileBatchSize: Int,
-    private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy = gg.grounds.compatibility.DialoguePublicationPolicy(false),
+    private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy =
+        gg.grounds.compatibility.DialoguePublicationPolicy(false),
 ) : MapVersionRepository {
 
     init {
         require(reconcileBatchSize > 0) { "reconciliation batch size must be positive" }
     }
 
-    override fun bindExecution(identity: DeriveIdentity, proposed: DeriveExecutionContract): DeriveExecutionContract =
+    override fun bindExecution(
+        identity: DeriveIdentity,
+        proposed: DeriveExecutionContract,
+    ): DeriveExecutionContract =
         dataSource.connection.use { c ->
             c.autoCommit = false
             try {
                 val current = lockedIdentity(c, identity)
                 val existing = current.executionContract
                 if (existing != null) {
-                    if (existing != proposed) throw DeriveResultIntegrityException("conflicting execution contract for attempt")
+                    if (existing != proposed)
+                        throw DeriveResultIntegrityException(
+                            "conflicting execution contract for attempt"
+                        )
                     c.commit()
                     return existing
                 }
-                if (current.state != VersionState.DERIVING) throw DeriveResultRejectedException("execution contract requires an active attempt")
-                c.prepareStatement("UPDATE map_version SET derive_execution_contract = CAST(? AS jsonb), derive_contract_legacy = FALSE WHERE map = ? AND version = ?").use { ps ->
-                    ps.setString(1, CanonicalJson.write(proposed).decodeToString())
-                    ps.setObject(2, identity.mapId)
-                    ps.setInt(3, identity.version)
-                    ps.executeUpdate()
-                }
-                writeDialogue(c, identity.mapId, identity.version,
-                    if (proposed.schemaVersion == 2) DialogueProjection(DialogueStatus.PENDING) else DialogueProjection())
+                if (current.state != VersionState.DERIVING)
+                    throw DeriveResultRejectedException(
+                        "execution contract requires an active attempt"
+                    )
+                c.prepareStatement(
+                        "UPDATE map_version SET derive_execution_contract = CAST(? AS jsonb), derive_contract_legacy = FALSE WHERE map = ? AND version = ?"
+                    )
+                    .use { ps ->
+                        ps.setString(1, CanonicalJson.write(proposed).decodeToString())
+                        ps.setObject(2, identity.mapId)
+                        ps.setInt(3, identity.version)
+                        ps.executeUpdate()
+                    }
+                writeDialogue(
+                    c,
+                    identity.mapId,
+                    identity.version,
+                    if (proposed.schemaVersion == 2) DialogueProjection(DialogueStatus.PENDING)
+                    else DialogueProjection(),
+                )
                 c.commit()
                 proposed
             } catch (failure: Exception) {
                 c.rollback()
                 throw failure
-            } finally { c.autoCommit = true }
+            } finally {
+                c.autoCommit = true
+            }
         }
 
     override fun commit(
@@ -347,7 +367,12 @@ constructor(
                     failure.retryable,
                     invalidScene(failure.problems),
                 )
-                writeDialogue(c, identity.mapId, identity.version, failureDialogue(current.executionContract, failure))
+                writeDialogue(
+                    c,
+                    identity.mapId,
+                    identity.version,
+                    failureDialogue(current.executionContract, failure),
+                )
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
                 DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
@@ -407,9 +432,14 @@ constructor(
                     false,
                     pendingScene(),
                 )
-                c.prepareStatement("UPDATE map_version SET derive_execution_contract = NULL, derive_contract_legacy = FALSE WHERE map = ? AND version = ?").use { ps ->
-                    ps.setObject(1, mapId); ps.setInt(2, version); ps.executeUpdate()
-                }
+                c.prepareStatement(
+                        "UPDATE map_version SET derive_execution_contract = NULL, derive_contract_legacy = FALSE WHERE map = ? AND version = ?"
+                    )
+                    .use { ps ->
+                        ps.setObject(1, mapId)
+                        ps.setInt(2, version)
+                        ps.executeUpdate()
+                    }
                 writeDialogue(c, mapId, version, DialogueProjection())
                 val result = requireNotNull(read(c, mapId, version))
                 c.commit()
@@ -528,31 +558,60 @@ constructor(
         }
     }
 
-    private fun verifyDialogue(current: MapVersionRecord, identity: DeriveIdentity, facts: DerivedFacts) {
+    private fun verifyDialogue(
+        current: MapVersionRecord,
+        identity: DeriveIdentity,
+        facts: DerivedFacts,
+    ) {
         val contract = current.executionContract
         if (facts.dialogue.status == DialogueStatus.UNKNOWN) {
-            if (contract?.schemaVersion == 2) throw DeriveResultRejectedException("schema 2 attempt requires checked dialogue facts")
+            if (contract?.schemaVersion == 2)
+                throw DeriveResultRejectedException(
+                    "schema 2 attempt requires checked dialogue facts"
+                )
             return // Legacy internal callers provide no positive absence or Story attestation.
         }
-        if (contract?.schemaVersion != 2) throw DeriveResultRejectedException("checked dialogue facts require a bound schema 2 execution")
+        if (contract?.schemaVersion != 2)
+            throw DeriveResultRejectedException(
+                "checked dialogue facts require a bound schema 2 execution"
+            )
         val proof = requireNotNull(facts.dialogue.proof)
-        if (proof.workerImage != contract.workerImage || proof.sourceSha256 != identity.sourceSha256 ||
-            proof.executionSha256 != contract.fingerprint() ||
-            (facts.dialogue.status == DialogueStatus.VALID && proof.profile !in contract.dialogueProfiles))
-            throw DeriveResultRejectedException("dialogue facts do not match the immutable execution context")
+        if (
+            proof.workerImage != contract.workerImage ||
+                proof.sourceSha256 != identity.sourceSha256 ||
+                proof.executionSha256 != contract.fingerprint() ||
+                (facts.dialogue.status == DialogueStatus.VALID &&
+                    proof.profile !in contract.dialogueProfiles)
+        )
+            throw DeriveResultRejectedException(
+                "dialogue facts do not match the immutable execution context"
+            )
     }
 
-    private fun writeDialogue(c: Connection, mapId: UUID, version: Int, dialogue: DialogueProjection) {
-        c.prepareStatement("UPDATE map_version SET dialogue_projection = CAST(? AS jsonb) WHERE map = ? AND version = ?").use { ps ->
-            ps.setString(1, CanonicalJson.write(dialogue).decodeToString())
-            ps.setObject(2, mapId)
-            ps.setInt(3, version)
-            ps.executeUpdate()
-        }
+    private fun writeDialogue(
+        c: Connection,
+        mapId: UUID,
+        version: Int,
+        dialogue: DialogueProjection,
+    ) {
+        c.prepareStatement(
+                "UPDATE map_version SET dialogue_projection = CAST(? AS jsonb) WHERE map = ? AND version = ?"
+            )
+            .use { ps ->
+                ps.setString(1, CanonicalJson.write(dialogue).decodeToString())
+                ps.setObject(2, mapId)
+                ps.setInt(3, version)
+                ps.executeUpdate()
+            }
     }
 
-    private fun failureDialogue(contract: DeriveExecutionContract?, failure: DerivedFailure): DialogueProjection =
-        if (contract?.schemaVersion == 2) DialogueProjection(DialogueStatus.INVALID, problems=failure.problems) else DialogueProjection()
+    private fun failureDialogue(
+        contract: DeriveExecutionContract?,
+        failure: DerivedFailure,
+    ): DialogueProjection =
+        if (contract?.schemaVersion == 2)
+            DialogueProjection(DialogueStatus.INVALID, problems = failure.problems)
+        else DialogueProjection()
 
     private fun writeDeriveState(
         c: Connection,
@@ -669,7 +728,7 @@ constructor(
             problems == other.problems
 
     internal fun readForPin(c: Connection, mapId: UUID, version: Int): MapVersionRecord? =
-        read(c,mapId,version,forUpdate=true)
+        read(c, mapId, version, forUpdate = true)
 
     private fun read(
         c: Connection,
@@ -723,8 +782,14 @@ constructor(
             createdAt = getTimestamp("created_at").toInstant(),
             deriveRequested = getBoolean("derive_requested"),
             trust = MapTrust.valueOf(getString("map_trust")),
-            dialogue = getString("dialogue_projection")?.let { CanonicalJson.readStoredDialogue(it.toByteArray()) } ?: DialogueProjection(),
-            executionContract = getString("derive_execution_contract")?.let { CanonicalJson.readExecutionContract(it.toByteArray()) },
+            dialogue =
+                getString("dialogue_projection")?.let {
+                    CanonicalJson.readStoredDialogue(it.toByteArray())
+                } ?: DialogueProjection(),
+            executionContract =
+                getString("derive_execution_contract")?.let {
+                    CanonicalJson.readExecutionContract(it.toByteArray())
+                },
             deriveContractLegacy = getBoolean("derive_contract_legacy"),
         )
 

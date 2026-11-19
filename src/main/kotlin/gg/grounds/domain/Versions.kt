@@ -80,9 +80,13 @@ class VersionNotPublishableException(val state: VersionState) :
     RuntimeException("a version in state $state cannot be published")
 
 interface MapVersionRepository {
-    fun bindExecution(identity: DeriveIdentity, proposed: DeriveExecutionContract): DeriveExecutionContract =
-        throw UnsupportedOperationException("Repository does not support immutable execution contracts")
-
+    fun bindExecution(
+        identity: DeriveIdentity,
+        proposed: DeriveExecutionContract,
+    ): DeriveExecutionContract =
+        throw UnsupportedOperationException(
+            "Repository does not support immutable execution contracts"
+        )
 
     /**
      * Allocates the next integer for this map and records the commit.

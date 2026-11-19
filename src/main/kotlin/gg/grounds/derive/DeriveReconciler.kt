@@ -8,7 +8,6 @@ import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
-import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
@@ -415,7 +414,10 @@ constructor(
         runCatching { scheduler.close() }
     }
 
-    private fun acceptResult(identity: DeriveIdentity, record: gg.grounds.domain.MapVersionRecord): TerminalAttempt? {
+    private fun acceptResult(
+        identity: DeriveIdentity,
+        record: gg.grounds.domain.MapVersionRecord,
+    ): TerminalAttempt? {
         return try {
             when (
                 val result =
@@ -459,7 +461,10 @@ constructor(
                     require(derivedManifest.sourceSha256 == identity.sourceSha256) {
                         "derive manifest source does not match claimed request"
                     }
-                    require(derivedManifest.schemaVersion == result.schemaVersion && derivedManifest.dialogue == result.dialogue) {
+                    require(
+                        derivedManifest.schemaVersion == result.schemaVersion &&
+                            derivedManifest.dialogue == result.dialogue
+                    ) {
                         "derive manifest validation does not match result"
                     }
                     require(derivedManifest.scene == result.scene) {
@@ -593,13 +598,19 @@ constructor(
 
     private fun requireExecution(result: DeriveResult, record: gg.grounds.domain.MapVersionRecord) {
         val contract = record.executionContract
-        val expected = contract?.schemaVersion ?: if (record.deriveContractLegacy) 1 else error("unbound execution")
+        val expected =
+            contract?.schemaVersion
+                ?: if (record.deriveContractLegacy) 1 else error("unbound execution")
         require(result.schemaVersion == expected) { "result schema does not match execution" }
         if (result is DeriveSuccess && expected == 2) {
             val proof = requireNotNull(result.dialogue?.proof)
-            require(proof.sourceSha256 == record.sourceSha256 && proof.workerImage == contract!!.workerImage &&
-                proof.executionSha256 == contract.fingerprint() &&
-                (result.dialogue.status != gg.grounds.domain.DialogueStatus.VALID || proof.profile in contract.dialogueProfiles)) {
+            require(
+                proof.sourceSha256 == record.sourceSha256 &&
+                    proof.workerImage == contract!!.workerImage &&
+                    proof.executionSha256 == contract.fingerprint() &&
+                    (result.dialogue.status != gg.grounds.domain.DialogueStatus.VALID ||
+                        proof.profile in contract.dialogueProfiles)
+            ) {
                 "result does not match immutable execution context"
             }
         }

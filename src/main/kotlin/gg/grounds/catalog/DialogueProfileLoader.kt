@@ -26,7 +26,10 @@ class DialogueProfileLoader internal constructor(private val transfer: WorkerHtt
         } catch (failure: CatalogTransferException) {
             throw failure
         } catch (failure: Exception) {
-            throw CatalogTransferException("Dialogue host profile is unavailable or invalid", failure)
+            throw CatalogTransferException(
+                "Dialogue host profile is unavailable or invalid",
+                failure,
+            )
         } finally {
             directory?.let { path ->
                 Files.deleteIfExists(path.resolve("profile.json"))

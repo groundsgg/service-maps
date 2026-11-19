@@ -23,10 +23,11 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 class Fabric8DeriveJobGatewayTest {
-    @Test fun storedWorkerImageWinsOverCurrentGatewayImage() {
+    @Test
+    fun storedWorkerImageWinsOverCurrentGatewayImage() {
         val original = "old@sha256:${"e".repeat(64)}"
-        val job = gateway().buildJob(request().copy(workerImage=original))
-        assertEquals(original,job.spec.template.spec.containers.single().image)
+        val job = gateway().buildJob(request().copy(workerImage = original))
+        assertEquals(original, job.spec.template.spec.containers.single().image)
     }
 
     @Test

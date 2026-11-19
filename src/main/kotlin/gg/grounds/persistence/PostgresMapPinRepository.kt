@@ -17,10 +17,12 @@ import javax.sql.DataSource
 @ApplicationScoped
 class PostgresMapPinRepository
 @Inject
-constructor(private val dataSource: DataSource, private val light: MapLightPolicy,
+constructor(
+    private val dataSource: DataSource,
+    private val light: MapLightPolicy,
     private val versions: PostgresMapVersionRepository,
-    private val dialogue: gg.grounds.compatibility.DialogueRuntimeCompatibility) :
-    MapPinRepository {
+    private val dialogue: gg.grounds.compatibility.DialogueRuntimeCompatibility,
+) : MapPinRepository {
 
     override fun move(environment: String, mapId: UUID, version: Int, bySub: String): PinRecord =
         dataSource.connection.use { c ->
@@ -39,9 +41,11 @@ constructor(private val dataSource: DataSource, private val light: MapLightPolic
                 }
 
                 // Check the exact immutable version while its row is locked through the pin write.
-                val selected=versions.readForPin(c,mapId,version) ?: throw NotPublishedException(version)
-                if (selected.state != gg.grounds.domain.VersionState.PUBLISHED) throw NotPublishedException(version)
-                dialogue.problem(environment,mapId.toString(),selected)?.let {
+                val selected =
+                    versions.readForPin(c, mapId, version) ?: throw NotPublishedException(version)
+                if (selected.state != gg.grounds.domain.VersionState.PUBLISHED)
+                    throw NotPublishedException(version)
+                dialogue.problem(environment, mapId.toString(), selected)?.let {
                     throw gg.grounds.compatibility.DialogueRuntimeUnavailableException(it)
                 }
 

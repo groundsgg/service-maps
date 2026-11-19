@@ -29,23 +29,68 @@ class DeriveApiIT {
     @Inject lateinit var maps: MapRepository
     @Inject lateinit var versions: MapVersionRepository
 
-    @Test fun apiPreservesFilePointerNodeSeverity() {
-        val map=maps.create(gg.grounds.domain.MapAddress("bedwars","dialogue-diagnostics"),"Diagnostics",gg.grounds.domain.MapKind.ARENA,false,gg.grounds.domain.MapTrust.FIRST_PARTY,"derive-staff")
-        versions.commitWithDeriveRequest(map.id,"a".repeat(64),"tmp/source",true,null,null,"derive-staff")
-        val attempt=java.util.UUID.randomUUID()
-        versions.claimForDerive(map.id,1,attempt)
-        val identity=DeriveIdentity(map.id,1,attempt,"a".repeat(64))
-        versions.bindExecution(identity,gg.grounds.domain.DeriveExecutionContract(2,"worker@sha256:${"b".repeat(64)}",emptyList()))
-        versions.acceptFailure(identity,DerivedFailure(DeriveFailureScope.CONTENT,false,listOf(
-            DeriveProblem(DeriveFailureScope.CONTENT,"dialogues/guide.json","REFERENCE_UNKNOWN","greeting","Unknown target",
-                "dialogue","ERROR","dialogues/guide.json","/nodes/greeting/next","greeting"))))
-        given().get("/v1/maps/bedwars/dialogue-diagnostics/versions/1").then().statusCode(200)
-            .body("dialogue.status",equalTo("INVALID"))
-            .body("dialogue.problems[0].file",equalTo("dialogues/guide.json"))
-            .body("dialogue.problems[0].pointer",equalTo("/nodes/greeting/next"))
-            .body("dialogue.problems[0].nodeId",equalTo("greeting"))
-            .body("dialogue.problems[0].severity",equalTo("ERROR"))
-            .body("scene.status",equalTo("PENDING"))
+    @Test
+    fun apiPreservesFilePointerNodeSeverity() {
+        val map =
+            maps.create(
+                gg.grounds.domain.MapAddress("bedwars", "dialogue-diagnostics"),
+                "Diagnostics",
+                gg.grounds.domain.MapKind.ARENA,
+                false,
+                gg.grounds.domain.MapTrust.FIRST_PARTY,
+                "derive-staff",
+            )
+        versions.commitWithDeriveRequest(
+            map.id,
+            "a".repeat(64),
+            "tmp/source",
+            true,
+            null,
+            null,
+            "derive-staff",
+        )
+        val attempt = java.util.UUID.randomUUID()
+        versions.claimForDerive(map.id, 1, attempt)
+        val identity = DeriveIdentity(map.id, 1, attempt, "a".repeat(64))
+        versions.bindExecution(
+            identity,
+            gg.grounds.domain.DeriveExecutionContract(
+                2,
+                "worker@sha256:${"b".repeat(64)}",
+                emptyList(),
+            ),
+        )
+        versions.acceptFailure(
+            identity,
+            DerivedFailure(
+                DeriveFailureScope.CONTENT,
+                false,
+                listOf(
+                    DeriveProblem(
+                        DeriveFailureScope.CONTENT,
+                        "dialogues/guide.json",
+                        "REFERENCE_UNKNOWN",
+                        "greeting",
+                        "Unknown target",
+                        "dialogue",
+                        "ERROR",
+                        "dialogues/guide.json",
+                        "/nodes/greeting/next",
+                        "greeting",
+                    )
+                ),
+            ),
+        )
+        given()
+            .get("/v1/maps/bedwars/dialogue-diagnostics/versions/1")
+            .then()
+            .statusCode(200)
+            .body("dialogue.status", equalTo("INVALID"))
+            .body("dialogue.problems[0].file", equalTo("dialogues/guide.json"))
+            .body("dialogue.problems[0].pointer", equalTo("/nodes/greeting/next"))
+            .body("dialogue.problems[0].nodeId", equalTo("greeting"))
+            .body("dialogue.problems[0].severity", equalTo("ERROR"))
+            .body("scene.status", equalTo("PENDING"))
     }
 
     @Test

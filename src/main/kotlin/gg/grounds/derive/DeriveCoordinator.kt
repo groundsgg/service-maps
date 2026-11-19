@@ -4,7 +4,6 @@ import gg.grounds.blob.BlobStore
 import gg.grounds.catalog.PackSetCatalogProvider
 import gg.grounds.catalog.PinnedDialogueProfiles
 import gg.grounds.domain.DeriveExecutionContract
-import java.util.Optional
 import gg.grounds.domain.DeriveIdentity
 import gg.grounds.domain.MapVersionRecord
 import gg.grounds.domain.MapVersionRepository
@@ -13,6 +12,7 @@ import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
 import java.net.URI
 import java.time.Duration
+import java.util.Optional
 import java.util.UUID
 import org.eclipse.microprofile.config.inject.ConfigProperty
 
@@ -39,7 +39,9 @@ constructor(
     @param:ConfigProperty(name = "grounds.maps.dialogue.profile-origin", defaultValue = "")
     profileOrigin: Optional<String> = Optional.empty(),
 ) {
-    private val configuredProfiles = PinnedDialogueProfiles.parse(profilesJson, URI(profileOrigin.orElse(""))).pins()
+    private val configuredProfiles =
+        PinnedDialogueProfiles.parse(profilesJson, URI(profileOrigin.orElse(""))).pins()
+
     init {
         require(requestSchemaVersion in 1..2) { "unsupported derive request schema" }
         require(!enabled || urlTtl >= MINIMUM_URL_TTL) {
@@ -59,8 +61,18 @@ constructor(
         maps: gg.grounds.domain.MapRepository? = null,
         workerImage: String = "worker-test@sha256:${"a".repeat(64)}",
         requestSchemaVersion: Int = 1,
-    ) : this(versions, jobs, null, null, enabled, BlobStore.PRESIGN_TTL, runtimes, maps,
-        Optional.of(workerImage), requestSchemaVersion) {
+    ) : this(
+        versions,
+        jobs,
+        null,
+        null,
+        enabled,
+        BlobStore.PRESIGN_TTL,
+        runtimes,
+        maps,
+        Optional.of(workerImage),
+        requestSchemaVersion,
+    ) {
         testCandidates = candidates
     }
 
@@ -104,31 +116,54 @@ constructor(
         val sourceKey = requireNotNull(record.sourceKey)
         val identity = DeriveIdentity(mapId, version, attempt, sourceSha256)
         val test = testCandidates
-        val execution = record.executionContract ?: run {
-            val address = maps?.findById(mapId)?.address?.toString()
-            val schema = if (record.deriveContractLegacy) 1 else requestSchemaVersion
-            versions.bindExecution(identity, DeriveExecutionContract(schema, configuredImage.orElse(""),
-                if (schema == 2) configuredProfiles else emptyList(),
-                if (test != null) test() else requireNotNull(catalogs).candidates(),
-                address?.let { runtimes?.normalizationCatalog(it) },
-                address?.let { runtimes?.shapeRequirements(it) }))
-        }
-        fun source() = if (test != null) URI("https://example.test/source")
+        val execution =
+            record.executionContract
+                ?: run {
+                    val address = maps?.findById(mapId)?.address?.toString()
+                    val schema = if (record.deriveContractLegacy) 1 else requestSchemaVersion
+                    versions.bindExecution(
+                        identity,
+                        DeriveExecutionContract(
+                            schema,
+                            configuredImage.orElse(""),
+                            if (schema == 2) configuredProfiles else emptyList(),
+                            if (test != null) test() else requireNotNull(catalogs).candidates(),
+                            address?.let { runtimes?.normalizationCatalog(it) },
+                            address?.let { runtimes?.shapeRequirements(it) },
+                        ),
+                    )
+                }
+        fun source() =
+            if (test != null) URI("https://example.test/source")
             else URI(requireNotNull(blobs).presignGet(sourceKey, urlTtl))
-        fun output(key: String, testName: String) = if (test != null) URI("https://example.test/$testName")
+        fun output(key: String, testName: String) =
+            if (test != null) URI("https://example.test/$testName")
             else URI(requireNotNull(blobs).presignPut(key, urlTtl))
-        val request = DeriveRequest(
-            schemaVersion=execution.schemaVersion, mapId=mapId, version=version, attempt=attempt,
-            sourceSha256=sourceSha256, sourceUrl=source(),
-            bundleUrl=output(BlobStore.deriveBundleKey(mapId,version,attempt), "bundle"),
-            manifestUrl=output(BlobStore.deriveManifestKey(mapId,version,attempt), "manifest"),
-            resultUrl=output(BlobStore.deriveResultKey(mapId,version,attempt), "result"),
-            catalogCandidates=execution.catalogCandidates, normalizationCatalog=execution.normalizationCatalog,
-            shapeRequirements=execution.shapeRequirements,
-            workerImage=if (execution.schemaVersion == 2) execution.workerImage else null,
-            dialogueProfiles=execution.dialogueProfiles,
+        val request =
+            DeriveRequest(
+                schemaVersion = execution.schemaVersion,
+                mapId = mapId,
+                version = version,
+                attempt = attempt,
+                sourceSha256 = sourceSha256,
+                sourceUrl = source(),
+                bundleUrl = output(BlobStore.deriveBundleKey(mapId, version, attempt), "bundle"),
+                manifestUrl =
+                    output(BlobStore.deriveManifestKey(mapId, version, attempt), "manifest"),
+                resultUrl = output(BlobStore.deriveResultKey(mapId, version, attempt), "result"),
+                catalogCandidates = execution.catalogCandidates,
+                normalizationCatalog = execution.normalizationCatalog,
+                shapeRequirements = execution.shapeRequirements,
+                workerImage = if (execution.schemaVersion == 2) execution.workerImage else null,
+                dialogueProfiles = execution.dialogueProfiles,
+            )
+        jobs.create(
+            DeriveJobRequest(
+                identity,
+                CanonicalJson.write(request).decodeToString(),
+                execution.workerImage,
+            )
         )
-        jobs.create(DeriveJobRequest(identity, CanonicalJson.write(request).decodeToString(), execution.workerImage))
     }
 
     private companion object {

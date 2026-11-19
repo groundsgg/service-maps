@@ -117,3 +117,16 @@ must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --se
 must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.serving.enabled=true
 must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.auto.enabled=true --set lod.auto.environment=prod
 must_fail helm template t "$chart_dir" --set config.r2.endpoint="$endpoint" --set lod.serving.enabled=true --set lod.publication.enabled=true
+
+# Dialogue qualification is explicit; default rollout has no upload gate.
+expect 'name: MAPS_DIALOGUE_VALIDATION_REQUIRED' "$disabled"
+helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" \
+  --set derive.enabled=true --set derive.required=true --set derive.requestSchemaVersion=2 \
+  --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" \
+  --set dialogue.validationRequired=true --set dialogue.profileOrigin=https://cdn.grounds.gg >"$enabled"
+for env in MAPS_DERIVE_REQUEST_SCHEMA_VERSION MAPS_DIALOGUE_VALIDATION_REQUIRED MAPS_DIALOGUE_PROFILES_JSON MAPS_DIALOGUE_PROFILE_ORIGIN; do
+  expect "name: $env" "$enabled"
+done
+must_fail helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" --set dialogue.validationRequired=true
+must_fail helm template t "$chart_dir" --set image.tag=test --set config.r2.endpoint="$endpoint" \
+  --set derive.enabled=true --set derive.required=true --set derive.worker.image="ghcr.io/groundsgg/service-maps@$digest" --set dialogue.validationRequired=true

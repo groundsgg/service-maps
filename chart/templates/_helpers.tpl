@@ -13,6 +13,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "service-maps.validateDerive" -}}
+{{- if not (has (int .Values.derive.requestSchemaVersion) (list 1 2)) -}}
+{{- fail "derive.requestSchemaVersion must be 1 or 2" -}}
+{{- end -}}
+{{- if and .Values.dialogue.validationRequired (not (and .Values.derive.enabled .Values.derive.required (eq (int .Values.derive.requestSchemaVersion) 2))) -}}
+{{- fail "dialogue.validationRequired requires derive.enabled, derive.required and requestSchemaVersion=2" -}}
+{{- end -}}
 {{- if .Values.lod.enabled -}}
 {{- if not .Values.derive.enabled -}}{{- fail "lod.enabled requires derive.enabled for scoped Kubernetes access" -}}{{- end -}}
 {{- $node := required "lod.node must name an existing worker hostname" .Values.lod.node -}}

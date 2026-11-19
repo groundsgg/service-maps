@@ -110,25 +110,59 @@ class DeriveCoordinatorTest {
         assertEquals(0, repository.claims)
     }
 
-    @Test fun restartUsesOriginalProfileAndImage() {
+    @Test
+    fun restartUsesOriginalProfileAndImage() {
         val image = "old@sha256:${"a".repeat(64)}"
-        val profile = gg.grounds.domain.DialogueProfilePin("test", "1", "c".repeat(64), 10, URI("https://cdn.test/profile.json"))
-        val candidate = AssetCatalogCandidate("pinned","assets","1","test:assets:1","catalog.jar",URI("https://cdn.test/catalog.jar"),"d".repeat(64),10)
-        val bound = gg.grounds.domain.DeriveExecutionContract(2,image,listOf(profile),listOf(candidate),
-            gg.grounds.domain.CatalogReference("assets","1"),gg.grounds.domain.SceneShapeRequirements(setOf("guide"),emptySet()))
-        val record = version().copy(executionContract=bound)
+        val profile =
+            gg.grounds.domain.DialogueProfilePin(
+                "test",
+                "1",
+                "c".repeat(64),
+                10,
+                URI("https://cdn.test/profile.json"),
+            )
+        val candidate =
+            AssetCatalogCandidate(
+                "pinned",
+                "assets",
+                "1",
+                "test:assets:1",
+                "catalog.jar",
+                URI("https://cdn.test/catalog.jar"),
+                "d".repeat(64),
+                10,
+            )
+        val bound =
+            gg.grounds.domain.DeriveExecutionContract(
+                2,
+                image,
+                listOf(profile),
+                listOf(candidate),
+                gg.grounds.domain.CatalogReference("assets", "1"),
+                gg.grounds.domain.SceneShapeRequirements(setOf("guide"), emptySet()),
+            )
+        val record = version().copy(executionContract = bound)
         val jobs = RecordingJobs()
-        DeriveCoordinator(FakeVersions(record),jobs,candidates={ error("moving catalog source must not be read") },enabled=true,
-            workerImage="new@sha256:${"b".repeat(64)}",requestSchemaVersion=2)
-            .ensure(record,DeriveJobStatus.MISSING)
+        DeriveCoordinator(
+                FakeVersions(record),
+                jobs,
+                candidates = { error("moving catalog source must not be read") },
+                enabled = true,
+                workerImage = "new@sha256:${"b".repeat(64)}",
+                requestSchemaVersion = 2,
+            )
+            .ensure(record, DeriveJobStatus.MISSING)
         val request = jobs.requests.single()
-        assertEquals(image,request.workerImage)
+        assertEquals(image, request.workerImage)
         val payload = CanonicalJson.readRequest(request.requestJson.toByteArray())
-        assertEquals(listOf(profile),payload.dialogueProfiles)
-        assertEquals(image,payload.workerImage)
-        assertEquals(listOf(candidate),payload.catalogCandidates)
-        assertEquals(gg.grounds.domain.CatalogReference("assets","1"),payload.normalizationCatalog)
-        assertEquals(setOf("guide"),payload.shapeRequirements!!.elements)
+        assertEquals(listOf(profile), payload.dialogueProfiles)
+        assertEquals(image, payload.workerImage)
+        assertEquals(listOf(candidate), payload.catalogCandidates)
+        assertEquals(
+            gg.grounds.domain.CatalogReference("assets", "1"),
+            payload.normalizationCatalog,
+        )
+        assertEquals(setOf("guide"), payload.shapeRequirements!!.elements)
     }
 
     private fun version() =
@@ -176,10 +210,13 @@ class DeriveCoordinatorTest {
         MapVersionRepository by unsupported() {
         var claims = 0
 
-        override fun bindExecution(identity: gg.grounds.domain.DeriveIdentity, proposed: gg.grounds.domain.DeriveExecutionContract): gg.grounds.domain.DeriveExecutionContract {
+        override fun bindExecution(
+            identity: gg.grounds.domain.DeriveIdentity,
+            proposed: gg.grounds.domain.DeriveExecutionContract,
+        ): gg.grounds.domain.DeriveExecutionContract {
             val existing = record.executionContract
             require(existing == null || existing == proposed)
-            record = record.copy(executionContract=proposed)
+            record = record.copy(executionContract = proposed)
             return proposed
         }
 
