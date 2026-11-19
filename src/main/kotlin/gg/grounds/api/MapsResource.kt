@@ -66,6 +66,7 @@ constructor(
     private val coordinator: DeriveCoordinator,
     private val preparation: MapPreparation,
     private val lodPreparation: gg.grounds.lod.LodPreparation,
+    private val dialogueRuntime: gg.grounds.compatibility.DialogueRuntimeCompatibility,
     private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy,
     private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
@@ -593,6 +594,11 @@ constructor(
             }
             try {
                 val selected = versions.find(map.id, request.version)
+                if (selected?.state == VersionState.PUBLISHED) {
+                    dialogueRuntime.problem(environment,address,selected)?.let { detail ->
+                        return@withMap problem(Response.Status.CONFLICT,detail)
+                    }
+                }
                 if (preparation.required && selected?.state == VersionState.PUBLISHED) {
                     val status = preparation.status(selected)
                     if (status.stage != "READY")
@@ -620,6 +626,8 @@ constructor(
                         )
                     )
                     .build()
+            } catch (e: gg.grounds.compatibility.DialogueRuntimeUnavailableException) {
+                problem(Response.Status.CONFLICT,e.message!!)
             } catch (e: NotPreparedException) {
                 problem(Response.Status.CONFLICT, e.message ?: "version preparation is pending")
             } catch (e: NotPublishedException) {

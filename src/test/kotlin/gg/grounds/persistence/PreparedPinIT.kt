@@ -35,7 +35,7 @@ class PreparedPinIT {
         val sha = "%064x".format(UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE)
         versions.publish(map.id, 1, BundleFacts(sha, null, 100, null, null), "builder")
         val format = 1_000_000 + (Math.random() * 1_000_000).toInt()
-        val guarded = PostgresMapPinRepository(dataSource, MapLightPolicy(true, true, format))
+        val guarded = PostgresMapPinRepository(dataSource, MapLightPolicy(true, true, format),versions as PostgresMapVersionRepository, gg.grounds.compatibility.DialogueRuntimeCompatibility(gg.grounds.compatibility.DialoguePublicationPolicy(false)))
         fun refused() {
             assertThrows(NotPreparedException::class.java) {
                 guarded.move("prepared", map.id, 1, "staff")

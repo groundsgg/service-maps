@@ -668,6 +668,9 @@ constructor(
             requiredActions == other.requiredActions.distinct().sortedWith(CODE_POINT_ORDER) &&
             problems == other.problems
 
+    internal fun readForPin(c: Connection, mapId: UUID, version: Int): MapVersionRecord? =
+        read(c,mapId,version,forUpdate=true)
+
     private fun read(
         c: Connection,
         mapId: UUID,
