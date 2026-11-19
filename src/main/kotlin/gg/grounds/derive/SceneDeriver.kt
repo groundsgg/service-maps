@@ -130,6 +130,7 @@ class SceneDeriver(
             } catch (failure: gg.grounds.catalog.CatalogContentException) {
                 null
             }
+        var finalCatalogs = catalogs
         normalization?.let { target ->
             val source = catalogs.assets
             // Catalog identity is exact. A newer catalog may add capabilities, but must not
@@ -158,8 +159,10 @@ class SceneDeriver(
                         document.groups,
                         document.elements,
                     )
-                if (SceneValidation.validateCatalogs(projected, target, catalogs.actions).isValid)
+                if (SceneValidation.validateCatalogs(projected, target, catalogs.actions).isValid) {
                     document = projected
+                    finalCatalogs = ResolvedSceneCatalogs(target, catalogs.actions)
+                }
             }
         }
         val encoded = SceneJson.encode(document)
@@ -184,6 +187,8 @@ class SceneDeriver(
                     SceneShapeFacts.extract(document, shapeRequirements),
                 ),
                 canonical,
+                document,
+                finalCatalogs,
             )
         )
     }
@@ -253,7 +258,12 @@ class SceneDeriver(
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-    private data class SceneFacts(val scene: DerivedScene, val canonical: ByteArray?)
+    private data class SceneFacts(
+        val scene: DerivedScene,
+        val canonical: ByteArray?,
+        val document: SceneDocument? = null,
+        val catalogs: ResolvedSceneCatalogs? = null,
+    )
 
     private sealed interface SceneParseResult {
         data class Facts(val facts: SceneFacts) : SceneParseResult
