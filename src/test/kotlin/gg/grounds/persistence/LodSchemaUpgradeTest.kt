@@ -48,8 +48,8 @@ class LodSchemaUpgradeTest {
                     }
             }
             val upgrade = migrations()
-            assertEquals(4, upgrade.migrate().migrationsExecuted)
-            assertEquals("10", upgrade.info().current().version.toString())
+            assertEquals(5, upgrade.migrate().migrationsExecuted)
+            assertEquals("11", upgrade.info().current().version.toString())
             assertEquals(
                 previousChecksum,
                 upgrade.info().applied().single { it.version?.toString() == "6" }.checksum,
@@ -125,8 +125,8 @@ class LodSchemaUpgradeTest {
                 }
             }
             val upgrade = flyway()
-            assertEquals(2, upgrade.migrate().migrationsExecuted)
-            assertEquals("10", upgrade.info().current().version.toString())
+            assertEquals(3, upgrade.migrate().migrationsExecuted)
+            assertEquals("11", upgrade.info().current().version.toString())
             assertEquals(
                 checksum,
                 upgrade.info().applied().single { it.version?.toString() == "8" }.checksum,

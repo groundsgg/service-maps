@@ -108,3 +108,30 @@ private fun requireDigest(value: String) { require(value.matches(Regex("[0-9a-f]
 private fun requireIdentity(id: String, version: String) {
     require(id.isNotBlank() && id.length <= 128 && version.isNotBlank() && version.length <= 128)
 }
+
+/** Stored once per attempt; includes existing Scene inputs so restart cannot change normalization. */
+class DeriveExecutionContract(
+    val schemaVersion: Int,
+    val workerImage: String,
+    dialogueProfiles: List<DialogueProfilePin>,
+    catalogCandidates: List<gg.grounds.derive.AssetCatalogCandidate> = emptyList(),
+    val normalizationCatalog: CatalogReference? = null,
+    shapeRequirements: SceneShapeRequirements? = null,
+) {
+    val dialogueProfiles: List<DialogueProfilePin> = java.util.List.copyOf(dialogueProfiles)
+    val catalogCandidates: List<gg.grounds.derive.AssetCatalogCandidate> = java.util.List.copyOf(catalogCandidates)
+    val shapeRequirements: SceneShapeRequirements? = shapeRequirements?.let {
+        SceneShapeRequirements(java.util.Collections.unmodifiableSet(LinkedHashSet(it.elements.sorted())),
+            java.util.Collections.unmodifiableSet(LinkedHashSet(it.prefixes.sorted())))
+    }
+    init {
+        require(schemaVersion in 1..2)
+        require(workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}")))
+        require(this.dialogueProfiles.size <= 8)
+        require(this.dialogueProfiles.map { it.id to it.version }.distinct().size == this.dialogueProfiles.size)
+        require(schemaVersion != 1 || this.dialogueProfiles.isEmpty())
+    }
+    private fun values() = listOf(schemaVersion, workerImage, dialogueProfiles, catalogCandidates, normalizationCatalog, shapeRequirements)
+    override fun equals(other: Any?) = other is DeriveExecutionContract && values() == other.values()
+    override fun hashCode() = values().hashCode()
+}

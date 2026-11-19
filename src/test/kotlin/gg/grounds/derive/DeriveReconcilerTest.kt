@@ -1119,6 +1119,16 @@ class DeriveReconcilerTest {
 
         fun firstDeriving() = records.firstOrNull { it.deriveAttempt != null }
 
+        override fun bindExecution(identity: DeriveIdentity, proposed: gg.grounds.domain.DeriveExecutionContract): gg.grounds.domain.DeriveExecutionContract =
+            synchronized(records) {
+                val index = records.indexOfFirst { it.mapId == identity.mapId && it.version == identity.version && it.deriveAttempt == identity.attempt }
+                require(index >= 0)
+                val existing = records[index].executionContract
+                if (existing != null && existing != proposed) throw DeriveResultIntegrityException("conflicting execution")
+                records[index] = records[index].copy(executionContract=proposed)
+                proposed
+            }
+
         override fun listReconcileCandidates() =
             synchronized(records) {
                 if (failList) throw IllegalStateException("repository unavailable")

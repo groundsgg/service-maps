@@ -117,6 +117,12 @@ object CanonicalJson {
         return mapper.readValue(bytes, DerivedManifest::class.java)
     }
 
+    fun readStoredDialogue(bytes: ByteArray): gg.grounds.domain.DialogueProjection =
+        mapper.readValue(bytes, gg.grounds.domain.DialogueProjection::class.java)
+
+    fun readExecutionContract(bytes: ByteArray): gg.grounds.domain.DeriveExecutionContract =
+        mapper.readValue(bytes, gg.grounds.domain.DeriveExecutionContract::class.java)
+
     private fun schema(node: JsonNode): Int {
         val version = node.path("schemaVersion")
         if (!version.isIntegralNumber || !version.canConvertToInt() || version.intValue() !in 1..2)

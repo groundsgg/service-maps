@@ -52,7 +52,9 @@ interface DeriveJobGateway {
     fun watch(onEvent: () -> Unit, onClose: (Throwable?) -> Unit): AutoCloseable? = null
 }
 
-data class DeriveJobRequest(val identity: DeriveIdentity, val requestJson: String)
+data class DeriveJobRequest(val identity: DeriveIdentity, val requestJson: String, val workerImage: String? = null) {
+    init { require(workerImage == null || workerImage.matches(Regex("[^\\s]+@sha256:[0-9a-f]{64}"))) }
+}
 
 enum class DeriveJobStatus {
     RUNNING,

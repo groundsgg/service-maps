@@ -1,5 +1,9 @@
 package gg.grounds.persistence
 
+import gg.grounds.derive.CanonicalJson
+import gg.grounds.domain.DeriveExecutionContract
+import gg.grounds.domain.DialogueProjection
+import gg.grounds.domain.DialogueStatus
 import gg.grounds.domain.BlobSizeMismatchException
 import gg.grounds.domain.BundleFacts
 import gg.grounds.domain.CatalogReference
@@ -47,6 +51,34 @@ constructor(
     init {
         require(reconcileBatchSize > 0) { "reconciliation batch size must be positive" }
     }
+
+    override fun bindExecution(identity: DeriveIdentity, proposed: DeriveExecutionContract): DeriveExecutionContract =
+        dataSource.connection.use { c ->
+            c.autoCommit = false
+            try {
+                val current = lockedIdentity(c, identity)
+                val existing = current.executionContract
+                if (existing != null) {
+                    if (existing != proposed) throw DeriveResultIntegrityException("conflicting execution contract for attempt")
+                    c.commit()
+                    return existing
+                }
+                if (current.state != VersionState.DERIVING) throw DeriveResultRejectedException("execution contract requires an active attempt")
+                c.prepareStatement("UPDATE map_version SET derive_execution_contract = CAST(? AS jsonb), derive_contract_legacy = FALSE WHERE map = ? AND version = ?").use { ps ->
+                    ps.setString(1, CanonicalJson.write(proposed).decodeToString())
+                    ps.setObject(2, identity.mapId)
+                    ps.setInt(3, identity.version)
+                    ps.executeUpdate()
+                }
+                writeDialogue(c, identity.mapId, identity.version,
+                    if (proposed.schemaVersion == 2) DialogueProjection(DialogueStatus.PENDING) else DialogueProjection())
+                c.commit()
+                proposed
+            } catch (failure: Exception) {
+                c.rollback()
+                throw failure
+            } finally { c.autoCommit = true }
+        }
 
     override fun commit(
         mapId: UUID,
@@ -229,6 +261,7 @@ constructor(
                         "derive result cannot finish ${current.state}"
                     )
                 }
+                verifyDialogue(current, identity, facts)
                 c.prepareStatement(
                         """
                         UPDATE map_version
@@ -261,6 +294,7 @@ constructor(
                         ps.executeUpdate()
                     }
                 replaceSceneCollections(c, identity.mapId, identity.version, facts.scene)
+                writeDialogue(c, identity.mapId, identity.version, facts.dialogue)
                 recordPublicBlob(c, facts.bundleSha256, facts.sizeBytes)
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
@@ -311,6 +345,7 @@ constructor(
                     failure.retryable,
                     invalidScene(failure.problems),
                 )
+                writeDialogue(c, identity.mapId, identity.version, failureDialogue(current.executionContract, failure))
                 val result = requireNotNull(read(c, identity.mapId, identity.version))
                 c.commit()
                 DeriveStateRepositoryTestHooks.afterDeriveResultCommit()
@@ -370,6 +405,10 @@ constructor(
                     false,
                     pendingScene(),
                 )
+                c.prepareStatement("UPDATE map_version SET derive_execution_contract = NULL, derive_contract_legacy = FALSE WHERE map = ? AND version = ?").use { ps ->
+                    ps.setObject(1, mapId); ps.setInt(2, version); ps.executeUpdate()
+                }
+                writeDialogue(c, mapId, version, DialogueProjection())
                 val result = requireNotNull(read(c, mapId, version))
                 c.commit()
                 result
@@ -487,6 +526,31 @@ constructor(
         }
     }
 
+    private fun verifyDialogue(current: MapVersionRecord, identity: DeriveIdentity, facts: DerivedFacts) {
+        val contract = current.executionContract
+        if (facts.dialogue.status == DialogueStatus.UNKNOWN) {
+            if (contract?.schemaVersion == 2) throw DeriveResultRejectedException("schema 2 attempt requires checked dialogue facts")
+            return // Legacy internal callers provide no positive absence or Story attestation.
+        }
+        if (contract?.schemaVersion != 2) throw DeriveResultRejectedException("checked dialogue facts require a bound schema 2 execution")
+        val proof = requireNotNull(facts.dialogue.proof)
+        if (proof.workerImage != contract.workerImage || proof.sourceSha256 != identity.sourceSha256 ||
+            (facts.dialogue.status == DialogueStatus.VALID && proof.profile !in contract.dialogueProfiles))
+            throw DeriveResultRejectedException("dialogue facts do not match the immutable execution context")
+    }
+
+    private fun writeDialogue(c: Connection, mapId: UUID, version: Int, dialogue: DialogueProjection) {
+        c.prepareStatement("UPDATE map_version SET dialogue_projection = CAST(? AS jsonb) WHERE map = ? AND version = ?").use { ps ->
+            ps.setString(1, CanonicalJson.write(dialogue).decodeToString())
+            ps.setObject(2, mapId)
+            ps.setInt(3, version)
+            ps.executeUpdate()
+        }
+    }
+
+    private fun failureDialogue(contract: DeriveExecutionContract?, failure: DerivedFailure): DialogueProjection =
+        if (contract?.schemaVersion == 2) DialogueProjection(DialogueStatus.INVALID, problems=failure.problems) else DialogueProjection()
+
     private fun writeDeriveState(
         c: Connection,
         mapId: UUID,
@@ -570,6 +634,7 @@ constructor(
             presentChunks == facts.presentChunks &&
             estLoadedMib == facts.estLoadedMib &&
             scene.matchesPersisted(facts.scene) &&
+            dialogue == facts.dialogue &&
             publishedBySub == bySub &&
             deriveFailureScope == null &&
             !deriveRetryable
@@ -588,7 +653,8 @@ constructor(
             scene.assetCatalog == null &&
             scene.actionCatalog == null &&
             scene.requiredActions.isEmpty() &&
-            scene.problems == failure.problems
+            scene.problems == failure.problems &&
+            dialogue == failureDialogue(executionContract, failure)
 
     private fun SceneProjection.matchesPersisted(other: SceneProjection): Boolean =
         schemaVersion == other.schemaVersion &&
@@ -651,6 +717,9 @@ constructor(
             createdAt = getTimestamp("created_at").toInstant(),
             deriveRequested = getBoolean("derive_requested"),
             trust = MapTrust.valueOf(getString("map_trust")),
+            dialogue = getString("dialogue_projection")?.let { CanonicalJson.readStoredDialogue(it.toByteArray()) } ?: DialogueProjection(),
+            executionContract = getString("derive_execution_contract")?.let { CanonicalJson.readExecutionContract(it.toByteArray()) },
+            deriveContractLegacy = getBoolean("derive_contract_legacy"),
         )
 
     private fun ResultSet.sceneStatus(): SceneStatus =
@@ -685,7 +754,7 @@ constructor(
     private fun deriveProblems(c: Connection, mapId: UUID, version: Int): List<DeriveProblem> =
         c.prepareStatement(
                 """
-                SELECT scope, path, code, qualified_identity, message
+                SELECT scope, path, code, qualified_identity, message, component, severity, file_name, pointer, node_id
                   FROM map_version_derive_problem
                  WHERE map = ? AND version = ?
                  ORDER BY ordinal
@@ -704,6 +773,11 @@ constructor(
                                     code = rs.getString("code"),
                                     qualifiedIdentity = rs.getString("qualified_identity"),
                                     message = rs.getString("message"),
+                                    component = rs.getString("component"),
+                                    severity = rs.getString("severity"),
+                                    file = rs.getString("file_name"),
+                                    pointer = rs.getString("pointer"),
+                                    nodeId = rs.getString("node_id"),
                                 )
                             )
                         }
@@ -754,8 +828,8 @@ constructor(
         c.prepareStatement(
                 """
                 INSERT INTO map_version_derive_problem (
-                    map, version, ordinal, scope, path, code, qualified_identity, message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    map, version, ordinal, scope, path, code, qualified_identity, message, component, severity, file_name, pointer, node_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
             )
             .use { ps ->
@@ -768,6 +842,11 @@ constructor(
                     ps.setString(6, problem.code)
                     ps.setString(7, problem.qualifiedIdentity)
                     ps.setString(8, problem.message)
+                    ps.setString(9, problem.component)
+                    ps.setString(10, problem.severity)
+                    ps.setString(11, problem.file)
+                    ps.setString(12, problem.pointer)
+                    ps.setString(13, problem.nodeId)
                     ps.addBatch()
                 }
                 ps.executeBatch()
@@ -818,6 +897,7 @@ constructor(
                    scene_present, scene_schema_version, scene_sha256, scene_runtime_facts,
                    asset_catalog_id, asset_catalog_version, action_catalog_id, action_catalog_version,
                    published_by_sub, note, created_at,
+                   dialogue_projection, derive_execution_contract, derive_contract_legacy,
                    (SELECT trust FROM map WHERE id = map_version.map) AS map_trust
             FROM map_version
             """
