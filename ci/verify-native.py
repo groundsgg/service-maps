@@ -670,8 +670,8 @@ def contracts(c):
     request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
     scene = {'present': True, 'schemaVersion': '1', 'sha256': digest(b'scene fixture'),
              'assetCatalog': {'id': 'grounds:resourcepacks', 'version': '1.2.3'},
-             'actionCatalog': {'id': 'grounds:lobby', 'version': '2.23.0'},
-             'requiredActions': ['grounds:queue', 'grounds:teleport']}
+             'actionCatalog': {'id': 'grounds:actions', 'version': '4'},
+             'requiredActions': ['grounds:lobby/start_dialogue']}
     manifest = encoded({'schemaVersion': 1, 'sourceSha256': digest(bundle),
                         'bundleDigestInputs': ['region/r.0.0.mca', 'scene.json'], 'scene': scene})
     result = {key: request[key] for key in ('schemaVersion', 'mapId', 'version', 'attempt', 'sourceSha256')}
