@@ -470,6 +470,7 @@ def operator_registration_contract(c):
     assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='10'
     print('Maps: serving operator script refuses absent artifact and cannot reset an existing pilot passed')
     print('Maps: exact Lobby operator registration refuses changed input, rolls back empty selection and never resets an existing budget passed')
+    return map_id, canonical
 
 
 def assert_prometheus_metrics(c, populated=False):
@@ -772,9 +773,15 @@ def main():
             eventually(ready)
             contracts(contract)
             lod_contract(contract)
-            operator_registration_contract(contract)
+            registration_map, registration_bundle = operator_registration_contract(contract)
             # Exercise the packaged pilot process itself, including internal/direct requests.
             docker('stop', contract.name + '-api')
+            # Remove the SQL-only registration source after its reconciler has stopped.
+            # It has no public blob and must not enter the real format-2 lighting contract.
+            contract.sql(f"DELETE FROM map_pin WHERE map='{registration_map}';" +
+                         f"DELETE FROM map_version WHERE map='{registration_map}' AND version=13 AND bundle_sha256='{registration_bundle}';" +
+                         f"DELETE FROM map_lit WHERE bundle_sha256='{registration_bundle}';")
+            assert contract.sql(f"SELECT count(*) FROM map_version WHERE map='{registration_map}';").splitlines()[-1] == '0'
             entitled_contract(contract, env, fixtures, arguments)
             isolated = {**env, 'MAPS_DERIVE_ENABLED': 'false', 'MAPS_LIT_ENABLED': 'false',
                         'MAPS_LOD_ENABLED': 'false', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
