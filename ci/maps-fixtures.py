@@ -6,6 +6,7 @@ import http.server
 import json
 import pathlib
 import ssl
+import sys
 import threading
 import time
 import urllib.parse
@@ -49,9 +50,29 @@ def documents(channel):
     return pointer, manifest
 
 
+class FixtureServer(http.server.ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        error = sys.exception()
+        types = []
+        seen = set()
+        while error is not None and id(error) not in seen and len(types) < 8:
+            seen.add(id(error))
+            types.append(type(error).__name__)
+            error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        print('Fixture request failed (component=maps-fixtures, listenerPort=' + str(self.server_port) +
+              ', exceptionType=' + (types[0] if types else 'Unknown') +
+              ', causeTypes=' + ','.join(types[1:]) + ')', flush=True)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass  # Never log bearer tokens, presigned URLs or bodies.
+
+    def end_headers(self):
+        # HTTP/1.0 closes each response; declare this before clients can pool the socket.
+        self.send_header('Connection', 'close')
+        self.close_connection = True
+        super().end_headers()
 
     def reply(self, status, value=None, raw=None):
         body = raw if raw is not None else encoded(value)
@@ -147,9 +168,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST = do_PUT = do_HEAD = do_DELETE = do_PATCH = handle_request
 
 
-plain = http.server.ThreadingHTTPServer(('0.0.0.0', 8080), Handler)
+plain = FixtureServer(('0.0.0.0', 8080), Handler)
 threading.Thread(target=plain.serve_forever, daemon=True).start()
-secure = http.server.ThreadingHTTPServer(('0.0.0.0', 443), Handler)
+secure = FixtureServer(('0.0.0.0', 443), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(ROOT / 'cert.pem', ROOT / 'key.pem')
 secure.socket = context.wrap_socket(secure.socket, server_side=True)
