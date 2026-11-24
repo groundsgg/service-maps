@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.16.3](https://github.com/groundsgg/service-maps/compare/v1.16.2...v1.16.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **ci:** close native fixture HTTP connections explicitly ([#125](https://github.com/groundsgg/service-maps/issues/125)) ([de624a8](https://github.com/groundsgg/service-maps/commit/de624a8901884c660bc70781887805e1c545519e))
+* **deps:** bump actions/setup-java from 5 to 6 ([#117](https://github.com/groundsgg/service-maps/issues/117)) ([8bbde1c](https://github.com/groundsgg/service-maps/commit/8bbde1c00a2caf941d913e54b6a69163946088b3))
+* **deps:** bump com.fasterxml.jackson.core:jackson-annotations ([#118](https://github.com/groundsgg/service-maps/issues/118)) ([72a8632](https://github.com/groundsgg/service-maps/commit/72a86320ad00e5678ebe01745e90bf2cdcf53a8b))
+* **deps:** bump gg.grounds:scene-format from 0.4.4 to 1.0.1 ([#102](https://github.com/groundsgg/service-maps/issues/102)) ([59369a1](https://github.com/groundsgg/service-maps/commit/59369a1ef6f9283e6b1c8feb5afa4b66cc77f5c3))
+* **deps:** bump gradle-wrapper from 9.8.2 to 9.9.0 ([#112](https://github.com/groundsgg/service-maps/issues/112)) ([4e5effc](https://github.com/groundsgg/service-maps/commit/4e5effc78d229b3081367baaad77e86ace8173ae))
+* **deps:** bump software.amazon.awssdk:bom from 2.57.8 to 2.57.11 ([#111](https://github.com/groundsgg/service-maps/issues/111)) ([2201da8](https://github.com/groundsgg/service-maps/commit/2201da87d0af88fe948f926085fc67c0a3e18fa4))
+* **deps:** bump the quarkus group across 1 directory with 2 updates ([#110](https://github.com/groundsgg/service-maps/issues/110)) ([bf68faf](https://github.com/groundsgg/service-maps/commit/bf68faf808f59730ea1d6e8cfff983d95b6e175a))
+
 ## [1.16.2](https://github.com/groundsgg/service-maps/compare/v1.16.1...v1.16.2) (2026-11-23)
 
 
