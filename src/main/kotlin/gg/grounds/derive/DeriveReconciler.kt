@@ -8,7 +8,6 @@ import gg.grounds.domain.DeriveResultIntegrityException
 import gg.grounds.domain.DeriveResultRejectedException
 import gg.grounds.domain.DerivedFacts
 import gg.grounds.domain.DerivedFailure
-import gg.grounds.domain.MapTrust
 import gg.grounds.domain.MapVersionRepository
 import gg.grounds.domain.SceneProjection
 import gg.grounds.domain.SceneStatus
@@ -160,7 +159,17 @@ constructor(
                 )
             }
             DeriveJobStatus.SUCCEEDED -> {
-                acceptResult(identity, record.trust)?.let { terminal ->
+                // The candidate may predate the coordinator's immutable contract bind.
+                val current = versions.find(record.mapId, record.version)
+                if (
+                    current == null ||
+                        current.deriveAttempt != identity.attempt ||
+                        current.sourceSha256 != identity.sourceSha256
+                ) {
+                    clearRetry(identity)
+                    return
+                }
+                acceptResult(identity, current)?.let { terminal ->
                     observeTerminal(terminal)
                     logTransition(
                         record,
@@ -415,7 +424,10 @@ constructor(
         runCatching { scheduler.close() }
     }
 
-    private fun acceptResult(identity: DeriveIdentity, trust: MapTrust): TerminalAttempt? {
+    private fun acceptResult(
+        identity: DeriveIdentity,
+        record: gg.grounds.domain.MapVersionRecord,
+    ): TerminalAttempt? {
         return try {
             when (
                 val result =
@@ -432,6 +444,7 @@ constructor(
             ) {
                 is DeriveSuccess -> {
                     requireResultIdentity(result, identity)
+                    requireExecution(result, record)
                     requireArtifactSize(
                         BlobStore.deriveBundleKey(
                             identity.mapId,
@@ -458,8 +471,38 @@ constructor(
                     require(derivedManifest.sourceSha256 == identity.sourceSha256) {
                         "derive manifest source does not match claimed request"
                     }
+                    require(
+                        derivedManifest.schemaVersion == result.schemaVersion &&
+                            derivedManifest.dialogue == result.dialogue
+                    ) {
+                        "derive manifest validation does not match result"
+                    }
                     require(derivedManifest.scene == result.scene) {
                         "derive manifest scene does not match result"
+                    }
+                    if (result.schemaVersion == 2) {
+                        val inventory = derivedManifest.bundleDigestInputs
+                        val dialogue = requireNotNull(result.dialogue)
+                        if (dialogue.status == gg.grounds.domain.DialogueStatus.NONE) {
+                            require(
+                                inventory.none {
+                                    it.startsWith("dialogues/") && it.endsWith(".json") ||
+                                        it == "grounds/dialogue.json" ||
+                                        it == "context/host-catalog.json"
+                                }
+                            ) {
+                                "absence proof contradicts manifest Story inventory"
+                            }
+                        } else {
+                            require(
+                                inventory
+                                    .filter(gg.grounds.domain.DialoguePaths::isStoryFile)
+                                    .toSet() ==
+                                    requireNotNull(dialogue.proof).files.map { it.path }.toSet()
+                            ) {
+                                "dialogue proof inventory does not match manifest"
+                            }
+                        }
                     }
                     val scene = result.scene
                     val projection =
@@ -492,7 +535,7 @@ constructor(
                         ),
                         BlobStore.bundleKey(result.bundleSha256),
                         result.bundleSize,
-                        trust,
+                        record.trust,
                     )
                     val acceptance =
                         versions.acceptSuccessOutcome(
@@ -504,6 +547,7 @@ constructor(
                                 null,
                                 null,
                                 projection,
+                                result.dialogue ?: gg.grounds.domain.DialogueProjection(),
                             ),
                             "derive-worker",
                         )
@@ -516,6 +560,7 @@ constructor(
                 }
                 is DeriveFailure -> {
                     requireResultIdentity(result, identity)
+                    requireExecution(result, record)
                     val acceptance =
                         versions.acceptFailureOutcome(
                             identity,
@@ -583,6 +628,26 @@ constructor(
             blobs.headPrivate(key)
                 ?: throw IllegalStateException("derive result references missing private artifact")
         require(metadata.sizeBytes == expectedSize) { "derive result artifact size does not match" }
+    }
+
+    private fun requireExecution(result: DeriveResult, record: gg.grounds.domain.MapVersionRecord) {
+        val contract = record.executionContract
+        val expected =
+            contract?.schemaVersion
+                ?: if (record.deriveContractLegacy) 1 else error("unbound execution")
+        require(result.schemaVersion == expected) { "result schema does not match execution" }
+        if (result is DeriveSuccess && expected == 2) {
+            val proof = requireNotNull(result.dialogue?.proof)
+            require(
+                proof.sourceSha256 == record.sourceSha256 &&
+                    proof.workerImage == contract!!.workerImage &&
+                    proof.executionSha256 == contract.fingerprint() &&
+                    (result.dialogue.status != gg.grounds.domain.DialogueStatus.VALID ||
+                        proof.profile in contract.dialogueProfiles)
+            ) {
+                "result does not match immutable execution context"
+            }
+        }
     }
 
     private fun requireResultIdentity(result: DeriveResult, identity: DeriveIdentity) {

@@ -47,3 +47,5 @@ nb-configuration.xml
 .kotlin/
 build/
 .gradle/
+
+__pycache__/

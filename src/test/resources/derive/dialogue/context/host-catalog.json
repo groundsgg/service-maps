@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "generation": "headless-v1",
+  "speakers": [
+    "mechanic"
+  ],
+  "conditions": {},
+  "actions": {},
+  "gestures": [
+    "demo:wave"
+  ],
+  "capabilities": [
+    "dialogue.choices"
+  ],
+  "durableOutcomes": false
+}

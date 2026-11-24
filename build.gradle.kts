@@ -67,6 +67,8 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:$zstdVersion")
     implementation("gg.grounds:scene-format:1.0.1")
+    implementation("gg.grounds:dialogue-core:0.1.0")
+    implementation("gg.grounds:dialogue-json:0.1.0")
     // 2.25.0 supplies dialogue actions in revision 4 while retaining revisions 1 through 3.
     // Ship this dependency in the API and derive-worker images together.
     implementation("gg.grounds:plugin-lobby-scene-catalog:2.25.0")

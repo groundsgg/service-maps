@@ -1,0 +1,11 @@
+{
+  "speaker.mechanic": "Mechaniker",
+  "mechanic.greeting": "Hallo! Was möchtest du wissen?",
+  "mechanic.lift": "Der Lift verbindet Werkstatt und Obergeschoss.",
+  "mechanic.city": "Erkunde die Stadt und komm mit Fragen zurück.",
+  "mechanic.bye": "Bis später!",
+  "choice.lift": "Erkläre mir den Lift",
+  "choice.city": "Erzähl mir von der Stadt",
+  "choice.again": "Noch einmal",
+  "choice.leave": "Später"
+}

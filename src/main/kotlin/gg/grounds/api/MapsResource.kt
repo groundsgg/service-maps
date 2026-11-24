@@ -66,6 +66,8 @@ constructor(
     private val coordinator: DeriveCoordinator,
     private val preparation: MapPreparation,
     private val lodPreparation: gg.grounds.lod.LodPreparation,
+    private val dialogueRuntime: gg.grounds.compatibility.DialogueRuntimeCompatibility,
+    private val dialoguePolicy: gg.grounds.compatibility.DialoguePublicationPolicy,
     private val runtimeCompatibility: gg.grounds.compatibility.MapRuntimeCompatibility,
 ) {
 
@@ -213,6 +215,11 @@ constructor(
                 )
             }
             val sourceBacked = sourceKey != null
+            if (dialoguePolicy.required && (!sourceBacked || !request.derive))
+                return@withMap problem(
+                    Response.Status.CONFLICT,
+                    "Dialogue checking requires an uploaded source and derive=true; use /map pull then /map push for an old version.",
+                )
             if (derive.required && sourceBacked && !request.derive) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
@@ -310,6 +317,19 @@ constructor(
     )
     @GET
     @Path("/{address:.+}/versions/{version}")
+    @org.eclipse.microprofile.openapi.annotations.responses.APIResponse(
+        responseCode = "200",
+        description = "Exact immutable version and current validation/preparation status",
+        content =
+            [
+                org.eclipse.microprofile.openapi.annotations.media.Content(
+                    schema =
+                        org.eclipse.microprofile.openapi.annotations.media.Schema(
+                            implementation = VersionDto::class
+                        )
+                )
+            ],
+    )
     fun getVersion(
         @PathParam("address") address: String,
         @PathParam("version") version: Int,
@@ -413,6 +433,11 @@ constructor(
                         Response.Status.NOT_FOUND,
                         "no version $version of $address",
                     )
+            try {
+                dialoguePolicy.requireChecked(existing)
+            } catch (e: gg.grounds.compatibility.DialogueProofRequiredException) {
+                return@withMap problem(Response.Status.CONFLICT, e.message!!)
+            }
             if (existing.deriveRequested) {
                 return@withMap problem(
                     Response.Status.CONFLICT,
@@ -518,6 +543,11 @@ constructor(
                     "version ${from.version} is ${from.state} and has no usable bundle",
                 )
             }
+            try {
+                dialoguePolicy.requireChecked(from)
+            } catch (e: gg.grounds.compatibility.DialogueProofRequiredException) {
+                return@withMap problem(Response.Status.CONFLICT, e.message!!)
+            }
             if (!authz.mayAuthor(target))
                 return@withMap denied("create a map in ${target.namespace}")
             val targetTrust =
@@ -584,6 +614,11 @@ constructor(
             }
             try {
                 val selected = versions.find(map.id, request.version)
+                if (selected?.state == VersionState.PUBLISHED) {
+                    dialogueRuntime.problem(environment, address, selected)?.let { detail ->
+                        return@withMap problem(Response.Status.CONFLICT, detail)
+                    }
+                }
                 if (preparation.required && selected?.state == VersionState.PUBLISHED) {
                     val status = preparation.status(selected)
                     if (status.stage != "READY")
@@ -611,6 +646,8 @@ constructor(
                         )
                     )
                     .build()
+            } catch (e: gg.grounds.compatibility.DialogueRuntimeUnavailableException) {
+                problem(Response.Status.CONFLICT, e.message!!)
             } catch (e: NotPreparedException) {
                 problem(Response.Status.CONFLICT, e.message ?: "version preparation is pending")
             } catch (e: NotPublishedException) {
@@ -731,11 +768,18 @@ data class VersionDto(
     val deriveFailureScope: String?,
     val deriveRetryable: Boolean,
     val scene: SceneDto,
+    val dialogue: DialogueDto,
     val publishedBySub: String,
     val note: String?,
     val createdAt: Instant,
     val preparation: PreparationDto? = null,
     val lod: LodPreparationDto? = null,
+)
+
+data class DialogueDto(
+    val status: String,
+    val proof: gg.grounds.domain.DialogueProof?,
+    val problems: List<DeriveProblemDto>,
 )
 
 data class SceneDto(
@@ -756,6 +800,11 @@ data class DeriveProblemDto(
     val code: String,
     val qualifiedIdentity: String?,
     val message: String,
+    val component: String? = null,
+    val severity: String? = null,
+    val file: String? = null,
+    val pointer: String? = null,
+    val nodeId: String? = null,
 )
 
 /**
@@ -801,28 +850,46 @@ private fun MapVersionRecord.toDto(
         deriveRetryable = deriveRetryable,
         scene =
             SceneDto(
-                status = scene.status.name,
+                status =
+                    if (
+                        executionContract?.schemaVersion == 2 &&
+                            state == VersionState.DERIVE_FAILED &&
+                            scene.problems.none {
+                                it.component == "scene" ||
+                                    (it.component == null &&
+                                        it.path?.startsWith("scene.json") == true)
+                            }
+                    )
+                        "PENDING"
+                    else scene.status.name,
                 schemaVersion = scene.schemaVersion,
                 sha256 = scene.sha256,
                 assetCatalog = scene.assetCatalog?.let { CatalogReferenceDto(it.id, it.version) },
                 actionCatalog = scene.actionCatalog?.let { CatalogReferenceDto(it.id, it.version) },
                 requiredActionIds = scene.requiredActions,
-                problems =
-                    scene.problems.map {
-                        DeriveProblemDto(
-                            scope = it.scope.name,
-                            path = it.path,
-                            code = it.code,
-                            qualifiedIdentity = it.qualifiedIdentity,
-                            message = it.message,
-                        )
-                    },
+                problems = scene.problems.filter { it.component != "dialogue" }.map { it.toDto() },
             ),
+        dialogue =
+            DialogueDto(dialogue.status.name, dialogue.proof, dialogue.problems.map { it.toDto() }),
         publishedBySub = publishedBySub,
         note = note,
         createdAt = createdAt,
         preparation = preparation,
         lod = lod,
+    )
+
+private fun gg.grounds.domain.DeriveProblem.toDto() =
+    DeriveProblemDto(
+        scope.name,
+        path,
+        code,
+        qualifiedIdentity,
+        message,
+        component,
+        severity,
+        file,
+        pointer,
+        nodeId,
     )
 
 private fun MapRecord.toDto(): MapDto =

@@ -133,6 +133,14 @@ spec:
               value: {{ .Values.lod.serving.budgetId | quote }}
             - name: MAPS_LOD_SERVING_GENERATION_BUDGET_ID
               value: {{ .Values.lod.serving.generationBudgetId | quote }}
+            - name: MAPS_DIALOGUE_VALIDATION_REQUIRED
+              value: {{ .Values.dialogue.validationRequired | quote }}
+            - name: MAPS_DIALOGUE_PROFILE_ORIGIN
+              value: {{ .Values.dialogue.profileOrigin | quote }}
+            - name: MAPS_DIALOGUE_PROFILES_JSON
+              value: {{ .Values.dialogue.profiles | default list | toJson | quote }}
+            - name: MAPS_DERIVE_REQUEST_SCHEMA_VERSION
+              value: {{ .Values.derive.requestSchemaVersion | quote }}
             {{- if .Values.derive.enabled }}
             - name: MAPS_DERIVE_ENABLED
               value: "true"

@@ -20,6 +20,11 @@ data class DeriveProblem(
     val code: String,
     val qualifiedIdentity: String?,
     val message: String,
+    val component: String? = null,
+    val severity: String? = null,
+    val file: String? = null,
+    val pointer: String? = null,
+    val nodeId: String? = null,
 )
 
 data class SceneProjection(

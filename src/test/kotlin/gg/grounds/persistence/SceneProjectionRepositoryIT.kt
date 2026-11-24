@@ -87,6 +87,14 @@ class SceneProjectionRepositoryIT {
                     ),
                 problems = emptyList(),
             )
+        versions.bindExecution(
+            DeriveIdentity(map.id, 1, attempt, "%064x".format(1)),
+            gg.grounds.domain.DeriveExecutionContract(
+                1,
+                "legacy@sha256:${"a".repeat(64)}",
+                emptyList(),
+            ),
+        )
         versions.acceptSuccess(
             DeriveIdentity(map.id, 1, attempt, "%064x".format(1), finalScene.assetCatalog),
             DerivedFacts("%064x".format(46), null, 46, null, null, finalScene),
