@@ -494,6 +494,7 @@ def operator_registration_contract(c):
     # The API is stopped while these SQL-only operator contracts run.
     c.sql(f"UPDATE map_version SET state='TAKEN_DOWN' WHERE map='{map_id}' AND version=13;")
     print('Maps: exact Lobby operator registration refuses changed input, rolls back empty selection and never resets an existing budget passed')
+    return map_id, canonical
 
 
 def assert_prometheus_metrics(c, populated=False):
@@ -695,8 +696,8 @@ def contracts(c):
     request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
     scene = {'present': True, 'schemaVersion': '1', 'sha256': digest(b'scene fixture'),
              'assetCatalog': {'id': 'grounds:resourcepacks', 'version': '1.2.3'},
-             'actionCatalog': {'id': 'grounds:lobby', 'version': '2.23.0'},
-             'requiredActions': ['grounds:queue', 'grounds:teleport']}
+             'actionCatalog': {'id': 'grounds:actions', 'version': '4'},
+             'requiredActions': ['grounds:lobby/start_dialogue']}
     manifest = encoded({'schemaVersion': 1, 'sourceSha256': digest(bundle),
                         'bundleDigestInputs': ['region/r.0.0.mca', 'scene.json'], 'scene': scene})
     result = {key: request[key] for key in ('schemaVersion', 'mapId', 'version', 'attempt', 'sourceSha256')}
@@ -925,7 +926,13 @@ def main():
             lod_contract(contract)
             # SQL-only synthetic operator fixtures must not enter the live lighting queue.
             docker('stop', contract.name + '-api')
-            operator_registration_contract(contract)
+            registration_map, registration_bundle = operator_registration_contract(contract)
+            # Remove the SQL-only registration source before restarting background lighting.
+            # It has no public blob and must not enter the real format-2 lighting contract.
+            contract.sql(f"DELETE FROM map_pin WHERE map='{registration_map}';" +
+                         f"DELETE FROM map_version WHERE map='{registration_map}' AND version=13 AND bundle_sha256='{registration_bundle}';" +
+                         f"DELETE FROM map_lit WHERE bundle_sha256='{registration_bundle}';")
+            assert contract.sql(f"SELECT count(*) FROM map_version WHERE map='{registration_map}';").splitlines()[-1] == '0'
             entitled_contract(contract, env, fixtures, arguments)
             # Story fixtures intentionally have lighting disabled; run them after lighting contracts.
             dialogue_contract(contract, env, fixtures, arguments, dialogue_profile, dialogue_catalog, dialogue_sources)

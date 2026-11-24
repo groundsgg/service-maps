@@ -69,9 +69,9 @@ dependencies {
     implementation("gg.grounds:scene-format:0.4.4")
     implementation("gg.grounds:dialogue-core:0.1.0")
     implementation("gg.grounds:dialogue-json:0.1.0")
-    // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
+    // 2.25.0 supplies dialogue actions in revision 4 while retaining revisions 1 through 3.
     // Ship this dependency in the API and derive-worker images together.
-    implementation("gg.grounds:plugin-lobby-scene-catalog:2.23.0")
+    implementation("gg.grounds:plugin-lobby-scene-catalog:2.25.0")
     implementation("gg.grounds:resourcepacks-client:1.3.0")
     implementation("tools.jackson.core:jackson-databind:3.2.4")
     implementation("tools.jackson.module:jackson-module-kotlin:3.2.4")
