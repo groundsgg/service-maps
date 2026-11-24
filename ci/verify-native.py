@@ -48,6 +48,25 @@ def docker(*args, **kwargs):
     return command('docker', *args, **kwargs)
 
 
+def fixture_diagnostics(contract):
+    for component in ('maps-fixtures', 'storage'):
+        name = contract.name + '-' + component
+        state = docker('inspect', '--format',
+                       '{"status":{{json .State.Status}},"exitCode":{{.State.ExitCode}},"oomKilled":{{.State.OOMKilled}}}',
+                       name, check=False)
+        try:
+            state = json.loads(state)
+            print('Inspected fixture container successfully (component=' + component + ', status=' + str(state['status']) +
+                  ', exitCode=' + str(state['exitCode']) + ', oomKilled=' + str(state['oomKilled']) + ')')
+        except (ValueError, KeyError, TypeError):
+            print('Fixture container inspection failed (component=' + component + ')')
+        if component == 'maps-fixtures':
+            logs = docker('logs', '--tail', '100', name, check=False)
+            for line in logs.splitlines():
+                if line.startswith('Fixture request failed ('):
+                    print(line)
+
+
 def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
 
@@ -955,6 +974,7 @@ def main():
             print('Maps: isolated Native direct/staff write denial, unchanged public pins and protected private operation passed')
             print('Packaged Maps contract passed: ' + IMAGE)
         except BaseException:
+            fixture_diagnostics(contract)
             for name in contract.containers:
                 if name.endswith(('-api', '-entitled', '-isolated')):
                     print(docker('logs', name, check=False)[-18000:])
