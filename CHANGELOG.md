@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.16.2](https://github.com/groundsgg/service-maps/compare/v1.16.1...v1.16.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* support persisted lobby dialogue scenes ([#122](https://github.com/groundsgg/service-maps/issues/122)) ([c808269](https://github.com/groundsgg/service-maps/commit/c808269cceeb47bd7f034cb03ea3078aa31b2a5c))
+
+## [1.16.1](https://github.com/groundsgg/service-maps/compare/v1.16.0...v1.16.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **lod:** expose safe per-version generation progress ([#119](https://github.com/groundsgg/service-maps/issues/119)) ([2e74b2f](https://github.com/groundsgg/service-maps/commit/2e74b2fc238c3a110478a480b19ae0ec82389eb2))
+
 ## [1.16.0](https://github.com/groundsgg/service-maps/compare/v1.15.0...v1.16.0) (2026-11-10)
 
 
