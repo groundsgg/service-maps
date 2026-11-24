@@ -68,6 +68,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass  # Never log bearer tokens, presigned URLs or bodies.
 
+    def end_headers(self):
+        # HTTP/1.0 closes each response; declare this before clients can pool the socket.
+        self.send_header('Connection', 'close')
+        self.close_connection = True
+        super().end_headers()
+
     def reply(self, status, value=None, raw=None):
         body = raw if raw is not None else encoded(value)
         self.send_response(status)
