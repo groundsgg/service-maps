@@ -19,6 +19,70 @@ import org.junit.jupiter.api.Test
 
 class SceneDeriverTest {
     @Test
+    fun `dialogue action derives with production revision four and retains required facts`() {
+        val result =
+            assertInstanceOf(
+                SceneDerivationOutcome.Valid::class.java,
+                deriveNavigatorScene("4", dialogueAction(), catalog = dialogueCatalog()),
+            )
+        assertEquals("4", result.scene.actionCatalog?.version)
+        assertEquals(listOf("grounds:lobby/start_dialogue"), result.scene.requiredActions)
+        val files =
+            SafeTarZstdReader()
+                .read(
+                    Files.newInputStream(result.bundle.path),
+                    Files.createTempDirectory("dialogue-bundle"),
+                )
+                .associateBy { it.path }
+        val document =
+            assertInstanceOf(
+                    SceneDecodeResult.Success::class.java,
+                    SceneJson.decode(Files.readAllBytes(files.getValue("scene.json").file)),
+                )
+                .scene
+        val action = (document.elements.single() as Npc).bindings.single().actions.single()
+        assertEquals(dialogueAction(), action)
+    }
+
+    @Test
+    fun `dialogue derivation rejects missing and incorrectly typed arguments`() {
+        val catalog = dialogueCatalog()
+        val valid = dialogueAction().arguments
+        listOf("dialogue", "speaker").forEach { name ->
+            val key = LocalId(name)
+            listOf(valid - key, valid + (key to BooleanArgument(true))).forEach { arguments ->
+                assertInstanceOf(
+                    SceneDerivationOutcome.Invalid::class.java,
+                    deriveNavigatorScene(
+                        "4",
+                        ApplicationAction(ActionKey("grounds:lobby/start_dialogue"), arguments),
+                        catalog = catalog,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun dialogueCatalog() =
+        gg.grounds.catalog
+            .DefaultNamespaceCatalogResolver()
+            .resolve(
+                "grounds",
+                gg.grounds.domain.CatalogReference("grounds:assets", "1"),
+                gg.grounds.domain.CatalogReference("grounds:actions", "4"),
+            )
+            .catalog
+
+    private fun dialogueAction() =
+        ApplicationAction(
+            ActionKey("grounds:lobby/start_dialogue"),
+            mapOf(
+                LocalId("dialogue") to StringArgument("grounds:lobby-guide"),
+                LocalId("speaker") to StringArgument("guide"),
+            ),
+        )
+
+    @Test
     fun `unused source definitions do not prevent compatible normalization`() {
         val key = AssetKey("grounds:unused")
         val source =

@@ -96,7 +96,24 @@ data class AutoLodSelection(
     }
 }
 
+data class LodProgress(val state: String, val columns: Int? = null, val bundleBytes: Long? = null)
+
+object LodGenerationBounds {
+    const val MAX_JOBS = 2
+    const val MAX_RESERVED_BYTES = 1073741824L
+    const val RESERVATION_BYTES = 3L * (128L * 1024 * 1024 + 1024 * 1024) + 64 * 1024
+}
+
 interface MapLodRepository {
+    /** Read an exact immutable identity, including failed private attempts; never admits work. */
+    fun progress(
+        trust: MapTrust,
+        map: String,
+        source: String,
+        registry: String,
+        generator: String,
+    ): LodProgress? = null
+
     /**
      * Durable selection only; generation remains subject to claim's shared quota and worker guard.
      */

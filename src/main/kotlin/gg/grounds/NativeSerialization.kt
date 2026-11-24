@@ -9,6 +9,7 @@ import gg.grounds.api.HeadDto
 import gg.grounds.api.HeadFileDto
 import gg.grounds.api.HeadSnapshotDto
 import gg.grounds.api.LivePinDto
+import gg.grounds.api.LodPreparationDto
 import gg.grounds.api.MapDto
 import gg.grounds.api.MissingBlobDto
 import gg.grounds.api.MovePinRequest
@@ -66,6 +67,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             MovePinRequest::class,
             VersionDto::class,
             PreparationDto::class,
+            LodPreparationDto::class,
             SceneDto::class,
             CatalogReferenceDto::class,
             DeriveProblemDto::class,

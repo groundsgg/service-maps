@@ -248,6 +248,41 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
         claim
     }
 
+    override fun progress(
+        trust: MapTrust,
+        map: String,
+        source: String,
+        registry: String,
+        generator: String,
+    ): LodProgress? =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                    """SELECT state,columns,bundle_bytes FROM map_lod
+                WHERE trust=? AND map_bundle_sha256=? AND source_bundle_sha256=?
+                    AND registry_sha256=? AND generator_sha256=?
+                ORDER BY CASE state WHEN 'READY' THEN 0 WHEN 'GENERATING' THEN 1 ELSE 2 END, updated_at DESC
+                LIMIT 1"""
+                )
+                .use { ps ->
+                    listOf(trust.name, map, source, registry, generator).forEachIndexed {
+                        index,
+                        value ->
+                        ps.setString(index + 1, value)
+                    }
+                    ps.executeQuery().use { rs ->
+                        if (!rs.next()) null
+                        else {
+                            val state = rs.getString("state")
+                            LodProgress(
+                                state,
+                                if (state == "READY") rs.getInt("columns") else null,
+                                if (state == "READY") rs.getLong("bundle_bytes") else null,
+                            )
+                        }
+                    }
+                }
+        }
+
     override fun active(): LodClaim? = rows("WHERE state='GENERATING'").singleOrNull()
 
     override fun budget(id: String): LodReservation? =
@@ -401,7 +436,7 @@ class PostgresMapLodRepository @Inject constructor(private val dataSource: DataS
     companion object {
         // Scratch, permanent private and public bundle+manifest plus the marker; no refunds after
         // failure.
-        const val RESERVATION_BYTES = 3L * (128L * 1024 * 1024 + 1024 * 1024) + 64 * 1024
+        const val RESERVATION_BYTES = LodGenerationBounds.RESERVATION_BYTES
     }
 }
 
