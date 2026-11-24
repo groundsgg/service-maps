@@ -66,7 +66,7 @@ dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:$zstdVersion")
-    implementation("gg.grounds:scene-format:0.4.4")
+    implementation("gg.grounds:scene-format:1.0.1")
     // 2.25.0 supplies dialogue actions in revision 4 while retaining revisions 1 through 3.
     // Ship this dependency in the API and derive-worker images together.
     implementation("gg.grounds:plugin-lobby-scene-catalog:2.25.0")
@@ -113,7 +113,7 @@ configurations.configureEach {
     // Keep API and lit worker on the same Zstd patch despite the Quarkus BOM's older pin.
     resolutionStrategy.force("com.github.luben:zstd-jni:$zstdVersion")
     // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
-    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
+    resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.23")
 }
 
 // The complete API suite retains several restricted Quarkus application profiles.
