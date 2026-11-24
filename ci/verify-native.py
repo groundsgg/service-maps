@@ -23,11 +23,14 @@ import tempfile
 import time
 import urllib.parse
 import uuid
+import zlib
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PREFIX = os.environ.get('NATIVE_IMAGE_PREFIX', 'grounds/service-maps')
 IMAGE = os.environ.get('MAPS_CONTRACT_IMAGE', PREFIX + ':native-micro-pilot')
 WORKER = os.environ.get('MAPS_WORKER_IMAGE', PREFIX + ':jvm-worker-contract')
+LOD_RUN_ID = str(uuid.uuid4())
 WORKER_DIGEST = 'ghcr.io/groundsgg/service-maps@sha256:' + 'a' * 64
 
 
@@ -194,17 +197,23 @@ class Contract:
         docker(*options, '--entrypoint', 'java', WORKER, *container['command'][1:], env={**os.environ, **env})
         self.request('/contract/complete/' + job['metadata']['name'], 'POST', {}, service='control')
 
+    def sql(self, statement, variables=None, check=True):
+        options=[]
+        for key,value in (variables or {}).items(): options+=['-v',key+'='+str(value)]
+        return docker('exec', '-i', self.name + '-database', 'psql', '-U', 'maps', '-d', 'maps', '-v', 'ON_ERROR_STOP=1', '-At',
+                      *options,input=("SET search_path=maps;\n" + statement).encode(),check=check)
+
     def close(self):
         for name in reversed(self.containers):
             docker('rm', '-f', name, check=False)
         docker('network', 'rm', self.name, check=False)
 
 
-def source_bundle():
+def source_bundle(populated=False, label=b'packaged maps contract\n'):
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode='w') as tar:
         # An empty Anvil region is a valid world and exercises the real Zstd/archive worker.
-        for name, body in [('region/r.0.0.mca', bytes(8192)), ('native-contract.txt', b'packaged maps contract\n')]:
+        for name, body in [('region/r.0.0.mca', populated_region() if populated else bytes(8192)), ('native-contract.txt', label)]:
             entry = tarfile.TarInfo(name)
             entry.size = len(body)
             tar.addfile(entry, io.BytesIO(body))
@@ -213,6 +222,255 @@ def source_bundle():
     data = archive.getvalue()[:end + 1024]
     # One raw-block Zstandard frame: no optional Python compression dependency in CI.
     return b'\x28\xb5\x2f\xfd\xa0' + struct.pack('<I', len(data)) + ((len(data) << 3) | 1).to_bytes(3, 'little') + data
+
+
+def populated_region():
+    # Ordinary Anvil/NBT, canonical 26.3 block-state identities, one all-stone section.
+    def string(value):
+        data=value.encode(); return struct.pack('>H',len(data))+data
+    def tag(kind,name,body):
+        return bytes([kind])+string(name)+body
+    def compound(*tags):
+        return b''.join(tags)+b'\0'
+    states=compound(tag(9,'palette',b'\x0a'+struct.pack('>i',1)+compound(tag(8,'id',string('minecraft:stone')))))
+    biomes=compound(tag(9,'palette',b'\x08'+struct.pack('>i',1)+string('minecraft:plains')))
+    section=compound(tag(1,'Y',b'\x04'),tag(10,'block_states',states),tag(10,'biomes',biomes))
+    nbt=tag(10,'',compound(tag(3,'xPos',struct.pack('>i',0)),tag(3,'zPos',struct.pack('>i',0)),
+        tag(3,'yPos',struct.pack('>i',-4)),tag(8,'status',string('minecraft:full')),
+        tag(9,'sections',b'\x0a'+struct.pack('>i',1)+section),tag(9,'block_entities',b'\x0a'+struct.pack('>i',0))))
+    compressed=zlib.compress(nbt)
+    record=struct.pack('>i',len(compressed)+1)+b'\x02'+compressed
+    sectors=(len(record)+4095)//4096
+    return struct.pack('>I',(2<<8)|sectors)+bytes(8192-4)+record+bytes(sectors*4096-len(record))
+
+
+def lod_contract(c):
+    staff=c.token()
+    address='grounds/native-lod-contract'; path='/v1/maps/'+address
+    c.request('/v1/maps','POST',{'address':address,'kind':'ARENA'},staff,201)
+    source=source_bundle(populated=True); source_sha=digest(source)
+    upload=c.request(path+'/uploads','POST',token=staff)
+    c.presigned(upload['url'],'PUT',source)
+    c.request(path+'/versions','POST',{'uploadId':upload['uploadId'],'sourceSha256':source_sha},staff,201)
+    c.request(path+'/versions/1/publish','POST',{'bundleSha256':source_sha,'sizeBytes':len(source),'presentChunks':1,'estLoadedMib':1},staff)
+    c.request(path+'/pins/lod-contract','POST',{'version':1},staff,409)
+    def lighting_job():
+        for job in c.jobs('service-maps-lit'):
+            request=json.loads(next(e['value'] for e in job['spec']['template']['spec']['containers'][0]['env'] if e['name']=='LIT_REQUEST_JSON'))
+            if request['bundleSha256']==source_sha and request['format']==2:
+                return job
+        raise AssertionError('populated lighting Job not created')
+    c.execute(eventually(lighting_job))
+    def ready_lod_version():
+        value=c.request(path+'/versions/1',token=staff)
+        assert value['preparation']['lightFormat']==2 and value['preparation']['stage']=='READY', value
+        return value
+    eventually(ready_lod_version)
+    c.request(path+'/pins/lod-contract','POST',{'version':1},staff)
+    def prelit_entry():
+        entry=c.s3('/public/pins/lod-contract.json')['maps'][address]
+        assert entry.get('lit',{}).get('bundleSha256') and entry['lit']['format']==2
+        return entry['lit']
+    prelit=eventually(prelit_entry)
+    identity_output=docker('run','--rm','--entrypoint','java',WORKER,'-Xmx256m','-XX:ActiveProcessorCount=2',
+        '-cp','/deployments/lod-worker/lib/*','gg.grounds.lod.worker.LodWorkerMainKt','--identity')
+    identity=json.loads(next(line for line in identity_output.splitlines() if line.startswith('{')))
+    # A deliberately explicit operator selection. No HTTP request or restart creates budgets/runs.
+    def quote(value): return "'"+str(value).replace("'","''")+"'"
+    c.sql("INSERT INTO map_lod_budget(id) VALUES ('native-contract');\n"+
+        "INSERT INTO map_lod_run(id,budget_id,environment,namespace,name,version,map_bundle_sha256,source_bundle_sha256,registry_sha256,generator_sha256,worker_image,created_at,expires_at,created_by) VALUES ("+
+        ','.join(map(quote,[LOD_RUN_ID,'native-contract','lod-contract','grounds','native-lod-contract']))+",1,"+
+        ','.join(map(quote,[source_sha,prelit['bundleSha256'],identity['registrySha256'],identity['generatorSha256'],WORKER_DIGEST]))+
+        ",now(),now()+interval '30 minutes','contract-operator');")
+    def activated_job():
+        job=c.job('service-maps-lod')
+        assert job['spec']['suspend'] is False
+        assert job['spec']['backoffLimit']==0 and job['spec']['activeDeadlineSeconds']==900
+        return job
+    job=eventually(activated_job)
+    c.execute(job)
+    def lod_entry():
+        entry=c.s3('/public/pins/lod-contract.json')['maps'][address]
+        assert entry.get('lod',{}).get('artifacts')
+        return entry['lod']['artifacts'][0]
+    artifact=eventually(lod_entry)
+    assert artifact['format']=='lss20' and artifact['sourceBundleSha256']==prelit['bundleSha256']
+    manifest=c.s3('/public/'+urllib.parse.urlsplit(artifact['manifestUrl']).path.lstrip('/'))
+    assert manifest['columns']==1 and manifest['generatorSha256']==identity['generatorSha256']
+    terrain=c.s3('/public/'+urllib.parse.urlsplit(artifact['bundleUrl']).path.lstrip('/'))
+    assert digest(terrain)==artifact['bundleSha256'] and len(terrain)==artifact['bundleBytes']
+    with zipfile.ZipFile(io.BytesIO(terrain)) as archive:
+        assert digest(archive.read('manifest.json'))==artifact['manifestSha256']
+        for tile in manifest['tiles']:
+            assert digest(archive.read(tile['path']))==tile['sha256']
+    assert len(c.jobs('service-maps-lod'))==1
+    assert c.sql("SELECT jobs_reserved FROM map_lod_budget WHERE id='native-contract';").splitlines()[-1]=='1'
+    # Private one-use relay, not a reusable presigned R2 URL. Exercise Native response DTOs/streaming.
+    serving_id, player, request_id = (str(uuid.uuid4()) for _ in range(3))
+    capability = 'local-contract-capability-' + uuid.uuid4().hex
+    attempt = c.sql(f"SELECT attempt FROM map_lod WHERE run_id='{LOD_RUN_ID}' AND state='READY';").splitlines()[-1]
+    c.sql("INSERT INTO map_lod_serving_run(id,artifact_attempt,token_sha256,allowed_players,starts_at,expires_at,created_by) VALUES ("+
+          ','.join(map(quote,[serving_id,attempt,digest(capability.encode())]))+
+          f",ARRAY['{player}'::uuid],now(),now()+interval '30 minutes','contract-operator');")
+    control = f'/v1/maps/lod-pilots/{serving_id}'
+    headers = {'X-Grounds-Lod-Pilot': capability}
+    request = {'schemaVersion':1,'requestId':request_id,'mapBundleSha256':source_sha,'playerId':player}
+    c.request(control+'/source','POST',request,status=403)
+    source_grant = c.request(control+'/source','POST',request,headers=headers)
+    assert source_grant['bundleUrl'] == control+'/source/'+request_id
+    assert source_grant['bundleSha256'] == artifact['bundleSha256']
+    c.request(source_grant['bundleUrl'],'HEAD',headers=headers,status=405)
+    c.request(source_grant['bundleUrl'],headers={**headers,'Range':'bytes=0-1'},status=416)
+    assert c.request(source_grant['bundleUrl'],headers=headers) == terrain
+    c.request(source_grant['bundleUrl'],headers=headers,status=410)
+    c.request(control+'/source','POST',request,headers=headers,status=409)
+    assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='2'
+    credit=c.request(control+'/credits','POST',{**request,'requestId':str(uuid.uuid4()),'bytes':262144},headers=headers)
+    assert credit['bytes']==262144 and 0<credit['validForMillis']<=1000
+    c.sql(f"UPDATE map_lod_serving_run SET enabled=false WHERE id='{serving_id}';")
+    c.request(control+'/credits','POST',{**request,'requestId':str(uuid.uuid4()),'bytes':1},headers=headers,status=410)
+    print('Maps: Native one-use private relay, replay/HEAD/Range refusal, global debits and persistent kill switch passed')
+    print('Maps: real LOD worker, suspended/UID-fenced admission, Native ZIP/manifest acceptance, immutable source-pinned LOD projection and permanent reservation passed')
+
+
+def entitled_contract(c, env, fixtures, arguments):
+    identity_output = docker('run', '--rm', '--entrypoint', 'java', WORKER, '-Xmx256m',
+        '-XX:ActiveProcessorCount=2', '-cp', '/deployments/lod-worker/lib/*',
+        'gg.grounds.lod.worker.LodWorkerMainKt', '--identity')
+    identity = json.loads(next(line for line in identity_output.splitlines() if line.startswith('{')))
+    capability = 'native-entitled-capability-' + uuid.uuid4().hex
+    budget, generation = 'native-stage-serving-v1', 'native-stage-auto-v1'
+    c.sql(f"INSERT INTO map_lod_delivery_budget(id,token_sha256) VALUES ('{budget}','{digest(capability.encode())}');")
+    entitled = {**env, 'MAPS_LOD_RUN_ID': '', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
+        'MAPS_LOD_PILOT_ENABLED': 'false', 'MAPS_LOD_AUTO_ENABLED': 'true',
+        'MAPS_LOD_AUTO_ENVIRONMENT': 'stage', 'MAPS_LOD_AUTO_NAMESPACE': 'lobby',
+        'MAPS_LOD_AUTO_NAME': 'mainlobby', 'MAPS_LOD_AUTO_BUDGET_ID': generation,
+        'MAPS_LOD_AUTO_REGISTRY_SHA256': identity['registrySha256'],
+        'MAPS_LOD_AUTO_GENERATOR_SHA256': identity['generatorSha256'],
+        'MAPS_LOD_AUTO_WORKER_IMAGE': WORKER_DIGEST,
+        'MAPS_LOD_SERVING_ENABLED': 'true', 'MAPS_LOD_SERVING_BUDGET_ID': budget,
+        'MAPS_LOD_SERVING_GENERATION_BUDGET_ID': generation, 'MAPS_LOD_SERVING_POLL_INTERVAL': '1s'}
+    c.run('entitled', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+        ports=(9000,), env=entitled, command_args=arguments)
+    c.ports['api', 9000] = c.ports['entitled', 9000]
+    eventually(lambda: c.request('/q/health/ready'))
+    c.request('/v1/maps/lod-serving/discover', 'POST', raw=b'{', status=403)
+    staff = c.token()
+    path = '/v1/maps/lobby/mainlobby'
+    source = source_bundle(populated=True, label=b'automatic private entitled terrain\n')
+    canonical = digest(source)
+    upload = c.request(path + '/uploads', 'POST', token=staff)
+    c.presigned(upload['url'], 'PUT', source)
+    version = c.request(path + '/versions', 'POST', {'uploadId': upload['uploadId'], 'sourceSha256': canonical}, staff, 201)['version']
+    c.request(path + f'/versions/{version}/publish', 'POST', {'bundleSha256': canonical,
+        'sizeBytes': len(source), 'presentChunks': 1, 'estLoadedMib': 1}, staff)
+    def lighting_job():
+        for job in c.jobs('service-maps-lit'):
+            request = json.loads(next(e['value'] for e in job['spec']['template']['spec']['containers'][0]['env'] if e['name'] == 'LIT_REQUEST_JSON'))
+            if request['bundleSha256'] == canonical and request['format'] == 2:
+                return job
+        raise AssertionError('automatic-source lighting Job missing')
+    c.execute(eventually(lighting_job))
+    def light_ready():
+        value = c.request(path + f'/versions/{version}', token=staff)
+        assert value['preparation']['lightFormat'] == 2 and value['preparation']['stage'] == 'READY', value
+        assert value['lod']['stage'] == 'WAITING_FOR_ACTIVATION', value
+        return value
+    eventually(light_ready)
+    c.request(path + '/pins/stage', 'POST', {'version': version}, staff)
+    def pin():
+        entry = c.s3('/public/pins/stage.json')['maps']['lobby/mainlobby']
+        assert entry['bundleSha256'] == canonical and entry['lit']['format'] == 2, entry
+        return entry
+    entry = eventually(pin)
+    prepared = entry['lit']['bundleSha256']
+    request = {'schemaVersion': 1, 'mapBundleSha256': canonical, 'sourceBundleSha256': prepared,
+        'registrySha256': identity['registrySha256'], 'generatorSha256': identity['generatorSha256']}
+    headers = {'X-Grounds-Lod-Pilot': capability}
+    def automatic_job():
+        for job in c.jobs('service-maps-lod'):
+            body = json.loads(next(e['value'] for e in job['spec']['template']['spec']['containers'][0]['env'] if e['name'] == 'LOD_REQUEST_JSON'))
+            if body['mapBundleSha256'] == canonical:
+                assert job['spec']['suspend'] is False and job['spec']['backoffLimit'] == 0
+                assert job['spec']['activeDeadlineSeconds'] == 900
+                return job
+        raise AssertionError('post-lighting automatic LOD Job missing')
+    job = eventually(automatic_job)
+    assert c.request(path + f'/versions/{version}', token=staff)['lod']['stage'] == 'GENERATING'
+    c.request('/v1/maps/lod-serving/discover', 'POST', request, headers=headers, status=404)
+    pins_before = c.s3('/public/pins/stage.json')
+    c.execute(job)
+    def selection():
+        selected = c.request('/v1/maps/lod-serving/discover', 'POST', request, headers=headers)
+        assert all(selected[key] == request[key] for key in request if key != 'schemaVersion')
+        return selected
+    selected = eventually(selection)
+    ready_lod = c.request(path + f'/versions/{version}', token=staff)['lod']
+    assert ready_lod['stage'] == 'READY' and ready_lod['columns'] > 0 and ready_lod['bundleBytes'] > 0, ready_lod
+    assert c.s3('/public/pins/stage.json') == pins_before, 'entitled terrain leaked into public pins'
+    assert c.sql(f"SELECT count(*) FROM map_lod_delivery_budget WHERE id='{budget}';").splitlines()[-1] == '1'
+    control = '/v1/maps/lod-pilots/' + selected['runId']
+    player = str(uuid.uuid4())
+    payload = {'schemaVersion': 1, 'requestId': str(uuid.uuid4()), 'mapBundleSha256': canonical, 'playerId': player}
+    source_grant = c.request(control + '/source', 'POST', payload, headers=headers)
+    body = c.request(source_grant['bundleUrl'], headers=headers)
+    assert digest(body) == source_grant['bundleSha256'] and len(body) == source_grant['bundleBytes']
+    c.request(source_grant['bundleUrl'], headers=headers, status=410)
+    credit = c.request(control + '/credits', 'POST', {**payload, 'requestId': str(uuid.uuid4()), 'bytes': 262144}, headers=headers)
+    assert credit['bytes'] == 262144 and 0 < credit['validForMillis'] <= 1000
+    usage_sql = f"SELECT payload_grants_reserved||'|'||payload_reserved||'|'||remote_reads_reserved||'|'||remote_bytes_reserved FROM map_lod_delivery_budget WHERE id='{budget}';"
+    usage = c.sql(usage_sql)
+    assert usage.splitlines()[-1].startswith('1|262144|2|'), usage
+    job_count = len(c.jobs('service-maps-lod'))
+    docker('restart', c.name + '-entitled')
+    # Docker can assign a new ephemeral host port when this container restarts.
+    c.ports['api', 9000] = int(docker('port', c.name + '-entitled', '9000/tcp').rsplit(':', 1)[1])
+    eventually(lambda: c.request('/q/health/ready'))
+    assert eventually(selection)['runId'] == selected['runId']
+    assert c.sql(usage_sql) == usage, 'API restart reset the durable delivery measurement'
+    assert len(c.jobs('service-maps-lod')) == job_count, 'API restart generated duplicate terrain'
+    assert c.sql(f"SELECT jobs_reserved FROM map_lod_budget WHERE id='{generation}';").splitlines()[-1] == '1'
+    c.sql(f"UPDATE map_lod_delivery_budget SET enabled=false WHERE id='{budget}';")
+    c.request('/v1/maps/lod-serving/discover', 'POST', request, headers=headers, status=403)
+    c.request(control + '/credits', 'POST', {**payload, 'requestId': str(uuid.uuid4()), 'bytes': 1}, headers=headers, status=410)
+    docker('stop', c.name + '-entitled')
+    print('Maps: Native automatic post-lighting generation, private exact discovery, no-timer entitled relay, restart-stable shared budget and kill switch passed')
+
+
+def operator_registration_contract(c):
+    map_id=str(uuid.uuid4()); attempt=str(uuid.uuid4())
+    canonical='a2aa86931891165e39111461f7f664264260379ce184a4f2b1a8f4f158456f84'
+    prelit='8c0303b517afec90d31dbb581bd627cdb3a9a348770eae8bb24af7d1a3b37c92'
+    c.sql(f"INSERT INTO map(id,namespace,name,display_name,kind,trust,owner_sub) VALUES ('{map_id}','lobby','mainlobby','fixture','ARENA','FIRST_PARTY','fixture');"+
+          f"INSERT INTO map_version(map,version,state,bundle_sha256,published_by_sub,scene_present) VALUES ('{map_id}',13,'PUBLISHED','{canonical}','fixture',false);"+
+          f"INSERT INTO map_pin(environment,map,version,moved_by_sub) VALUES ('stage','{map_id}',13,'fixture');"+
+          f"INSERT INTO map_lit(bundle_sha256,light_format,state,attempt,lit_sha256,lit_size) VALUES ('{canonical}',1,'LIT','{attempt}','{'f'*64}',1);")
+    script=(ROOT/'scripts/register-lod-pilot.sql').read_text()
+    variables={'run_id':str(uuid.uuid4()),'worker_image':WORKER_DIGEST,'generator_sha256':'c'*64,'registry_sha256':'d'*64}
+    refused=c.sql(script,variables,check=False)
+    assert 'LOD selection refused' in refused
+    assert c.sql("SELECT count(*) FROM map_lod_budget WHERE id='lobby-v13-lss20-v1';").splitlines()[-1]=='0'
+    c.sql(f"UPDATE map_lit SET lit_sha256='{prelit}' WHERE bundle_sha256='{canonical}';")
+    registered=c.sql(script,variables)
+    assert 'Registered the exact Lobby v13 selection' in registered
+    c.sql("UPDATE map_lod_budget SET jobs_reserved=1,bytes_reserved=270598144 WHERE id='lobby-v13-lss20-v1';")
+    variables['run_id']=str(uuid.uuid4())
+    c.sql(script,variables)
+    assert c.sql("SELECT jobs_reserved FROM map_lod_budget WHERE id='lobby-v13-lss20-v1';").splitlines()[-1]=='1'
+    assert len(c.jobs('service-maps-lod'))==1, 'registering a different run cannot silently change the admitted run'
+    serving_script=(ROOT/'scripts/register-lod-serving-pilot.sql').read_text()
+    serving_attempt, serving_id, serving_player=(str(uuid.uuid4()) for _ in range(3))
+    serving_vars={'run_id':serving_id,'artifact_attempt':serving_attempt,'token_sha256':'a'*64,'players':'{'+serving_player+'}'}
+    assert 'LOD serving selection refused' in c.sql(serving_script,serving_vars,check=False)
+    c.sql("INSERT INTO map_lod(attempt,run_id,identity_sha256,trust,map_bundle_sha256,source_bundle_sha256,registry_sha256,generator_sha256,worker_image,state,started_at,updated_at,bundle_sha256,bundle_bytes,manifest_sha256,manifest_bytes,columns) VALUES ("+
+          f"'{serving_attempt}','{variables['run_id']}','{'7'*64}','FIRST_PARTY','{canonical}','{prelit}','{'d'*64}','{'c'*64}','{WORKER_DIGEST}','READY',now(),now(),'{'8'*64}',4096,'{'9'*64}',256,1);")
+    assert 'Registered a 30-minute private Lobby pilot' in c.sql(serving_script,serving_vars)
+    c.sql(f"UPDATE map_lod_serving_run SET remote_reads_reserved=10 WHERE id='{serving_id}';")
+    assert 'ERROR' in c.sql(serving_script,serving_vars,check=False)
+    assert c.sql(f"SELECT remote_reads_reserved FROM map_lod_serving_run WHERE id='{serving_id}';").splitlines()[-1]=='10'
+    print('Maps: serving operator script refuses absent artifact and cannot reset an existing pilot passed')
+    print('Maps: exact Lobby operator registration refuses changed input, rolls back empty selection and never resets an existing budget passed')
+    return map_id, canonical
 
 
 def assert_prometheus_metrics(c, populated=False):
@@ -413,8 +671,8 @@ def contracts(c):
     request = json.loads(next(e['value'] for e in descriptor['env'] if e['name'] == 'DERIVE_REQUEST_JSON'))
     scene = {'present': True, 'schemaVersion': '1', 'sha256': digest(b'scene fixture'),
              'assetCatalog': {'id': 'grounds:resourcepacks', 'version': '1.2.3'},
-             'actionCatalog': {'id': 'grounds:lobby', 'version': '2.23.0'},
-             'requiredActions': ['grounds:queue', 'grounds:teleport']}
+             'actionCatalog': {'id': 'grounds:actions', 'version': '4'},
+             'requiredActions': ['grounds:lobby/start_dialogue']}
     manifest = encoded({'schemaVersion': 1, 'sourceSha256': digest(bundle),
                         'bundleDigestInputs': ['region/r.0.0.mca', 'scene.json'], 'scene': scene})
     result = {key: request[key] for key in ('schemaVersion', 'mapId', 'version', 'attempt', 'sourceSha256')}
@@ -494,13 +752,16 @@ def main():
                    'MAPS_R2_ACCESS_KEY_ID': 'contract', 'MAPS_R2_SECRET_ACCESS_KEY': 'contract-secret',
                    'MAPS_R2_PRIVATE_BUCKET': 'private', 'MAPS_R2_PUBLIC_BUCKET': 'public', 'MAPS_R2_UGC_BUCKET': 'ugc',
                    'MAPS_DERIVE_ENABLED': 'true', 'MAPS_DERIVE_IMAGE': WORKER_DIGEST,
+                   'MAPS_LOD_ENABLED': 'true', 'MAPS_LOD_PUBLICATION_ENABLED': 'true', 'MAPS_LOD_PILOT_ENABLED': 'true',
+                   'MAPS_LOD_RUN_ID': LOD_RUN_ID, 'MAPS_LOD_NODE': 'contract-node', 'MAPS_LOD_POLL_INTERVAL': '1s',
                    'MAPS_DERIVE_POLL_INTERVAL': '1s', 'MAPS_LIT_POLL_INTERVAL': '1s',
                    'MAPS_CATALOGS_BASE_URI': 'https://maps-fixtures', 'MAPS_CATALOGS_PACK_SET': 'global',
                    'MAPS_CATALOGS_PINNED_JSON': json.dumps(retained_catalogs),
                    'QUARKUS_KUBERNETES_CLIENT_API_SERVER_URL': 'http://maps-fixtures:8080',
                    'QUARKUS_KUBERNETES_CLIENT_TRUST_CERTS': 'true', 'QUARKUS_KUBERNETES_CLIENT_NAMESPACE': 'maps',
                    'JAVA_TOOL_OPTIONS': '-Djavax.net.ssl.trustStore=/fixtures/trust.p12 -Djavax.net.ssl.trustStorePassword=changeit'}
-            arguments = () if 'MAPS_CONTRACT_IMAGE' in os.environ else (
+            entrypoint=json.loads(docker('image','inspect',IMAGE,'--format','{{json .Config.Entrypoint}}'))
+            arguments = () if pathlib.Path(entrypoint[0]).name == 'java' else (
                 '-Djavax.net.ssl.trustStore=/fixtures/trust.p12', '-Djavax.net.ssl.trustStorePassword=changeit')
             contract.run('api', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
                          ports=(9000,), env=env, command_args=arguments)
@@ -511,10 +772,38 @@ def main():
                 assert health['status'] == 'UP', health
             eventually(ready)
             contracts(contract)
+            lod_contract(contract)
+            registration_map, registration_bundle = operator_registration_contract(contract)
+            # Exercise the packaged pilot process itself, including internal/direct requests.
+            docker('stop', contract.name + '-api')
+            # Remove the SQL-only registration source after its reconciler has stopped.
+            # It has no public blob and must not enter the real format-2 lighting contract.
+            contract.sql(f"DELETE FROM map_pin WHERE map='{registration_map}';" +
+                         f"DELETE FROM map_version WHERE map='{registration_map}' AND version=13 AND bundle_sha256='{registration_bundle}';" +
+                         f"DELETE FROM map_lit WHERE bundle_sha256='{registration_bundle}';")
+            assert contract.sql(f"SELECT count(*) FROM map_version WHERE map='{registration_map}';").splitlines()[-1] == '0'
+            entitled_contract(contract, env, fixtures, arguments)
+            isolated = {**env, 'MAPS_DERIVE_ENABLED': 'false', 'MAPS_LIT_ENABLED': 'false',
+                        'MAPS_LOD_ENABLED': 'false', 'MAPS_LOD_PUBLICATION_ENABLED': 'false',
+                        'MAPS_LOD_PILOT_ISOLATED': 'true',
+                        'MAPS_LOD_PILOT_OWNER_POD_NAME': 'native-pilot',
+                        'MAPS_LOD_PILOT_OWNER_POD_UID': '321ba5f0-b4f5-46bc-865c-d8013e2a552d'}
+            contract.run('isolated', IMAGE, '-v', str(fixtures) + ':/fixtures:ro', '--read-only', '--tmpfs', '/tmp',
+                         ports=(9000,), env=isolated, command_args=arguments)
+            contract.ports['api', 9000] = contract.ports['isolated', 9000]
+            eventually(lambda: contract.request('/q/health/ready'))
+            pins = contract.s3('/public/pins/stage.json')
+            staff = contract.token()
+            contract.request('/v1/maps/grounds/native-contract/pins/stage', 'POST', {'version': 1}, staff, 404)
+            contract.request('/v1/maps', 'POST', token=staff, raw=b'{', status=404)
+            contract.request('/v1/maps/lod-pilots/castle', token=staff, status=404)
+            assert contract.s3('/public/pins/stage.json') == pins, 'isolated pilot changed ordinary pins'
+            contract.request('/v1/maps/lod-pilots/' + str(uuid.uuid4()) + '/credits', 'POST', raw=b'{', status=403)
+            print('Maps: isolated Native direct/staff write denial, unchanged public pins and protected private operation passed')
             print('Packaged Maps contract passed: ' + IMAGE)
         except BaseException:
             for name in contract.containers:
-                if name.endswith('-api'):
+                if name.endswith(('-api', '-entitled', '-isolated')):
                     print(docker('logs', name, check=False)[-18000:])
             raise
         finally:

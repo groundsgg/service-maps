@@ -1,0 +1,74 @@
+name: Publish JVM Libraries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: >-
+      ${{ github.event.repository.visibility == 'public'
+          && 'ubuntu-24.04'
+          || 'grounds-runners' }}
+    timeout-minutes: 30
+    concurrency:
+      group: maps-lod-publish-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select an isolated Gradle cache
+        run: echo "GRADLE_USER_HOME=$RUNNER_TEMP/maps-lod-publish-gradle" >> "$GITHUB_ENV"
+      - name: Require a release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          echo "LIBRARY_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: groundsgg/.github/.github/actions/maven-mirror@main
+        id: mirror
+      - name: Configure dependency resolution
+        env:
+          PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_TOKEN || github.token }}
+          MIRROR_INIT_PATH: ${{ steps.mirror.outputs['init-script'] }}
+        run: |
+          umask 077
+          mkdir -p "$GRADLE_USER_HOME"
+          if [ -n "$MIRROR_INIT_PATH" ]; then
+            mkdir -p "$GRADLE_USER_HOME/init.d"
+            cp "$MIRROR_INIT_PATH" "$GRADLE_USER_HOME/init.d/grounds-maven-mirror.init.gradle.kts"
+          fi
+          {
+            printf 'github.user=%s\n' "$GITHUB_ACTOR"
+            printf 'github.token=%s\n' "$PACKAGES_READ_TOKEN"
+          } > "$GRADLE_USER_HOME/gradle.properties"
+      - name: Build and verify only the libraries
+        run: >-
+          ./gradlew --no-daemon --max-workers=2
+          :lod-format:build :lod-runtime:build
+          -PversionOverride="$LIBRARY_VERSION"
+      - name: Publish only the libraries
+        env:
+          # The published root convention reads GITHUB_TOKEN for Maven publication.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          {
+            printf 'github.user=%s\n' "$GITHUB_ACTOR"
+            printf 'github.token=%s\n' "$GITHUB_TOKEN"
+          } > "$GRADLE_USER_HOME/gradle.properties"
+          ./gradlew --no-daemon --max-workers=2 :lod-format:publish :lod-runtime:publish -PversionOverride="$LIBRARY_VERSION"
+      - name: Remove temporary credentials
+        if: always()
+        run: rm -f "$GRADLE_USER_HOME/gradle.properties"

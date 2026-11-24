@@ -9,6 +9,7 @@ import gg.grounds.api.HeadDto
 import gg.grounds.api.HeadFileDto
 import gg.grounds.api.HeadSnapshotDto
 import gg.grounds.api.LivePinDto
+import gg.grounds.api.LodPreparationDto
 import gg.grounds.api.MapDto
 import gg.grounds.api.MissingBlobDto
 import gg.grounds.api.MovePinRequest
@@ -34,7 +35,19 @@ import gg.grounds.domain.WorkspaceBlob
 import gg.grounds.domain.WorkspaceFile
 import gg.grounds.lit.LitRequest
 import gg.grounds.lit.LitResult
+import gg.grounds.lod.format.LodJobRequest
+import gg.grounds.lod.format.LodJobResult
+import gg.grounds.lod.format.LodManifest
+import gg.grounds.lod.format.LodPayloadGrant
+import gg.grounds.lod.format.LodPayloadRequest
+import gg.grounds.lod.format.LodServingDiscoveryRequest
+import gg.grounds.lod.format.LodServingSelection
+import gg.grounds.lod.format.LodSourceGrant
+import gg.grounds.lod.format.LodSourceRequest
+import gg.grounds.lod.format.LodTile
 import gg.grounds.pins.LitEntry
+import gg.grounds.pins.LodArtifactRef
+import gg.grounds.pins.LodEntry
 import gg.grounds.pins.PinFile
 import gg.grounds.pins.PinnedEntry
 import io.quarkus.runtime.annotations.RegisterForReflection
@@ -54,6 +67,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             MovePinRequest::class,
             VersionDto::class,
             PreparationDto::class,
+            LodPreparationDto::class,
             SceneDto::class,
             CatalogReferenceDto::class,
             DeriveProblemDto::class,
@@ -70,6 +84,18 @@ import io.quarkus.runtime.annotations.RegisterForReflection
             PinFile::class,
             PinnedEntry::class,
             LitEntry::class,
+            LodEntry::class,
+            LodArtifactRef::class,
+            LodManifest::class,
+            LodTile::class,
+            LodJobRequest::class,
+            LodPayloadRequest::class,
+            LodPayloadGrant::class,
+            LodSourceRequest::class,
+            LodSourceGrant::class,
+            LodServingDiscoveryRequest::class,
+            LodServingSelection::class,
+            LodJobResult::class,
             LitRequest::class,
             LitResult::class,
             DeriveRequest::class,
