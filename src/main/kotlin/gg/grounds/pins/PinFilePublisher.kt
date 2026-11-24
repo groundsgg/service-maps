@@ -4,10 +4,12 @@ import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.ObjectMapper
 import gg.grounds.blob.BlobStore
 import gg.grounds.domain.MapLitRepository
+import gg.grounds.domain.MapLodRepository
 import gg.grounds.domain.MapPinRepository
 import gg.grounds.lit.MapLightPolicy
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.inject.Inject
+import org.eclipse.microprofile.config.inject.ConfigProperty
 import org.jboss.logging.Logger
 
 /**
@@ -32,6 +34,9 @@ constructor(
     private val json: ObjectMapper,
     private val lits: MapLitRepository,
     private val events: PinEvents,
+    private val lods: MapLodRepository,
+    @ConfigProperty(name = "grounds.maps.lod.publication.enabled", defaultValue = "false")
+    private val lodPublicationEnabled: Boolean,
     private val light: MapLightPolicy,
 ) {
 
@@ -56,6 +61,18 @@ constructor(
                         // either is still a failed projection, and letting it escape would turn
                         // an applied pin move into a 500.
                         val litCopies = lits.litCopies(light.format)
+                        val publishedLods =
+                            if (lodPublicationEnabled) {
+                                try {
+                                    lods.published()
+                                } catch (e: Exception) {
+                                    log.warnf(
+                                        "LOD references omitted; base pin publication continues (%s)",
+                                        e.javaClass.simpleName,
+                                    )
+                                    emptyList()
+                                }
+                            } else emptyList()
                         val body =
                             json.writeValueAsString(
                                 PinFile(
@@ -75,6 +92,14 @@ constructor(
                                                             BlobStore.bundleKey(pin.bundleSha256),
                                                     sizeBytes = pin.sizeBytes,
                                                     estLoadedMib = pin.estLoadedMib,
+                                                    lod =
+                                                        LodPinEntries.forMap(
+                                                            pin.bundleSha256,
+                                                            pin.trust,
+                                                            litCopies[pin.bundleSha256],
+                                                            publishedLods,
+                                                            blobs.publicBaseFor(pin.trust),
+                                                        ),
                                                     lit =
                                                         litCopies[pin.bundleSha256]?.let { lit ->
                                                             LitEntry(
@@ -130,6 +155,7 @@ data class PinnedEntry(
      * null, while there is none: servers before the field existed read every key they find.
      */
     @get:JsonInclude(JsonInclude.Include.NON_NULL) val lit: LitEntry? = null,
+    @get:JsonInclude(JsonInclude.Include.NON_NULL) val lod: LodEntry? = null,
 )
 
 /** A lit copy of a pinned bundle, in the light format game servers of that [format] read. */

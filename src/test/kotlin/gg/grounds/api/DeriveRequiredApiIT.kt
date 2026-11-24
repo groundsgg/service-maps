@@ -1,7 +1,7 @@
 package gg.grounds.api
 
 import gg.grounds.PostgresResource
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.junit.QuarkusTestProfile
 import io.quarkus.test.junit.TestProfile
@@ -11,7 +11,7 @@ import io.restassured.http.ContentType
 import org.junit.jupiter.api.Test
 
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
+@WithTestResource(PostgresResource::class)
 @TestProfile(DeriveRequiredProfile::class)
 @TestSecurity(user = "derive-required", roles = ["grounds-staff"])
 class DeriveRequiredApiIT {

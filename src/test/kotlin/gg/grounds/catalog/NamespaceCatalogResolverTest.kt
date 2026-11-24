@@ -8,6 +8,24 @@ import org.junit.jupiter.api.Test
 
 class NamespaceCatalogResolverTest {
     @Test
+    fun `grounds resolves dialogue revision with required string arguments`() {
+        val catalog =
+            DefaultNamespaceCatalogResolver()
+                .resolve(
+                    "grounds",
+                    CatalogReference("grounds:assets", "1"),
+                    CatalogReference("grounds:actions", "4"),
+                )
+                .catalog
+        val action = catalog.actions.getValue(ActionKey("grounds:lobby/start_dialogue"))
+        assertEquals(setOf("dialogue", "speaker"), action.parameters.keys.map { it.value }.toSet())
+        action.parameters.values.forEach {
+            assertEquals(gg.grounds.scene.format.ActionParameterType.STRING, it.type)
+            assertEquals(true, it.required)
+        }
+    }
+
+    @Test
     fun `grounds resolves the NPC action revision without changing revision two`() {
         val resolver = DefaultNamespaceCatalogResolver()
         val catalog =

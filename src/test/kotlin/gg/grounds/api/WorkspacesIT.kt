@@ -3,7 +3,7 @@ package gg.grounds.api
 import gg.grounds.MinioResource
 import gg.grounds.PostgresResource
 import gg.grounds.domain.WorkspaceRepository
-import io.quarkus.test.common.QuarkusTestResource
+import io.quarkus.test.common.WithTestResource
 import io.quarkus.test.junit.QuarkusTest
 import io.quarkus.test.security.TestSecurity
 import io.restassured.RestAssured.given
@@ -26,8 +26,8 @@ import org.junit.jupiter.api.Test
  * restore downloads, and a snapshot is either the head in full or not at all.
  */
 @QuarkusTest
-@QuarkusTestResource(PostgresResource::class)
-@QuarkusTestResource(MinioResource::class)
+@WithTestResource(PostgresResource::class)
+@WithTestResource(MinioResource::class)
 @TestSecurity(user = "buildserver-sa", roles = ["grounds-staff"])
 class WorkspacesIT {
 

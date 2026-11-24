@@ -104,9 +104,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             name = path.split('/jobs/', 1)[1] if '/jobs/' in path else None
             if self.command == 'POST':
                 job = json.loads(body)
+                job['metadata']['uid'] = job['metadata']['name'] + '-uid'
+                job['metadata']['resourceVersion'] = '1'
                 with LOCK:
                     JOBS[job['metadata']['name']] = job
                 self.reply(201, job)
+            elif self.command == 'PATCH' and name:
+                patch = json.loads(body)
+                with LOCK:
+                    job = JOBS.get(name)
+                    expected = {'/metadata/uid': job['metadata']['uid'], '/metadata/resourceVersion': job['metadata']['resourceVersion']} if job else {}
+                    valid = job and all(op.get('value') == expected.get(op.get('path')) for op in patch if op.get('op') == 'test')
+                    if valid:
+                        for op in patch:
+                            if op.get('op') == 'replace' and op.get('path') == '/spec/suspend':
+                                job['spec']['suspend'] = op['value']
+                        job['metadata']['resourceVersion'] = str(int(job['metadata']['resourceVersion']) + 1)
+                self.reply(200 if valid else 409, job if valid else {'kind': 'Status', 'apiVersion': 'v1', 'code': 409})
+            elif self.command == 'DELETE' and name:
+                with LOCK:
+                    JOBS.pop(name, None)
+                self.reply(200, {'kind': 'Status', 'apiVersion': 'v1', 'status': 'Success'})
             elif 'watch=true' in self.path:
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -121,10 +139,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with LOCK:
                     jobs = list(JOBS.values())
                 self.reply(200, {'kind': 'JobList', 'apiVersion': 'batch/v1', 'metadata': {'resourceVersion': '1'}, 'items': jobs})
+        elif path.endswith('/pods'):
+            self.reply(200, {'kind': 'PodList', 'apiVersion': 'v1', 'items': []})
         else:
             self.reply(404, {'path': path})
 
-    do_GET = do_POST = do_PUT = do_HEAD = do_DELETE = handle_request
+    do_GET = do_POST = do_PUT = do_HEAD = do_DELETE = do_PATCH = handle_request
 
 
 plain = http.server.ThreadingHTTPServer(('0.0.0.0', 8080), Handler)

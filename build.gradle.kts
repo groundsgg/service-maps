@@ -49,6 +49,8 @@ repositories {
 }
 
 dependencies {
+    implementation(project(":lod-format"))
+    testImplementation(kotlin("test"))
     compileOnly("org.graalvm.sdk:nativeimage")
     implementation(enforcedPlatform(libs.quarkus.bom))
     implementation("io.quarkus:quarkus-arc")
@@ -65,9 +67,9 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("com.github.luben:zstd-jni:$zstdVersion")
     implementation("gg.grounds:scene-format:0.4.4")
-    // 2.23.0 supplies Scene queue actions in revision 3 while retaining revisions 1 and 2.
+    // 2.25.0 supplies dialogue actions in revision 4 while retaining revisions 1 through 3.
     // Ship this dependency in the API and derive-worker images together.
-    implementation("gg.grounds:plugin-lobby-scene-catalog:2.23.0")
+    implementation("gg.grounds:plugin-lobby-scene-catalog:2.25.0")
     implementation("gg.grounds:resourcepacks-client:1.3.0")
     implementation("tools.jackson.core:jackson-databind:3.2.4")
     implementation("tools.jackson.module:jackson-module-kotlin:3.2.4")
@@ -95,6 +97,8 @@ dependencies {
     implementation("software.amazon.awssdk:url-connection-client")
     implementation("io.nats:jnats:2.26.4")
 
+    // Programmatic schema-upgrade tests run outside Quarkus augmentation.
+    testRuntimeOnly("org.flywaydb:flyway-database-postgresql")
     testImplementation("io.quarkus:quarkus-junit5")
     testImplementation("io.quarkus:quarkus-test-security")
     testImplementation("io.rest-assured:rest-assured")
@@ -111,3 +115,7 @@ configurations.configureEach {
     // Jackson 3.2 requires the 2.22 annotations API, including JsonApplyView.
     resolutionStrategy.force("com.fasterxml.jackson.core:jackson-annotations:2.22")
 }
+
+// The complete API suite retains several restricted Quarkus application profiles.
+// Bound the test process explicitly instead of using Gradle's 512 MiB default.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach { maxHeapSize = "2g" }

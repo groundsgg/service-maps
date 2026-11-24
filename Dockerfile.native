@@ -8,6 +8,9 @@ COPY gradlew build.gradle.kts settings.gradle.kts ./
 COPY src/main/ src/main/
 # settings includes the JVM worker; configure it without putting it in the Native API image.
 COPY lit-worker/build.gradle.kts lit-worker/build.gradle.kts
+COPY lod-worker/build.gradle.kts lod-worker/build.gradle.kts
+COPY lod-format/ lod-format/
+COPY lod-runtime/build.gradle.kts lod-runtime/build.gradle.kts
 # The API exchanges object metadata and presigned URLs. Archive codecs run only in the
 # separately published JVM workers; excluding their Zstd FFM binding also prevents Netty
 # from detecting an optional compressor the Native API does not support.
