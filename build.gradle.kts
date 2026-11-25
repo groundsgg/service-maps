@@ -70,7 +70,7 @@ dependencies {
     // 2.25.0 supplies dialogue actions in revision 4 while retaining revisions 1 through 3.
     // Ship this dependency in the API and derive-worker images together.
     implementation("gg.grounds:plugin-lobby-scene-catalog:2.25.0")
-    implementation("gg.grounds:resourcepacks-client:1.3.0")
+    implementation("gg.grounds:resourcepacks-client:1.6.0")
     implementation("tools.jackson.core:jackson-databind:3.2.4")
     implementation("tools.jackson.module:jackson-module-kotlin:3.2.4")
     // Keycloak bearer tokens, not projected ServiceAccount tokens: the build
