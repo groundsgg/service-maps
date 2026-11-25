@@ -14,7 +14,7 @@ plugins {
     alias(libs.plugins.quarkus)
 }
 
-val zstdVersion = "1.5.7-25"
+val zstdVersion = "1.5.7-28"
 
 val cleanProductionOpenApi =
     tasks.register<Delete>("cleanProductionOpenApi") {

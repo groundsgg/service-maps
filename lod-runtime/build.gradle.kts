@@ -17,7 +17,7 @@ kotlin { jvmToolchain(25) }
 dependencies {
     api(project(":lod-format"))
     implementation("com.google.code.gson:gson:2.15.0")
-    implementation("com.github.luben:zstd-jni:1.5.7-25")
+    implementation("com.github.luben:zstd-jni:1.5.7-28")
     compileOnly("net.minestom:minestom:2026.10.25b-26.3-grounds")
     testImplementation("net.minestom:minestom:2026.10.25b-26.3-grounds")
     testImplementation(kotlin("test"))
