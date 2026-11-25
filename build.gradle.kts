@@ -95,7 +95,7 @@ dependencies {
     implementation(platform("software.amazon.awssdk:bom:2.57.11"))
     implementation("software.amazon.awssdk:s3")
     implementation("software.amazon.awssdk:url-connection-client")
-    implementation("io.nats:jnats:2.26.4")
+    implementation("io.nats:jnats:2.27.0")
 
     // Programmatic schema-upgrade tests run outside Quarkus augmentation.
     testRuntimeOnly("org.flywaydb:flyway-database-postgresql")
